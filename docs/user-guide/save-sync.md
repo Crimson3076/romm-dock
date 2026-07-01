@@ -218,9 +218,11 @@ You have two options:
 
 ## RomM Version Compatibility
 
-The plugin requires **RomM >= 4.9.0**. Servers below 4.9.0 are rejected at connection time with a full error page in
-both the QAM panel and the game detail view. The plugin uses server-side device tracking, content hashing, save slots,
-and `device_syncs` for conflict detection. The 4.9.0 minimum is set because that is the release that ships RomM's Device
+The plugin requires **RomM >= 4.9.0**. Pre-release builds whose numeric core is **above** that floor pass — for example
+`4.9.1-beta` or `5.0.0-alpha.1`. Tags at the exact floor (`4.9.0-beta`, `4.9.0-alpha`) are rejected because they rank
+below the `4.9.0` release. Servers below 4.9.0 are rejected at connection time with a full error page in both the QAM
+panel and the game detail view. The plugin uses server-side device tracking, content hashing, save slots, and
+`device_syncs` for conflict detection. The 4.9.0 minimum is set because that is the release that ships RomM's Device
 Sync (`negotiate`) save-sync transport — the direction adopted in
 [ADR-0016](../adr/0016-save-sync-hands-detection-to-romm-negotiate.md).
 

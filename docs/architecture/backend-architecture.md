@@ -347,6 +347,11 @@ just-committed install.
 
 #### ConnectionService notes
 
+**The minimum-version gate is SemVer-aware on `SYSTEM.VERSION`.** `domain.version.meets_min_version` compares the
+numeric core against `_MIN_REQUIRED_VERSION`; when the core equals the floor, a `-alpha` / `-beta` suffix
+(case-insensitive, optional `.N` build number) ranks **below** the release and is rejected — so `4.9.0-beta.3` fails at
+floor `4.9.0` while `4.9.1-beta` passes. `development` and a missing version bypass the gate.
+
 **A Client API Token is bound to the server it was minted against.** When the token is minted, the canonical origin of
 `romm_url` (full `scheme://host[:port]`, default ports folded out, path/query dropped — `lib/url_host.normalize_origin`)
 is stored alongside it as `romm_api_token_origin`. `RommHttpAdapter.auth_header()` attaches the bearer **only** when
