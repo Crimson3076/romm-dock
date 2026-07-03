@@ -540,13 +540,15 @@ describe("MainPage", () => {
       logSpy.mockRestore();
     });
 
-    it("logs the failure when testConnection rejects on mount", async () => {
+    it("keeps the connection row in 'Checking…' after a single testConnection rejection (retrying, not failed) (#1045)", async () => {
+      // A lone rejection is treated as transient — the probe retries rather than
+      // declaring the backend dead. Before any backoff elapses (only microtasks
+      // flushed) the row must still read "Checking…", never the failure state.
       vi.mocked(backend.testConnection).mockRejectedValue(new Error("net"));
-      const logSpy = vi.spyOn(backend, "logError").mockImplementation(() => {});
-      render(<MainPage onNavigate={vi.fn()} />);
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
       await flushAsync();
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to test connection"));
-      logSpy.mockRestore();
+      expect(container.textContent).toContain("Checking...");
+      expect(container.textContent).not.toContain("Backend error");
     });
 
     it("logs the failure when getSettings rejects on mount", async () => {
@@ -610,7 +612,7 @@ describe("MainPage", () => {
   });
 
   // ===========================================================================
-  // D. ConnectionIndicator — 3 states (covered via top-level rendering)
+  // D. ConnectionIndicator — 4 states (covered via top-level rendering)
   // ===========================================================================
   describe("ConnectionIndicator", () => {
     it("connected=null (testConnection never resolves) renders 'Checking...' + Spinner", async () => {
@@ -639,6 +641,93 @@ describe("MainPage", () => {
       const { container } = render(<MainPage onNavigate={vi.fn()} />);
       await flushAsync();
       expect(container.textContent).toContain("Not connected");
+    });
+  });
+
+  // ===========================================================================
+  // D2. Backend bootstrap failure — the retry-exhausted failure state (#1045)
+  // ===========================================================================
+  describe("backend bootstrap failure (#1045)", () => {
+    it("shows 'Backend error' only when the backend itself is dead (testConnection AND getSettings both fail)", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        // Bootstrap aborted: the whole RPC bridge is dead, so BOTH the
+        // test_connection probes AND the get_settings liveness ping fail.
+        vi.mocked(backend.testConnection).mockRejectedValue(new Error("backend down"));
+        vi.mocked(backend.getSettings).mockRejectedValue(new Error("backend down"));
+        const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        // Drive the full retry schedule (2+5+10+15+20s of backoff) + the ping.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(60_000);
+        });
+        // The row lands on the explicit failure — not an eternal "Checking…"
+        // spinner (the #1045 bug), and not the false "Not connected".
+        expect(container.textContent).toContain("Backend error");
+        expect(container.textContent).toContain("Plugin backend failed to start — check Decky logs.");
+        expect(container.textContent).not.toContain("Checking...");
+        expect(container.textContent).not.toContain("Not connected");
+        // Sync is gated off while the backend is down.
+        const sync = buttonByExactText(container, "Sync Library");
+        expect(sync).not.toBeNull();
+        expect(sync!.disabled).toBe(true);
+        // Non-vacuous catch coverage: the dead-backend branch logs the liveness
+        // ping failure to console.error (logError itself would hang here).
+        expect(errSpy).toHaveBeenCalledWith(
+          expect.stringContaining("backend RPC bridge unreachable"),
+          expect.anything(),
+        );
+        errSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows 'Not connected' (NOT 'Backend error') when the backend is alive but the server is unreachable-by-timeout", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        // Healthy backend, hanging RomM server: test_connection never answers
+        // within any per-attempt deadline (the backend heartbeat outlives it),
+        // but the get_settings liveness ping resolves — the backend IS alive.
+        vi.mocked(backend.testConnection).mockImplementation(
+          () =>
+            new Promise(() => {
+              /* never resolves — server round-trip hangs past every deadline */
+            }),
+        );
+        vi.mocked(backend.getSettings).mockResolvedValue(defaultSettings());
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        // Drive every 5s per-attempt timeout + backoff to exhaustion, then the ping.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(90_000);
+        });
+        // Truthful state for an unreachable server — the backend didn't fail.
+        expect(container.textContent).toContain("Not connected");
+        expect(container.textContent).not.toContain("Backend error");
+        expect(container.textContent).not.toContain("Checking...");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("recovers to 'Connected' when a retry succeeds after a slow start (no false backend-failure)", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        // The backend is merely slow: the first two probes reject, the third
+        // resolves. The row must recover, never showing the failure state.
+        vi.mocked(backend.testConnection)
+          .mockRejectedValueOnce(new Error("starting"))
+          .mockRejectedValueOnce(new Error("starting"))
+          .mockResolvedValue({ success: true, message: "" });
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+        });
+        expect(container.textContent).toContain("Connected");
+        expect(container.textContent).not.toContain("Backend error");
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

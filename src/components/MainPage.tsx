@@ -12,7 +12,7 @@ import {
   ConfirmModal,
   showModal,
 } from "@decky/ui";
-import { FaCheckCircle, FaTimesCircle } from "react-icons/fa";
+import { FaCheckCircle, FaTimesCircle, FaExclamationTriangle } from "react-icons/fa";
 import {
   testConnection,
   cancelSync,
@@ -59,12 +59,27 @@ import type {
   MigrationStatus,
 } from "../types";
 import { detach } from "../utils/detach";
+import { withTimeout } from "../utils/withTimeout";
 
 type Page = "settings" | "library" | "data" | "downloads" | "system";
 
 interface MainPageProps {
   onNavigate: (page: Page) => void;
 }
+
+// The connection probe races each `test_connection()` attempt against a deadline
+// (the callable never times out on its own and hangs forever when the backend
+// isn't up yet) and retries across the slow-cold-boot window. A call that
+// resolves — success OR "not connected" — is authoritative and ends the probe;
+// only an exhausted retry budget means the plugin backend never came up
+// (bootstrap aborted), which the connection row surfaces explicitly instead of
+// an eternal "Checking…" spinner (#1045). The schedule mirrors the metadata init
+// loop's tuned window in index.tsx (#1203).
+const CONNECTION_RETRY_DELAYS = [2000, 5000, 10000, 15000, 20000];
+const CONNECTION_CALLABLE_TIMEOUT = 5000;
+
+/** Backend never answered after the retry budget — distinct from `false` ("not connected"). */
+type BackendFailed = "backend_failed";
 
 function formatChanges(pairs: [number, string][]): string {
   return pairs
@@ -73,7 +88,15 @@ function formatChanges(pairs: [number, string][]): string {
     .join(", ");
 }
 
-const ConnectionIndicator: FC<{ connected: boolean | null }> = ({ connected }) => {
+const ConnectionIndicator: FC<{ connected: boolean | null | BackendFailed }> = ({ connected }) => {
+  if (connected === "backend_failed") {
+    return (
+      <>
+        <FaExclamationTriangle style={{ color: "#d4a72c", fontSize: "14px" }} />
+        <span style={{ fontSize: "12px" }}>Backend error</span>
+      </>
+    );
+  }
   if (connected === null) {
     return (
       <>
@@ -175,7 +198,7 @@ function formatPreviewDescription(s: SyncPreviewSummary): string {
 
 export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   const [stats, setStats] = useState<SyncStats | null>(null);
-  const [connected, setConnected] = useState<boolean | null>(null);
+  const [connected, setConnected] = useState<boolean | null | BackendFailed>(null);
   const versionError = useVersionError();
   const [syncing, setSyncing] = useState(false);
   // Disarmed "Cancelling…" state during the backend's RUNNING→CANCELLING→IDLE
@@ -205,6 +228,12 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   };
 
   useEffect(() => {
+    // Guards for the async connection probe below: `cancelled` stops the retry
+    // loop from touching state after unmount; the timer ref lets cleanup clear a
+    // pending backoff delay.
+    let cancelled = false;
+    let connectionRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
     refreshMigrationState()
       .then(({ retrodeck, save_sort }) => {
         setMigrationStatus(retrodeck);
@@ -214,12 +243,53 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     getSyncStats()
       .then(setStats)
       .catch((e) => logError(`Failed to load sync stats: ${e}`));
-    testConnection()
-      .then((r) => {
-        setConnected(r.success);
-        setVersionError(r.reason === "version_error" ? r.message : null);
-      })
-      .catch((e) => logError(`Failed to test connection: ${e}`));
+
+    // Probe the backend for the connection row. Each attempt has a deadline
+    // because the callable hangs (rather than rejects) while the backend is
+    // still starting, and the retries ride out a slow cold boot. A resolved call
+    // ends the probe — "not connected" (success:false) is an authoritative
+    // answer, not a failure. Only an exhausted retry budget means the backend
+    // never came up (bootstrap aborted); surface that explicitly (#1045).
+    const probeConnection = async (isCancelled: () => boolean) => {
+      for (let attempt = 0; !isCancelled(); attempt++) {
+        try {
+          const r = await withTimeout(testConnection(), CONNECTION_CALLABLE_TIMEOUT);
+          if (isCancelled()) return;
+          setConnected(r.success);
+          setVersionError(r.reason === "version_error" ? r.message : null);
+          return;
+        } catch {
+          if (isCancelled()) return;
+          if (attempt >= CONNECTION_RETRY_DELAYS.length) {
+            // Retry budget exhausted. test_connection() also waits out the
+            // server round-trip — a hanging RomM server keeps the backend's
+            // retrying heartbeat busy for up to ~90s, far past our per-attempt
+            // deadline — so an exhausted budget alone can't tell a dead backend
+            // from an unreachable server. Ping get_settings (a pure in-memory
+            // read that resolves iff the backend RPC bridge is alive) to decide:
+            // alive ⇒ the server is merely unreachable ("Not connected");
+            // dead ⇒ the backend never came up ("Backend error").
+            try {
+              await withTimeout(getSettings(), CONNECTION_CALLABLE_TIMEOUT);
+              if (isCancelled()) return;
+              setConnected(false);
+            } catch (pingErr) {
+              if (isCancelled()) return;
+              setConnected("backend_failed");
+              // logError is itself a callable and would hang against a dead
+              // backend — log to the console instead.
+              console.error("[RomM] backend RPC bridge unreachable (get_settings ping failed):", pingErr);
+            }
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            connectionRetryTimer = setTimeout(resolve, CONNECTION_RETRY_DELAYS[attempt]);
+          });
+        }
+      }
+    };
+    detach(probeConnection(() => cancelled));
+
     getSettings()
       .then((s) => {
         if (s.retroarch_input_check) {
@@ -284,6 +354,8 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     const unsubPlaytimeScope = onPlaytimeScopeChange(() => setPlaytimeScope(getPlaytimeScopeState()));
     const unsubSaveSort = onSaveSortMigrationChange(() => setSaveSortMigration(getSaveSortMigrationState()));
     return () => {
+      cancelled = true;
+      if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
       unsubProgress();
       unsubMigration();
       unsubSettingsReset();
@@ -446,6 +518,10 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   );
   const hasDownloads = activeDownloads.length > 0 || completedDownloads.length > 0;
 
+  // Sync is unavailable when the server test failed OR the plugin backend never
+  // started — both gate the Sync buttons off.
+  const connectionUnavailable = connected === false || connected === "backend_failed";
+
   if (versionError) {
     return <VersionErrorCard message={versionError} compact />;
   }
@@ -570,7 +646,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
             onClick={() => {
               detach(handleSync());
             }}
-            disabled={loading || connected === false}
+            disabled={loading || connectionUnavailable}
             // @ts-expect-error onFocus works at runtime; not in Decky's ButtonItem types
             onFocus={scrollToTop}
           >
@@ -607,7 +683,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
                   })(),
                 );
               }}
-              disabled={loading || connected === false}
+              disabled={loading || connectionUnavailable}
             >
               Force Full Sync
             </ButtonItem>
@@ -628,7 +704,12 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
           </PanelSectionRow>
         )}
         <PanelSectionRow>
-          <Field label="Connection">
+          <Field
+            label="Connection"
+            description={
+              connected === "backend_failed" ? "Plugin backend failed to start — check Decky logs." : undefined
+            }
+          >
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <ConnectionIndicator connected={connected} />
             </div>
