@@ -62,6 +62,7 @@ import {
   applySaveSyncDisplay,
   extractBiosInfo,
   extractCoreInfo,
+  formatVersionLabel,
   resolveSaveSyncLabel,
   timeoutMs,
 } from "../utils/playSection";
@@ -100,6 +101,9 @@ interface InfoState {
   romId: number | null;
   romName: string;
   platformSlug: string;
+  /** Pre-joined RomM version label (regions/languages/revision/tags, ADR-0019);
+   *  "" hides the VERSION row. */
+  versionLabel: string;
   lastPlayed: string;
   /** Restored cross-device `last_played` (ISO-8601) from `reconcile_playtime`,
    *  or `null` until the server yields one. Preferred over Steam's device-local
@@ -164,6 +168,7 @@ async function loadCached(
       romId,
       romName: cached.rom_name || "",
       platformSlug: cached.platform_slug || "",
+      versionLabel: formatVersionLabel(cached),
       saveSyncEnabled: cached.save_sync_enabled ?? false,
       saveSyncStatus,
       saveSyncLabel,
@@ -242,6 +247,7 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     romId: null,
     romName: "",
     platformSlug: "",
+    versionLabel: "",
     lastPlayed: initialLastPlayed,
     restoredLastPlayed: null,
     playtime: initialPlaytime,
@@ -1090,6 +1096,12 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
   // Playtime
   if (info.playtime) {
     infoItems.push(infoItem("playtime", "PLAYTIME", info.playtime));
+  }
+
+  // Version (region/language/revision/tags) — display-only, hidden when the ROM
+  // carries no version metadata (ADR-0019).
+  if (info.versionLabel) {
+    infoItems.push(infoItem("version", "VERSION", info.versionLabel));
   }
 
   // Achievements badge (only when RA data available)
