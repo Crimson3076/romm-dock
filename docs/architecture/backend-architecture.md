@@ -202,6 +202,79 @@ unconditional cancel path rather than a stale prior-run id the backend would rej
 `sync_state`, and `sync_apply_delta` independently validates the `preview_id`, so a stale preview-cancel cannot abort a
 fresh sync.
 
+**Group-aware sync — one Steam shortcut per sibling group
+([ADR-0021](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0021-sibling-group-one-shortcut-binding-active-version.md)).**
+A game frequently exists in a RomM library as several dumps of the same title (region / language / revision variants).
+These share a **sibling group** (same `roms.sibling_group_key`, derived client-side by `domain/sibling_group.py`). The
+sync pipeline treats a group as one game = at most one **new** Steam shortcut; the sibling row holding `shortcut_app_id`
+is the group's **active version**.
+
+- **Persist all siblings, emit one shortcut per group.** The reporter's per-unit commit upserts a `roms` row (identity +
+  version metadata, via the sync UPSERT) for **every** fetched ROM of the unit, but only the group's representative
+  carries a Steam-shortcut binding — a non-representative sibling is a tracked, unbound row. Persisting the whole group
+  is what the version picker (#1297) and the incremental-skip gate need; binding only the representative is what stops
+  the same-named-collision and duplicate-shortcut bugs the ADR describes.
+- **The collapse happens at the same `build_shortcuts_data` boundary in both paths**
+  (`domain/sync_diff.py::collapse_sibling_groups`). Preview and apply build the full per-ROM shortcut list, then
+  collapse it to one entry per group against the bound-row registry (preview reads `_read_preview_baseline`, apply reads
+  `_read_apply_registry` per unit). The collapse takes an explicit `complete_group_view` flag: a sibling group is
+  per-platform, so the whole-library **preview** union and each **platform** apply unit see a group's whole membership
+  (`complete_group_view=True`) and collapse identically — the preview counts can never diverge from what those units
+  create (the #1292 counts-vs-reality bug class). A **collection** apply unit spans platforms and may fetch only one
+  unbound sibling of a group whose bound member it never fetched, so it is a **partial** view
+  (`complete_group_view=False`): a group that already holds a binding anywhere is grandfathered untouched — never
+  rebound onto the partial member, never given a second shortcut — because the group's real representative rides its own
+  platform unit in the same run. (Inferring "bound sibling absent ⇒ vanished" from a partial view would rebind a live
+  installed game onto an uninstalled sibling — #1296.) `classify_roms` runs over the collapsed set, so its new / changed
+  / unchanged / stale buckets count **games, not dumps**, and an unbound sibling stops reading as a perpetual "new".
+- **Resolution chain** (`domain/sibling_resolution.py::resolve_group_representative`, total + shuffle-stable): an
+  installed sibling wins; else an existing binding; else RomM's per-user default (`is_main_sibling`); else the **1G1R
+  ranking** — prerelease demotion > **region priority** > revision (newest) > alphabetical `fs_name_no_ext` > `rom_id`.
+  The first three legs are membership filters; the rest are the total order applied inside the surviving leg.
+  **Prerelease demotion** ranks first: a member whose structured `tags` name a draft build (Alpha / Beta / Proto /
+  Sample / Demo, case-insensitive, tolerant of a trailing number; `Unl` / `Aftermarket` / unknown tags are neutral) is
+  demoted below every retail sibling **across regions**, so a finished `(Japan)` release beats a `(USA) (Beta)`.
+  **Revision** ranks just after region: within one region the newest `revision` wins (natural compare; base dump =
+  lowest), but never lifts a lower-ranked region (a `(USA)` base still beats a `(Europe) (Rev 9)`). The alphabetical leg
+  also keeps a base dump ahead of a filename-only re-dump (`(Virtual Console)`, `(Extended Edition)`) RomM does not
+  parse into a tag. Region priority ranks a version by its best `regions` entry against a **fixed** build-time order —
+  `World > USA > Europe > Japan`, every other named region after these (alphabetically), a no-region version last (a
+  fixed constant, **not** language/system detection) — which the user may re-head with a single `preferred_region`
+  setting (`"auto"` = the fixed order; any other value lifts that region to the top). The leg is evaluated at resolution
+  time, so the setting takes effect on the next sync and an existing binding shields its group (the installed/binding
+  legs win before region priority is consulted). Used wherever one version must be chosen (a new group's shortcut, a
+  rebind's target). The QAM dropdown that sets `preferred_region` is populated from fixed anchors (Default, World, USA,
+  Europe, Japan) plus the distinct regions read from the local library (`get_known_regions` over `roms.regions` — no
+  server call), and a confirmation modal states the apply-at-next-sync / no-rename semantics before persisting.
+- **Canonical name at mint** (`domain/sibling_resolution.py::canonical_group_name`): a NEW group's shortcut is **named**
+  after the member ranked first by the _pure_ order (prerelease demotion > region priority > revision > alphabetical >
+  `rom_id`), ignoring the installed/binding/default filters — so a Japanese default still binds Japan but the shortcut
+  carries the USA name (never majority voting: two Japan dumps + one USA yields the USA name). This is mint-time only:
+  the name is sticky forever after (ADR-0021 §2), so a rebind/grandfathered entry carries the persisted bound name
+  verbatim and a live shortcut is never renamed. The appId is minted from the canonical name by the frontend
+  `AddShortcut`; the DB binding lands on the representative `rom_id`; the reporter is agnostic to the name↔rom mismatch
+  (it binds on `rom_id` + the acked appId, and persists each sibling's own RomM name from `pending_all_roms`).
+  `preferred_region` is read from settings by `sync_orchestrator` and threaded into every collapse call site (preview +
+  apply) as the same value within a run.
+- **Rebind, not remove.** When every bound sibling of a group vanishes from the server but the group still has fetched
+  members — and the collapse sees the group's whole membership (a platform unit or the preview,
+  `complete_group_view=True`; a partial collection view never rebinds) — it emits one **rebind entry** keyed to the
+  vanished sibling's `rom_id` (so the frontend reuses its existing shortcut through the `rom_id → appId` map — no
+  delete + recreate churn), carrying the representative's launch bake and a `bind_rom_id` marker. The commit translates
+  the ack through `bind_rom_id`, so the DB binding moves onto the representative; the collision-safe `Rom` save then
+  unbinds the vanished row. The shortcut's appId, artwork, collections and playtime all survive — only the active
+  version changes. A whole-group disappearance still routes through the normal stale path, and the #1036 committed-appId
+  guard is unchanged (the reused appId is committed this run, so it is never emitted for removal).
+- **Grandfathering.** A group that already carries several bound shortcuts (a library synced before this model) keeps
+  them all — each surviving bound sibling stays its own tracked shortcut; no new shortcut is minted for a group with a
+  binding. Convergence to one-shortcut-per-group happens naturally as the user uninstalls duplicates.
+- **Downstream group semantics.** The incremental-skip gate compares RomM's platform `rom_count` against **all**
+  persisted rows for the platform (not just bound representatives), restoring skip parity on platforms with sibling
+  groups (a NULL `sibling_group_key` still forces a backfill full-fetch). Artwork downloads only for the emitted
+  representatives (+ grandfathered bound siblings), never eager sibling covers. Steam-collection membership resolves
+  each RomM collection `rom_id` with a **group fallback** — an unbound sibling maps to its group's bound sibling's appId
+  — so collecting or favouriting any version puts the game's single shortcut in the collection.
+
 **Single-owner run lifecycle (#1202).** The run-lifecycle pair — `sync_state` (idle/running/cancelling) and
 `current_sync_id` — is mutated **only** through four verb methods on `LibrarySyncStateBox`, never by direct field
 assignment from a sub-service. Confining those two writes to the box makes run admission, cancellation, and termination
