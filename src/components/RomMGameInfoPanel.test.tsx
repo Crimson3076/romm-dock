@@ -2486,6 +2486,26 @@ describe("RomMGameInfoPanel", () => {
       expect(container.textContent).toContain("No metadata available");
     });
 
+    it("renders 'No metadata available' for an empty-but-non-null metadata object (no descriptive rows)", async () => {
+      // metadata is present but every field is empty, and no name / region /
+      // languages / platform accompany it — so no descriptive row is added and
+      // the fallback still fires. Guards the plain descriptive-row count now that
+      // the version switcher moved out of this section to the play row (#1297).
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        rom_name: "",
+        metadata: makeMetadata(),
+        platform_name: "",
+        regions: [],
+        languages: [],
+        stale_fields: [],
+      });
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      expect(container.textContent).toContain("No metadata available");
+    });
+
     it("renders the RomM game name on the info tab", async () => {
       vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
         found: true,
@@ -2600,6 +2620,277 @@ describe("RomMGameInfoPanel", () => {
       await flushAsync();
       // The cached summary is still rendered — rejection didn't blank it.
       expect(container.textContent).toContain("from cache");
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // I2. Version attributes (Region / Languages) + version-switch refresh (#1297)
+  // ------------------------------------------------------------------
+
+  describe("Version attributes + switch", () => {
+    it("renders Region and Languages rows for the active version", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        rom_name: "Game (USA)",
+        regions: ["USA", "Europe"],
+        languages: ["En", "Fr"],
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      expect(container.textContent).toContain("Region");
+      expect(container.textContent).toContain("USA/Europe");
+      expect(container.textContent).toContain("Languages");
+      expect(container.textContent).toContain("En, Fr");
+    });
+
+    it("omits Region / Languages rows when the dimensions are empty", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        rom_name: "Game",
+        regions: [],
+        languages: [],
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      expect(container.textContent).not.toContain("Region");
+      expect(container.textContent).not.toContain("Languages");
+    });
+
+    it("refreshes the panel name + Region + cover on a matching version_switched event", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        rom_name: "Game (USA)",
+        regions: ["USA"],
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      expect(container.textContent).toContain("Game (USA)");
+
+      // After the switch the cache resolves the new active version, and the
+      // handler re-fetches the artwork for the newly-bound rom_id.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 2,
+        rom_name: "Game (Japan)",
+        regions: ["Japan"],
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      vi.mocked(backend.getArtworkBase64).mockClear();
+      vi.mocked(backend.getArtworkBase64).mockResolvedValue({ base64: "JAPANCOVER" });
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+
+      expect(container.textContent).toContain("Game (Japan)");
+      expect(container.textContent).toContain("Japan");
+      // Cover refresh: getArtworkBase64 was re-fetched for the new rom_id and the
+      // new cover reached the DOM (dropping refreshCoverArtInBackground in the
+      // version_switched handler makes this fail).
+      expect(vi.mocked(backend.getArtworkBase64)).toHaveBeenCalledWith(2);
+      expect(container.innerHTML).toContain("data:image/png;base64,JAPANCOVER");
+    });
+
+    it("ignores a version_switched event for a different appId", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        rom_name: "Game (USA)",
+        regions: ["USA"],
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+
+      vi.mocked(cachedStore.getCachedGameDetail).mockClear();
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId + 9999, rom_id: 2 },
+          }),
+        );
+        await Promise.resolve();
+      });
+
+      // The mismatched appId short-circuits before re-reading the cache.
+      expect(vi.mocked(cachedStore.getCachedGameDetail)).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Game (USA)");
+    });
+
+    it("re-keys SAVES tab data to the new active version while sitting on the saves tab (#1297)", async () => {
+      // The user is ON the saves tab when the switch arrives. The tab data must
+      // follow the new active version: the load-once slots gate resets so
+      // getSaveSlots re-fetches for the new rom_id, and SavesTab receives the
+      // new rom_id + the new version's save-status universe (threaded from the
+      // invalidated-then-refetched cache, matching loadData). Without the fix,
+      // SavesTab keeps rendering the OLD rom's data.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        rom_name: "Game (USA)",
+        save_sync_enabled: true,
+        save_status: {
+          files: [{ filename: "OLD_VERSION.srm", status: "skip" }],
+          conflicts: [],
+        },
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      vi.mocked(backend.isSaveTrackingConfigured).mockResolvedValue({
+        configured: true,
+        active_slot: "main",
+      });
+      render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      // Sit on the saves tab — renders SavesTab with the OLD rom's universe.
+      await act(async () => {
+        globalThis.dispatchEvent(new CustomEvent("romm_tab_switch", { detail: { tab: "saves" } }));
+      });
+      await flushAsync();
+      expect(capturedSavesTab[capturedSavesTab.length - 1]?.saveStatus?.files[0]?.filename).toBe("OLD_VERSION.srm");
+
+      // The switch: the cache now resolves the NEW active version (rom 2) with
+      // a distinct save-status universe.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 2,
+        rom_name: "Game (Japan)",
+        save_sync_enabled: true,
+        save_status: {
+          files: [{ filename: "NEW_VERSION.srm", status: "skip" }],
+          conflicts: [],
+        },
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      vi.mocked(backend.getSaveSlots).mockClear();
+      capturedSavesTab.length = 0;
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+      // Slots re-fetched for the NEW rom_id (the load-once gate was reset).
+      expect(vi.mocked(backend.getSaveSlots)).toHaveBeenCalledWith(2);
+      // SavesTab re-keyed to the new rom + the new version's save universe —
+      // the OLD_VERSION.srm row is gone.
+      const latest = capturedSavesTab[capturedSavesTab.length - 1];
+      expect(latest?.romId).toBe(2);
+      expect(latest?.saveStatus?.files[0]?.filename).toBe("NEW_VERSION.srm");
+    });
+
+    it("reloads SAVES tab data on the next activation after a switch (slotsLoadedRef reset, #1297)", async () => {
+      // Open the saves tab for the OLD rom (sets the load-once gate), return to
+      // info, then switch version while off the saves tab. Re-opening the saves
+      // tab must reload for the NEW rom_id — the reset gate is what makes
+      // getSaveSlots(2) fire on re-activation. Without the reset the gate stays
+      // set and the effect short-circuits, keeping the OLD rom's slots.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        save_sync_enabled: true,
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      vi.mocked(backend.isSaveTrackingConfigured).mockResolvedValue({
+        configured: true,
+        active_slot: "main",
+      });
+      render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      await act(async () => {
+        globalThis.dispatchEvent(new CustomEvent("romm_tab_switch", { detail: { tab: "saves" } }));
+      });
+      await flushAsync();
+      // Back to info so the switch happens off the saves tab.
+      await act(async () => {
+        globalThis.dispatchEvent(new CustomEvent("romm_tab_switch", { detail: { tab: "info" } }));
+      });
+      await flushAsync();
+      // Version switch to rom 2 (off the saves tab).
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 2,
+        save_sync_enabled: true,
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+      // Re-open the saves tab; the reset gate forces a fresh slots fetch for
+      // rom 2. Clear first so the assertion sees only the re-activation load.
+      vi.mocked(backend.getSaveSlots).mockClear();
+      await act(async () => {
+        globalThis.dispatchEvent(new CustomEvent("romm_tab_switch", { detail: { tab: "saves" } }));
+      });
+      await flushAsync();
+      expect(vi.mocked(backend.getSaveSlots)).toHaveBeenCalledWith(2);
+    });
+
+    it("re-fetches ACHIEVEMENTS for the new version while sitting on the achievements tab (achievementsLoadedRef reset, #1297)", async () => {
+      // Achievements loaded for the OLD rom (1). A switch to rom 2 (its own
+      // ra_id) while ON the achievements tab must reset the load-once gate and
+      // re-fetch for the new rom_id. Without the reset, the tab keeps the OLD
+      // rom's achievements.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 1,
+        ra_id: 42,
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      await act(async () => {
+        globalThis.dispatchEvent(new CustomEvent("romm_tab_switch", { detail: { tab: "achievements" } }));
+      });
+      await flushAsync();
+      expect(vi.mocked(backend.getAchievements)).toHaveBeenCalledWith(1);
+
+      // Switch to rom 2 (new ra_id) while sitting on the achievements tab.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 2,
+        ra_id: 43,
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      vi.mocked(backend.getAchievements).mockClear();
+      vi.mocked(backend.getAchievementProgress).mockClear();
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+      expect(vi.mocked(backend.getAchievements)).toHaveBeenCalledWith(2);
+      expect(vi.mocked(backend.getAchievementProgress)).toHaveBeenCalledWith(2);
     });
   });
 
