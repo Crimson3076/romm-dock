@@ -294,9 +294,47 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     };
     globalThis.addEventListener("romm_rom_uninstalled", onUninstall);
 
-    // Listen for save sync updates (e.g. background check found a conflict)
+    // A version switch re-bound this appId's shortcut to a new rom_id (#1298).
+    // The picker already invalidated the cached detail; re-read it, adopt the new
+    // rom_id, and re-derive the button state so Play↔Download flips with the new
+    // version's install status. appId is stable per mount (the component is keyed
+    // by it), so the `[appId]`-deps closure captures the right one.
+    const handleVersionSwitched = async (): Promise<void> => {
+      const cached = await getCachedGameDetail(appId);
+      if (!cached.found || cached.rom_id == null) {
+        // A switch fired but the rebound detail didn't resolve — the button is now
+        // stale. Surface it at warn level (debugLog is dropped at the default level).
+        logError(`CustomPlayButton: version_switched for appId ${appId} but cached detail not found — button may be stale`);
+        return;
+      }
+      const rid = cached.rom_id;
+      setRomId(rid);
+      romIdRef.current = rid;
+      if (cached.rom_name) setRomName(cached.rom_name);
+      if (cached.installed) {
+        setState(hasAnySaveConflict(cached.save_status) ? "conflict" : "play");
+      } else {
+        // Switched to a not-installed version — clear any download progress and
+        // drop to the Download button.
+        setDlProgress(null);
+        setActionPending(false);
+        setState("download");
+      }
+    };
+
+    // Listen for save sync updates (e.g. background check found a conflict) and
+    // version switches (Play↔Download flip).
     const onDataChanged = (e: Event) => {
       const detail = (e as CustomEvent).detail;
+      if (detail?.type === "version_switched") {
+        if (detail.app_id !== appId) return;
+        detach(
+          handleVersionSwitched().catch((err) =>
+            logError(`CustomPlayButton: version_switched handler failed for appId ${appId}: ${err}`),
+          ),
+        );
+        return;
+      }
       if (detail?.type !== "save_sync") return;
       if (detail.rom_id && detail.rom_id !== romIdRef.current) return;
       // Update button state based on conflict info from the event
@@ -322,6 +360,13 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     const onSessionChanged = (e: WindowEventMap["romm_session_changed"]) => {
       if (e.detail.romId !== romIdRef.current) return;
       setIsRunning(e.detail.running);
+      // Session end is the authoritative "not launching anymore" signal. Game
+      // Mode remounts the page on return (init resets the state), but the
+      // desktop windowed BPM does not — without this fallback an externally
+      // killed emulator leaves the button stuck on "Launching...".
+      if (!e.detail.running) {
+        setState((prev) => (prev === "launching" ? "play" : prev));
+      }
     };
     globalThis.addEventListener("romm_session_changed", onSessionChanged);
 
@@ -334,7 +379,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       globalThis.removeEventListener("romm_connection_changed", onConnectionChanged);
       globalThis.removeEventListener("romm_session_changed", onSessionChanged);
     };
-  }, []);
+  }, [appId]);
 
   // Programmatically focus our Play/Download button after mount.
   // This beats HLTB and other plugins that also compete for initial focus.

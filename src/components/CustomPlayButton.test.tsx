@@ -1839,6 +1839,37 @@ describe("CustomPlayButton — state-aware Resume (#1313)", () => {
     expect(queryByText("Resume")).toBeNull();
   });
 
+  it("resets a stuck Launching state when the session for this rom ends without a remount", async () => {
+    // Desktop windowed BPM never remounts the page after a game exits, so the
+    // session-end event is the only reset path out of "Launching..." there
+    // (Game Mode remounts and re-inits instead).
+    mockCachedDetail();
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    const playBtn = await findByText("Play");
+
+    // The click leaves the underlying state at "launching"; the running
+    // overlay shows Resume on top of it while the session lives.
+    await act(async () => {
+      playBtn.click();
+    });
+    act(() => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_session_changed", { detail: { running: true, appId: 100, romId: 42 } }),
+      );
+    });
+    await findByText("Resume");
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_session_changed", { detail: { running: false, appId: 100, romId: 42 } }),
+      );
+    });
+
+    // Non-vacuous: pre-fix the overlay dropped and exposed the stuck
+    // "Launching..." state — the button must fall back to Play instead.
+    expect(await findByText("Play")).toBeInTheDocument();
+  });
+
   it("ignores a session event for a different rom", async () => {
     const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
     await findByText("Play");
@@ -1972,5 +2003,104 @@ describe("CustomPlayButton — state-aware Resume (#1313)", () => {
     // SetRunningApp is unreachable (no store), and it's still not a launch.
     expect(setRunningApp).not.toHaveBeenCalled();
     expect(vi.mocked(SteamClient.Apps.RunGame)).not.toHaveBeenCalled();
+  });
+});
+
+describe("CustomPlayButton — version switch (#1298)", () => {
+  beforeEach(() => {
+    vi.mocked(getCachedGameDetail).mockReset();
+    // Prior describes leave the running-overlay stubs live (Resume button) —
+    // reset to "nothing running" so the button lands on Play/Download.
+    vi.mocked(getActiveSessionRomId).mockReturnValue(null);
+    vi.mocked(isAppRunning).mockReturnValue(false);
+  });
+
+  const dispatchVersionSwitched = (appId: number, romId: number) =>
+    // Async act: the handler re-reads getCachedGameDetail (async) before setState,
+    // so flush a microtask so the state settles inside act.
+    act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", {
+          detail: { type: "version_switched", app_id: appId, rom_id: romId },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+  it("flips Play → Download when the switched-to version is not installed", async () => {
+    // Mount installed (Play), then the switch re-reads the cached detail and finds
+    // the newly-bound version uninstalled.
+    vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 42, rom_name: "USA", installed: true });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+    await findByText("Play");
+
+    vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 7, rom_name: "JPN", installed: false });
+    await dispatchVersionSwitched(100, 7);
+
+    await findByText("Download");
+    expect(queryByText("Play")).toBeNull();
+  });
+
+  it("flips Download → Play when the switched-to version is installed", async () => {
+    vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 42, rom_name: "USA", installed: false });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+    await findByText("Download");
+
+    vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 7, rom_name: "JPN", installed: true });
+    await dispatchVersionSwitched(100, 7);
+
+    await findByText("Play");
+    expect(queryByText("Download")).toBeNull();
+  });
+
+  it("ignores a version_switched event for a different appId", async () => {
+    vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 42, rom_name: "USA", installed: true });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+    await findByText("Play");
+
+    // A switch on another game's appId must not re-read or re-derive this button.
+    vi.mocked(getCachedGameDetail).mockClear();
+    await dispatchVersionSwitched(999, 7);
+
+    expect(await findByText("Play")).toBeInTheDocument();
+    expect(queryByText("Download")).toBeNull();
+    expect(vi.mocked(getCachedGameDetail)).not.toHaveBeenCalled();
+  });
+
+  it("logs an error and leaves the button unchanged when the rebound detail is not found", async () => {
+    const logErrorSpy = vi.spyOn(backend, "logError").mockImplementation(() => {});
+    try {
+      vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 42, rom_name: "USA", installed: true });
+      const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+      await findByText("Play");
+
+      // The rebound detail didn't resolve — warn (not silently drop) and keep the button.
+      vi.mocked(getCachedGameDetail).mockResolvedValue({ found: false });
+      await dispatchVersionSwitched(100, 7);
+
+      expect(logErrorSpy).toHaveBeenCalledWith(expect.stringContaining("cached detail not found"));
+      expect(await findByText("Play")).toBeInTheDocument();
+      expect(queryByText("Download")).toBeNull();
+    } finally {
+      logErrorSpy.mockRestore();
+    }
+  });
+
+  it("logs an error when the cached-detail re-read rejects (non-vacuous catch)", async () => {
+    const logErrorSpy = vi.spyOn(backend, "logError").mockImplementation(() => {});
+    try {
+      vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 42, rom_name: "USA", installed: true });
+      const { findByText } = render(<CustomPlayButton appId={100} />);
+      await findByText("Play");
+
+      vi.mocked(getCachedGameDetail).mockRejectedValue(new Error("boom"));
+      await dispatchVersionSwitched(100, 7);
+
+      await waitFor(() =>
+        expect(logErrorSpy).toHaveBeenCalledWith(expect.stringContaining("version_switched handler failed")),
+      );
+    } finally {
+      logErrorSpy.mockRestore();
+    }
   });
 });
