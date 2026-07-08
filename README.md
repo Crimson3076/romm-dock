@@ -44,7 +44,8 @@ documentation site. This README is just the quick tour.
 
 ## Requirements
 
-- [Decky Loader](https://decky.xyz/) on your Steam Deck or Linux HTPC
+- [Decky Loader](https://decky.xyz/) on your Steam Deck or Linux HTPC — the plugin lives in Steam's gamepad UI, so it
+  works in the Deck's Game Mode **or** in Big Picture Mode on any Linux PC
 - A running [RomM](https://github.com/rommapp/romm) server, **version 4.9.0 or newer** (the plugin stays inert against
   older servers)
 - [RetroDECK](https://retrodeck.net/) for launching games
@@ -88,6 +89,8 @@ details, [save sync](https://danielcopper.github.io/decky-romm-sync/user-guide/s
 Build from source, run the tests, and read the architecture reference on the documentation site:
 
 - [Development setup](https://danielcopper.github.io/decky-romm-sync/contributing/development/)
+- [Frontend dev loop](https://danielcopper.github.io/decky-romm-sync/contributing/frontend-dev-loop/) — live-reload the
+  UI into a windowed Big Picture on the Deck, no Game Mode switching
 - [Backend architecture](https://danielcopper.github.io/decky-romm-sync/architecture/backend-architecture/)
 
 ## Acknowledgments
