@@ -57,6 +57,27 @@ config file.
 **Fix**: Check your network connection and verify the RomM server is running. Go to **Connection Settings** and tap
 **Test Connection**. Failed syncs are queued and retried automatically when the server is reachable again.
 
+### Offline detection and recovery
+
+When the plugin can't reach RomM, it notices from the calls that fail (a connection probe, a save-status or slot load, a
+version switch, or the first-time save-slot setup) and marks itself offline. On a game's detail page you'll see a **RomM
+offline** badge in the play row, the **Download** button and slot switching are disabled (they need the server), and the
+**Saves** tab shows a "RomM is offline" banner and renders straight away instead of hanging. The **Achievements** tab
+does the same — it shows a short "RomM offline — achievements unavailable." line (keeping any list and counts it had
+already loaded) instead of spinning on "Loading achievements…" forever. The first-time save-slot setup screen also shows
+its "RomM server is not reachable" message and a **Retry** button immediately rather than working through the connection
+attempts. Playtime keeps showing — it's tracked locally and doesn't depend on the connection.
+
+While a save load is actually reaching the server, the **Saves** tab and the setup screen show a spinner labelled
+**Connecting to RomM…**. If the server is briefly slow or flaky, the plugin retries a couple of times before giving up,
+and the spinner shows which attempt is in progress — **Connecting to RomM… (attempt 2/3)** — so a slow connection reads
+as busy rather than stuck.
+
+You don't need to do anything: while a game page is open, the plugin checks the server roughly every 30 seconds in both
+directions. If RomM goes away, the **RomM offline** badge appears on its own within that window; the moment RomM is
+reachable again the badge clears, Download and slot switching re-enable, and the saves list, achievements, and setup
+screen reload themselves on the spot — no need to leave and re-open the page.
+
 ### Save file not found
 
 **Symptom**: The game detail page shows save status but no save file is being synced.
