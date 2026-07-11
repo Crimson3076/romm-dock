@@ -18,20 +18,28 @@ Returns the new shortcut's `appId` (a number), or `0`/`null` on failure.
 Despite accepting four parameters, `AddShortcut` **ignores `startDir` and `launchOptions`**. This was confirmed by the
 [MoonDeck plugin](https://github.com/FrogTheFrog/moondeck) developers. Only `name` and `exe` are used during creation.
 
-To set all shortcut properties reliably, call the `Set*` methods **after a 500ms delay**:
+To set all shortcut properties reliably, wait for Steam to register the new app's **overview** before the `Set*` calls:
 
 ```typescript
 const appId = await SteamClient.Apps.AddShortcut(name, exe, "", "");
-await delay(500);
+// Poll appStore.GetAppOverviewByAppID(appId) (~100ms cadence) until the overview
+// exists, with a 1000ms fallback; on timeout, proceed anyway.
+await waitForAppOverview(appId, 1000);
 
 SteamClient.Apps.SetShortcutName(appId, name);
 SteamClient.Apps.SetShortcutExe(appId, exe);
 SteamClient.Apps.SetShortcutStartDir(appId, startDir);
-SteamClient.Apps.SetAppLaunchOptions(appId, launchOptions);
+// An empty launch_options (uninstalled placeholder) needs no write or confirm —
+// a fresh shortcut's launch options are already empty, so skip both. A non-empty
+// command takes the confirmed write (setLaunchOptionsConfirmed).
+if (launchOptions !== "") await setLaunchOptionsConfirmed(appId, launchOptions);
 ```
 
-The 500ms delay is critical. Without it, the `Set*` calls may silently fail because Steam has not finished registering
-the new app internally.
+Steam must finish registering the new app internally before the `Set*` calls land, or they silently fail. Rather than a
+fixed worst-case wait, the plugin polls `appStore` for the new overview (readiness) — the common case proceeds in ~100ms
+instead of a blind 500ms, and the 1000ms ceiling keeps the old wait's safety net when the overview is slow. Skipping the
+launch-options write for the (majority) uninstalled case also avoids `setLaunchOptionsConfirmed`'s
+`RegisterForAppDetails` poll, which forces Steam to load and cache a fat `AppDetails` object per call.
 
 ### Exe quoting
 
@@ -46,7 +54,10 @@ SteamClient.Apps.SetShortcutExe(appId, "/home/deck/homebrew/plugins/decky-romm-s
 
 ### Updating existing shortcuts
 
-A shortcut's `appId` is derived from `exe + appName` (CRC32). Two consequences follow:
+Steam **assigns** a shortcut's `appId` when `AddShortcut` creates it, and that `appId` is **stable for the shortcut's
+lifetime**. The plugin never computes it: it records Steam's assigned id in `roms.shortcut_app_id` and detects ownership
+by the exe path (`…/bin/rom-launcher`), not by re-deriving the id. (The historical "`appId` is `CRC32(exe + appName)`"
+formula does not hold on current Steam — see [App IDs and Artwork](#app-ids-and-artwork).) Two consequences follow:
 
 - **`launchOptions` and `startDir` are appId-safe.** Changing either on an existing shortcut keeps the same `appId`, so
   the shortcut's identity, artwork, collection membership, and `roms.shortcut_app_id` binding all survive.
@@ -54,9 +65,10 @@ A shortcut's `appId` is derived from `exe + appName` (CRC32). Two consequences f
   [#827](https://github.com/danielcopper/decky-romm-sync/issues/827) across in-session writes, a Steam restart, and
   removal-churn re-syncs. The plugin uses it directly to bake the launch command in at download-complete and to
   re-resolve paths after a RetroDECK-home migration.
-- **`exe` and `appName` are destructive.** Changing either yields a _different_ `appId` — effectively a new shortcut. A
-  launch-config change that touches `exe` or the name therefore requires delete + recreate (re-sync); a
-  `launchOptions`-only change does not.
+- **`exe` and the display name are applied by delete + recreate.** A launch-config change that touches `exe` or the name
+  is handled by removing the shortcut and re-syncing it, which yields a **new** `appId` (a fresh shortcut); a
+  `launchOptions`-only change is not. This delete + recreate behavior is unchanged; the original rationale — that
+  changing `exe`/name re-hashes to a different `appId` — rests on the CRC derivation above and is no longer verified.
 
 Because `SetAppLaunchOptions` returns `void` with no success signal, the plugin **fires the set then polls**
 `RegisterForAppDetails` until the read-back `strLaunchOptions` matches (`setLaunchOptionsConfirmed`). Setting `""` — the
@@ -69,13 +81,18 @@ See: `src/utils/steamShortcuts.ts`
 
 ### appId reuse across a server switch / re-import
 
-Because the appId is `CRC32(exe + name)` and both are **stable for a given ROM across syncs** (the exe is the constant
-`…/bin/rom-launcher`, the name is the RomM `name`), the same game always hashes to the **same appId** — even after its
-server-issued `rom_id` changes. Switching the RomM server URL (or re-importing on the same server) reissues `rom_id`s;
-the `roms` rows survive (ADR-0007 retention) and the new `rom_id` for an unchanged game resolves to the appId the old
-`rom_id` already holds.
+> **Errata (2026-07).** This section originally explained appId reuse by the appId being `CRC32(exe + name)`, with both
+> stable across syncs, so an unchanged game re-hashed to the **same** appId even after its server-issued `rom_id`
+> changed. On-device inspection disproves that derivation (see [App IDs and Artwork](#app-ids-and-artwork)): Steam
+> **assigns** the appId at creation, so reuse cannot come from re-hashing. What is verified: switching the RomM server
+> URL (or re-importing on the same server) reissues `rom_id`s while the **Steam shortcut is not deleted** — its assigned
+> appId persists — and the `roms` rows survive (ADR-0007 retention) with the binding in `roms.shortcut_app_id`,
+> reverse-lookupable via `get_app_id_rom_id_map()`. Whether an unchanged game with a **new** `rom_id` re-binds to that
+> surviving shortcut rather than creating a duplicate is a `rom_id`-keyed resolution that has **not** been re-verified
+> under the assigned-id model and needs on-device confirmation.
 
-Two guards keep this from wiping a freshly-synced shortcut (`#1036`):
+Two guards keep a re-import from wiping a freshly-synced shortcut (`#1036`) — real code that holds whenever the same
+appId is presented for a new `rom_id`, though they were designed under the now-disproven CRC assumption:
 
 - **One appId, one bound row.** `SqliteRomRepository.save()` unbinds any sibling row holding the appId before the
   per-`rom_id` UPSERT, and migration `003`'s partial unique index on `shortcut_app_id` enforces it (see
@@ -151,10 +168,13 @@ See: `src/patches/metadataPatches.ts`
 
 ## VDF Format Notes
 
-Shortcut creation goes through the frontend `SteamClient.Apps.AddShortcut()` API — `AddShortcut` returns the real
-`appId` directly, so the plugin never computes app IDs itself for shortcut creation. VDF read/write support remains in
-the backend `SteamConfigAdapter` (`adapters/steam_config.py`) for reading the existing shortcut set and writing shortcut
-icons into the grid directory.
+Shortcut creation and every field update go through the frontend `SteamClient.Apps.AddShortcut()` / `Set*` API —
+`AddShortcut` returns the real `appId` directly, so the plugin never computes app IDs itself and never edits
+`shortcuts.vdf` while Steam is running (Steam holds the file in memory and rewrites it from memory, silently clobbering
+external writes — see [shortcuts.vdf is memory-authoritative](#shortcutsvdf-is-memory-authoritative)). The backend
+`SteamConfigAdapter` (`adapters/steam_config.py`) still lays down artwork **files** in the grid directory, including the
+icon PNG; its `shortcuts.vdf` read/write helpers remain in the adapter but are no longer on any live path after the icon
+write moved to `SteamClient.Apps.SetShortcutIcon`.
 
 ### shortcuts.vdf structure
 
@@ -169,27 +189,21 @@ Each entry has these key fields:
 | VDF Field       | Format       | Notes                                                                                                                                                                                                                                                 |
 | --------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `AppName`       | string       | Display name                                                                                                                                                                                                                                          |
-| `Exe`           | string       | **Quoted** path: `"/path/to/exe"`                                                                                                                                                                                                                     |
-| `StartDir`      | string       | **Quoted** path: `"/path/to/dir"`                                                                                                                                                                                                                     |
+| `Exe`           | string       | Executable path. `AddShortcut`-created entries store it **unquoted** (on-device inspection) — the API handles any quoting internally                                                                                                                  |
+| `StartDir`      | string       | Start directory. Stored **unquoted** for `AddShortcut`-created entries                                                                                                                                                                                |
 | `LaunchOptions` | string       | The full launch command the `bin/rom-launcher` exec wrapper runs, e.g. `flatpak run net.retrodeck.retrodeck "/path/to/game.iso"` — or `""` (placeholder) for an uninstalled ROM. No `romm:<id>` marker; ownership is detected by the exe path instead |
 | `appid`         | signed int32 | Assigned by Steam when `AddShortcut` runs; stored as the signed int32 form (`to_signed_app_id`)                                                                                                                                                       |
 | `icon`          | string       | Icon path or hash                                                                                                                                                                                                                                     |
 | `tags`          | object       | Steam collection tags. The plugin manages collections via `collectionStore` (machine-scoped names like `RomM: N64 (steamdeck)`), not by writing this VDF field.                                                                                       |
 
-### AddShortcut vs VDF quoting
+### shortcuts.vdf is memory-authoritative
 
-When the backend `SteamConfigAdapter` writes directly to `shortcuts.vdf`, the `Exe` and `StartDir` fields **must** be
-wrapped in double quotes:
-
-```python
-entry = {
-    "Exe": f'"{exe}"',        # VDF requires quotes
-    "StartDir": f'"{start_dir}"',
-}
-```
-
-When using `SteamClient.Apps.AddShortcut()` (the path shortcut creation goes through), **do NOT quote** — the API adds
-quotes internally.
+While Steam is running, `shortcuts.vdf` is authoritative **in Steam's memory**: Steam rewrites the file from memory
+mid-session and on exit, so any external write to it while Steam runs is silently clobbered. The plugin therefore
+creates and mutates shortcuts only through the `SteamClient` API (`AddShortcut` / `Set*` / `SetShortcutIcon`), never by
+editing `shortcuts.vdf` directly. Pass raw, **unquoted** paths through those APIs — the API adds any quoting internally,
+and on-device inspection confirms `AddShortcut`-created entries are stored unquoted; pre-quoting double-quotes the path
+and breaks launches (see [Exe quoting](#exe-quoting)).
 
 See: `py_modules/adapters/steam_config.py`
 
@@ -213,16 +227,26 @@ the safe behavior on a partial/cancelled run is to delete nothing.
 ## App IDs and Artwork
 
 `SteamClient.Apps.AddShortcut()` returns the real `appId`, so the plugin does **not** compute shortcut app IDs itself —
-there is no CRC32 app-ID generator in the codebase. Steam derives the `appId` from `exe + appName` (CRC32), which is why
-mutating `launchOptions` or `startDir` keeps the same `appId` (see
-[Updating existing shortcuts](#updating-existing-shortcuts)) while changing `exe`/name produces a different one. The
-frontend stores the returned `appId` and the backend persists it as `shortcut_app_id` on the ROM's `roms` row (the
+there is no app-ID generator in the codebase. Steam **assigns** the `appId` at creation and it is stable for the
+shortcut's lifetime, which is why mutating `launchOptions` or `startDir` keeps the same `appId` (see
+[Updating existing shortcuts](#updating-existing-shortcuts)) while delete + recreate yields a new one.
+
+> **Errata (2026-07): the appId is not `CRC32(exe + appName)`.** Earlier docs described the `appId` as
+> `CRC32(exe + appName)`. On-device inspection of 68 live plugin-created shortcuts matched **none** against any CRC32
+> candidate (exe/name variants, quoted/unquoted, with/without a trailing NUL, top bit set), and the live appids are
+> uniformly spread across `[0x80000000, 0xFFFFFFFF]` — consistent with random assignment at creation (and with the
+> community observation that delete + re-add yields a different appid). The load-bearing facts are unchanged: the appId
+> is stable for the shortcut's lifetime (so `launchOptions` / `startDir` edits are appId-safe), delete + recreate yields
+> a new appId, and the plugin's identity model never computes appIds — it records Steam's assigned id in
+> `roms.shortcut_app_id` and detects ownership by the exe path. Only the derivation _mechanism_ was wrong.
+
+The frontend stores the returned `appId` and the backend persists it as `shortcut_app_id` on the ROM's `roms` row (the
 synced-ROM registry; reverse-lookupable by `shortcut_app_id`). The frontend resolves rom_id ↔ appId through the
 backend's `get_app_id_rom_id_map()` callable, which reads that binding.
 
-The only app-ID math the backend does is converting an unsigned Steam app ID to its signed int32 form for
-`shortcuts.vdf` records — `to_signed_app_id(app_id)` in `py_modules/domain/sgdb_artwork.py`. SGDB endpoint/asset-type
-maps live in the same module.
+The signed-int32 helper `to_signed_app_id(app_id)` remains in `py_modules/domain/sgdb_artwork.py` (alongside the SGDB
+endpoint/asset-type maps) for the `shortcuts.vdf` record format, but no longer has a production caller now that the icon
+write goes through `SteamClient` rather than editing the VDF.
 
 ### Artwork file naming
 
@@ -237,8 +261,38 @@ Grid artwork is stored at `userdata/<user_id>/config/grid/`, keyed by the shortc
 | `<appId>_icon.png` | Icon                   |
 
 `ArtworkService` (cover staging/finalisation, renaming the staged cover to `{app_id}p.png`) and `SteamGridService` (SGDB
-hero/logo/grid/icon, writing the icon into the grid dir) own the artwork flow. Icon writes go through
-`SteamConfigAdapter.write_shortcut_icon`.
+hero/logo/grid/icon) own the artwork flow. The icon is a two-step write: `SteamGridService.save_shortcut_icon` writes
+the icon PNG into the grid dir via `SteamConfigAdapter.write_shortcut_icon` and returns its `icon_path`; the frontend
+then points the live shortcut at it with `SteamClient.Apps.SetShortcutIcon(appId, icon_path)`. The backend no longer
+edits the `shortcuts.vdf` `icon` field — Steam is memory-authoritative and clobbered that write, so pointing the
+shortcut must go through `SteamClient` (see
+[shortcuts.vdf is memory-authoritative](#shortcutsvdf-is-memory-authoritative)).
+
+Covers are written into the grid dir server-side as `{app_id}p.png` at each chunk's commit, but Steam resolves each
+fresh shortcut's tile to the default capsule at creation and caches that resolution outside the JS context — a
+JS-context reload does not re-resolve it; only a full client restart does — so a newly-written cover stays unseen until
+the tile is cache-busted. Steam builds the library tile's image URL as `/customimage/{appid}?v={mtime}`, keyed on the
+app overview's `rt_custom_image_mtime` field (the value a client restart normally stamps), so the frontend stamps that
+field itself — `overview.rt_custom_image_mtime = Math.floor(Date.now() / 1000)` — to cache-bust the tile, which then
+picks the cover up on its next render (scrolling the row out and back, or revisiting the library) with no forced global
+re-render. Two stamp passes run, in order of importance:
+
+- **Per-chunk stamping is the primary path — covers appear _during_ the run.** After each chunk's `report_unit_results`
+  ack resolves, the frontend stamps the shortcuts _that chunk_ just created (`stampCoverMtime` in `syncManager.ts`). The
+  ack resolving is the signal that the backend has committed the chunk **and** written its `{app_id}p.png` grid files,
+  so the tile URL now resolves; stamping earlier — at create time — would key the URL at a not-yet-written file and risk
+  Steam caching the 404 in a negative cache. Covers therefore fill in progressively as the run proceeds, and a mid-run
+  pause, cancel, or interrupt leaves every committed-so-far cover visible rather than nothing until the end.
+- **The `sync_complete` sweep is the belt-and-braces net.** At run end the frontend re-stamps the whole created-appId
+  set (the `syncDeltaStore` set, read before the per-run delta is reset; cancelled runs stamp too, since their committed
+  chunks also wrote covers). It catches rebinds (which create no new shortcut but may re-point an existing tile at a
+  fresh cover) and any chunk the per-chunk stamp missed.
+
+Both passes are fail-soft: a missing overview or a throwing call is summarized in a single log line and never breaks the
+sync teardown. A small residue can still stay gray — covers on shortcuts that already existed, or any both passes miss —
+and those resolve the first time the game's page is opened or on the next client restart. (An earlier version fired
+`SteamClient.Apps.ReportLibraryAssetCacheMiss(appId, 0)`, Steam's own per-asset re-resolve signal, but that is a no-op
+for a non-erroring default tile — on-device 2026-07-10.)
 
 ## Key Files
 
@@ -264,9 +318,10 @@ Pre-quoting the exe path in `AddShortcut` or `SetShortcutExe` causes double-quot
 
 ### Empty Set* params after AddShortcut
 
-Calling `Set*` methods too quickly after `AddShortcut` (before the 500ms delay) results in the properties not being
-saved. The shortcut appears in the library but with wrong or missing exe/startDir/launchOptions. Launches fail or open
-the wrong thing.
+Calling `Set*` methods too quickly after `AddShortcut` (before the new app's overview is registered) results in the
+properties not being saved. The shortcut appears in the library but with wrong or missing exe/startDir/launchOptions.
+Launches fail or open the wrong thing. The plugin gates the `Set*` calls on an overview-readiness poll
+(`waitForAppOverview`, 1000ms fallback) rather than a fixed delay.
 
 ### Removal-churn can corrupt shortcut state
 
@@ -276,30 +331,37 @@ the wrong thing.
 has been narrowed. The remaining hazard is **removal-churn**: adding and removing many shortcuts in one pass can corrupt
 Steam's in-memory shortcut state. A Steam restart clears it. The sync engine processes removals before additions to keep
 churn down, and every launch-options write uses the fire-then-poll `setLaunchOptionsConfirmed` so a silently dropped
-write is observable rather than assumed. Only `exe`/name changes still need delete + recreate, because those change the
-`appId`.
+write is observable rather than assumed. Only `exe`/name changes still go through delete + recreate — a fresh
+`AddShortcut`, which yields a new `appId`.
 
 ### AddShortcut timing between shortcuts
 
 When creating multiple shortcuts in a loop, a 50ms delay between each `addShortcut()` call prevents corrupting Steam's
 internal shortcut state. Without this delay, some shortcuts may silently fail to register.
 
-### A per-unit heartbeat timeout must not discard the unit's delivered bindings
+### The apply is chunked; a heartbeat timeout must not discard a chunk's delivered bindings
 
-The per-unit apply pipeline emits `sync_apply_unit`, then waits for the frontend's `report_unit_results` ack. If the
-frontend stops heartbeating for longer than the per-unit timeout (`_UNIT_HEARTBEAT_TIMEOUT_SEC`, 60s — e.g. a unit
-large/slow enough that real heartbeats lag), the wait gives up. But by then the frontend has **already created the Steam
-shortcuts** and will still fire its late `report_unit_results`. Dropping that ack is data loss: the bindings are never
-written to `roms`, so `get_app_id_rom_id_map` doesn't know about the shortcuts, and the next sync re-creates them as
-**duplicates** (an unmapped exe-detected shortcut takes the `addShortcut` branch).
+A unit's emitted shortcuts are split into fixed-size chunks (200,
+[ADR-0023](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0023-chunked-per-unit-apply.md)); the
+pipeline emits one `sync_apply_unit` per chunk (carrying `chunk_index` / `chunk_count` / `chunk_offset` / `unit_total`,
+`shortcuts` = the chunk slice), then waits for the frontend's `report_unit_results` ack — echoing the `chunk_index` back
+— and commits that chunk's `roms` rows durably before emitting the next. A mid-unit crash, cancel, or timeout forfeits
+only the in-flight chunk; every chunk committed before it stays committed. See
+[Backend Architecture — per-unit apply](backend-architecture.md) for the full loop.
+
+If the frontend stops heartbeating for longer than the per-chunk timeout (`_UNIT_HEARTBEAT_TIMEOUT_SEC`, 60s — e.g. a
+chunk slow enough that real heartbeats lag), the wait gives up. But by then the frontend has **already created that
+chunk's Steam shortcuts** and will still fire its late `report_unit_results`. Dropping that ack is data loss: the
+bindings are never written to `roms`, so `get_app_id_rom_id_map` doesn't know about the shortcuts, and the next sync
+re-creates them as **duplicates** (an unmapped exe-detected shortcut takes the `addShortcut` branch).
 
 So a heartbeat **timeout** is handled differently from a **user cancel** (#1052):
 
-- **User cancel** — in-flight work is intentionally discarded. The orchestrator clears `pending_sync` and nulls
-  `unit_complete_event`, so a stray late ack can't commit a cancelled unit.
-- **Heartbeat timeout** — the orchestrator keeps `pending_sync`, flags `unit_abandoned`, and stashes the unit's ROMs in
-  `pending_unit_roms`. The late `report_unit_results` observes the flag and drives `commit_unit_results` itself,
-  persisting the delivered bindings (and metadata from the stash). Do **not** re-clear `pending_sync` on timeout — that
+- **User cancel** — the in-flight chunk is intentionally discarded. The orchestrator clears the staging and nulls
+  `unit_complete_event`, so a stray late ack can't commit a cancelled chunk.
+- **Heartbeat timeout** — the orchestrator keeps the staging, flags `unit_abandoned`, and stashes **this chunk's** ROMs
+  in `pending_unit_roms`. The late `report_unit_results` observes the flag and drives `commit_unit_results` itself,
+  persisting the delivered bindings (and metadata from the stash). Do **not** re-clear the staging on timeout — that
   re-opens the orphan/duplicate loop.
 
 The committed binding self-heals the duplicate hazard: a bound `roms` row is mapped by `getExistingRomMShortcuts` next

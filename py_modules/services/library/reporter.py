@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
 
+    from domain.platform_sync_state import PlatformSyncState
+    from domain.sync_run import SyncRun
     from services.library._state import LibrarySyncStateBox
     from services.protocols import (
         ArtworkManager,
@@ -228,6 +230,13 @@ class SyncReporter:
         refresh + reads commit atomically.
         """
         with self._uow_factory() as uow:
+            # Stale removal only UNBINDS the row (ADR-0007 keeps it), so a
+            # platform's persisted-row count is unchanged and its completion stamp
+            # (ADR-0023) stays valid — deliberately NOT invalidated here. If the
+            # server actually dropped ROMs, the next skip catches it anyway: the
+            # dropped ROM lowers RomM's platform rom_count, which no longer matches
+            # the stamp's rom_count (nor the persisted-row count), so the platform
+            # full-fetches. So the stale path needs no stamp invalidation.
             for rid in stale_rom_ids or []:
                 rom = uow.roms.get(rid)
                 if rom is None or rom.shortcut_app_id is None:
@@ -293,11 +302,16 @@ class SyncReporter:
 
         total = await self._loop.run_in_executor(None, self._count_bound_roms)
         if cancelled:
+            # A heartbeat-timeout run routes through this same cancelled finalize,
+            # so key the leading word on the box's run_interrupted flag — the frame
+            # then reads "interrupted" instead of blaming the user's Cancel button
+            # (stage stays CANCELLED; last_attempt already reads "interrupted").
+            lead = "Sync interrupted" if self._sync_state.run_interrupted else "Sync cancelled"
             await self._emit_progress(
                 SyncStage.CANCELLED,
                 current=total_games,
                 total=total,
-                message=f"Sync cancelled: {total_games} of {total} games processed",
+                message=f"{lead}: {total_games} of {total} games processed",
                 running=False,
             )
         else:
@@ -318,10 +332,10 @@ class SyncReporter:
 
     # ── Report unit results (per-unit pipeline) ──────────────────
 
-    def _commit_unit_results_io(self, rom_id_to_app_id, unit_roms):
-        """Finalise artwork names, then persist EVERY fetched ROM of the unit.
+    def _commit_unit_results_io(self, rom_id_to_app_id, unit_roms, platform_stamp=None):
+        """Finalise artwork names, then persist EVERY fetched ROM of the chunk.
 
-        Group-aware commit (ADR-0021): the unit's whole live RomM fetch
+        Group-aware commit (ADR-0021): this chunk's slice of the live RomM fetch
         (*unit_roms*) is upserted — one ``roms`` row per sibling for its
         identity + version metadata — while only the acked representatives
         carry a Steam-shortcut binding. A non-representative sibling keeps
@@ -337,6 +351,11 @@ class SyncReporter:
         (outside any UoW); the final paths are collected, then one short write
         UoW upserts every ROM (Rom row first, cached metadata second — FK-safe),
         so a ROM and its metadata land atomically.
+
+        ``platform_stamp`` (set by the orchestrator on the final chunk of a
+        platform unit, ADR-0023) is saved inside that same write UoW, so the
+        per-platform completion stamp commits atomically with the chunk's rom
+        upserts — the platform is stamped complete iff its last chunk is durable.
         """
         grid = self._steam_config.grid_dir()
         box = self._sync_state
@@ -361,6 +380,8 @@ class SyncReporter:
             for raw in unit_roms:
                 if "id" in raw:
                     self._persist_synced_rom(uow, int(raw["id"]), binding, finalized, roms_by_id)
+            if platform_stamp is not None:
+                uow.platform_sync_state.save(platform_stamp)
 
         steam_input_mode = self._settings.get("steam_input_mode", "default")
         if steam_input_mode != "default" and binding:
@@ -452,39 +473,41 @@ class SyncReporter:
             return int(existing_value)
         return None
 
-    async def report_unit_results(self, rom_id_to_app_id, run_id, unit_id):
-        """Frontend-Callable: ack that this unit's shortcuts have been applied.
+    async def report_unit_results(self, rom_id_to_app_id, run_id, unit_id, chunk_index):
+        """Frontend-Callable: ack that this apply chunk's shortcuts are applied.
 
-        First validates the ack's identity against the active run/unit: the
-        ``run_id`` must match ``current_sync_id`` and ``unit_id`` must match
-        the dispatched ``active_unit_id`` (#1041). A late ack from a
-        **cancelled** run that arrives while a **new** run is in flight, or a
-        stray ack for a different unit, is ignored — neither recorded, signalled,
-        nor committed — so it can never be credited to the wrong unit/run.
-        Logged at debug, returns ``ignored: True`` with ``count: 0``.
+        First validates the ack's identity against the active run/unit/chunk: the
+        ``run_id`` must match ``current_sync_id``, ``unit_id`` must match the
+        dispatched ``active_unit_id`` (#1041), and ``chunk_index`` must match the
+        dispatched ``active_chunk_index``. A late ack from a **cancelled** run
+        that arrives while a **new** run is in flight, a stray ack for a different
+        unit, or an ack for a stale chunk is ignored — neither recorded,
+        signalled, nor committed — so it can never be credited to the wrong
+        unit/run/chunk. Logged at debug, returns ``ignored: True`` with
+        ``count: 0``.
 
         For a matching ack, records the rom_id→app_id mapping into the state
-        box, then routes by the unit's coordination state:
+        box, then routes by the chunk's coordination state:
 
         * The orchestrator is still waiting (``unit_complete_event`` live):
-          signal the event and let the orchestrator drive the per-unit
+          signal the event and let the orchestrator drive the per-chunk
           commit. The happy path — unchanged.
-        * The orchestrator abandoned the unit on a heartbeat timeout
+        * The orchestrator abandoned the chunk on a heartbeat timeout
           (``unit_abandoned``): the frontend already created the Steam
           shortcuts, so commit the delivered bindings here rather than
-          discard them (#1052). Passes the whole stashed unit fetch
+          discard them (#1052). Passes the stashed chunk fetch
           (``box.pending_unit_roms``) to ``commit_unit_results`` — every
-          fetched sibling is upserted (identity + metadata, the ``metadatum``
-          source) and only the acked representatives bind — then clears the
-          abandoned-unit stash.
-        * Neither (a stray duplicate ack for the active unit): no-op, so
+          fetched sibling of the chunk is upserted (identity + metadata, the
+          ``metadatum`` source) and only the acked representatives bind — then
+          clears the abandoned-chunk stash.
+        * Neither (a stray duplicate ack for the active chunk): no-op, so
           nothing is double-committed.
         """
         box = self._sync_state
-        if not self._ack_matches_active_unit(run_id, unit_id):
+        if not self._ack_matches_active_unit(run_id, unit_id, chunk_index):
             self._logger.debug(
-                f"Ignoring unit ack for run={run_id!r} unit={unit_id!r}: "
-                f"active run={box.current_sync_id!r} unit={box.active_unit_id!r}"
+                f"Ignoring unit ack for run={run_id!r} unit={unit_id!r} chunk={chunk_index!r}: "
+                f"active run={box.current_sync_id!r} unit={box.active_unit_id!r} chunk={box.active_chunk_index!r}"
             )
             return {"success": True, "count": 0, "ignored": True}
 
@@ -495,48 +518,61 @@ class SyncReporter:
             await self.commit_unit_results(dict(rom_id_to_app_id), box.pending_unit_roms)
             box.unit_abandoned = False
             box.pending_unit_roms = []
-            box.pending_sync = {}
-            box.pending_all_roms = {}
             box.last_unit_results = None
-            box.active_unit_id = None
+            box.clear_active_unit()
 
         self._logger.info(f"Unit results acknowledged: {len(rom_id_to_app_id)} shortcuts")
         return {"success": True, "count": len(rom_id_to_app_id)}
 
-    def _ack_matches_active_unit(self, run_id, unit_id) -> bool:
-        """True when the ack's run/unit identity matches the dispatched unit.
+    def _ack_matches_active_unit(self, run_id, unit_id, chunk_index) -> bool:
+        """True when the ack's run/unit/chunk identity matches the dispatched chunk.
 
-        The frontend echoes back the ``run_id`` + ``unit_id`` carried in the
-        ``sync_apply_unit`` event. Both are compared by string value: the run
-        id is a UUID string, and the unit id is JSON-shaped (a number for a
-        platform, a string for a collection) so ``str()`` coercion on both
-        sides is robust to int-vs-str drift on the wire. An ack is rejected
-        when there is no active unit (``active_unit_id is None`` — the unit was
-        cancelled or already committed), so a stray late ack from a cancelled
-        run no-ops instead of being credited to a fresh run (#1041).
+        The frontend echoes back the ``run_id`` + ``unit_id`` + ``chunk_index``
+        carried in the ``sync_apply_unit`` event. ``run_id`` and ``unit_id`` are
+        compared by string value: the run id is a UUID string, and the unit id is
+        JSON-shaped (a number for a platform, a string for a collection) so
+        ``str()`` coercion on both sides is robust to int-vs-str drift on the
+        wire; ``chunk_index`` is compared as an int. An ack is rejected when there
+        is no active unit/chunk (``active_unit_id`` / ``active_chunk_index`` is
+        ``None`` — the unit was cancelled or already committed), so a stray late
+        ack from a cancelled run no-ops instead of being credited to a fresh run
+        (#1041).
         """
         box = self._sync_state
-        if box.active_unit_id is None:
+        if box.active_unit_id is None or box.active_chunk_index is None:
             return False
-        return str(run_id) == str(box.current_sync_id) and str(unit_id) == str(box.active_unit_id)
+        return (
+            str(run_id) == str(box.current_sync_id)
+            and str(unit_id) == str(box.active_unit_id)
+            and int(chunk_index) == box.active_chunk_index
+        )
 
-    async def commit_unit_results(self, rom_id_to_app_id, unit_roms):
-        """Per-unit commit: cover-path finalize then atomic ``roms`` + metadata upsert.
+    async def commit_unit_results(self, rom_id_to_app_id, unit_roms, platform_stamp: PlatformSyncState | None = None):
+        """Per-chunk commit: cover-path finalize then atomic ``roms`` + metadata upsert.
 
-        Called once the frontend has acked the unit's shortcuts — by the
+        Called once the frontend has acked an apply chunk's shortcuts — by the
         orchestrator on the happy path, or by :meth:`report_unit_results`
         itself on the heartbeat-timeout late-ack path (#1052). ``unit_roms`` is
-        the whole unit's live RomM fetch: a ``roms`` row is upserted for EVERY
-        sibling (identity + version metadata, ADR-0021), but only the acked
-        representatives carry a binding. The upsert and the cached-metadata
-        stamp land in one write UoW (Rom row first, then ``rom_metadata`` —
-        FK-safe), so a ROM and its metadata are always consistent across a crash.
+        this chunk's slice of the live RomM fetch: a ``roms`` row is upserted for
+        EVERY sibling in the slice (identity + version metadata, ADR-0021), but
+        only the acked representatives carry a binding. The upsert and the
+        cached-metadata stamp land in one write UoW (Rom row first, then
+        ``rom_metadata`` — FK-safe), so a ROM and its metadata are always
+        consistent across a crash, and each committed chunk is durable on its own.
+
+        ``platform_stamp`` is passed only by the orchestrator on the **final
+        chunk of a platform unit** (ADR-0023); it rides the same write UoW so the
+        per-platform completion stamp is atomic with the chunk's rom upserts. The
+        heartbeat-timeout late-ack path never sets it — a timed-out platform is
+        incomplete and must not be stamped.
 
         Records every bound appId in the shared box so the stale-removal scan
         excludes appIds this run committed, whichever path drove the commit —
         a new rom_id reusing an old appId must not look stale (#1036).
         """
-        await self._loop.run_in_executor(None, self._commit_unit_results_io, rom_id_to_app_id, unit_roms)
+        await self._loop.run_in_executor(
+            None, self._commit_unit_results_io, rom_id_to_app_id, unit_roms, platform_stamp
+        )
         self._sync_state.committed_app_ids.update(int(aid) for aid in rom_id_to_app_id.values())
 
     # ── Registry queries ─────────────────────────────────────────
@@ -573,16 +609,23 @@ class SyncReporter:
     # ── Cache / stats ────────────────────────────────────────────
 
     def clear_sync_cache(self):
-        """Force a full re-fetch on the next sync by clearing the completed-run history.
+        """Force a full re-fetch on the next sync by clearing the sync checkpoints.
 
-        The incremental-skip gate (fetcher) and ``get_sync_stats`` both derive
-        ``last_sync`` from the newest completed ``SyncRun``; deleting the
-        completed runs in a short write UoW resets that read to ``None`` so every
-        platform full-fetches next time (and the "Force Full Sync" button hides
-        until a fresh run completes).
+        The incremental-skip gate (fetcher) keys off two checkpoints: the newest
+        completed ``SyncRun`` (the library-wide ``last_sync``, also read by
+        ``get_sync_stats``) and the per-platform ``PlatformSyncState`` completion
+        stamps (ADR-0023). "Force Full Sync" must reset BOTH — clearing only the
+        runs would leave the per-platform stamps in place, and each stamp is its
+        own ``effective_last_sync`` that would still skip an unchanged platform.
+        Deleting the run history (every terminal run, not only completed ones, so
+        no stale cancelled/interrupted/errored run lingers as the last-attempt "Last
+        sync" hint) and clearing every stamp in one short write UoW resets both reads so
+        every platform full-fetches next time (and "Last sync" honestly reads
+        "Never" until a fresh run completes).
         """
         with self._uow_factory() as uow:
-            uow.sync_runs.delete_completed()
+            uow.sync_runs.delete_history()
+            uow.platform_sync_state.clear()
         self._logger.info("Sync cache cleared — next sync will do a full fetch")
         return {"success": True, "message": "Next sync will do a full fetch"}
 
@@ -596,26 +639,48 @@ class SyncReporter:
             )
         else:
             enabled_collection_count = 0
-        last_sync, rom_count = self._read_sync_stats_io()
+        last_sync, last_attempt, rom_count = self._read_sync_stats_io()
         return {
             "last_sync": last_sync,
+            "last_attempt": last_attempt,
             "platforms": enabled_platform_count,
             "collections": enabled_collection_count,
             "roms": rom_count,
             "total_shortcuts": rom_count,
         }
 
-    def _read_sync_stats_io(self) -> tuple[str | None, int]:
-        """Read ``(last_sync_iso, bound_rom_count)`` from SQLite.
+    def _read_sync_stats_io(self) -> tuple[str | None, dict[str, str] | None, int]:
+        """Read ``(last_sync_iso, last_attempt, bound_rom_count)`` from SQLite.
 
-        ``last_sync`` is the ``finished_at`` of the latest completed
-        ``SyncRun``; the ROM count is the bound-shortcut count in ``roms``.
+        ``last_sync`` is the ``finished_at`` of the latest completed ``SyncRun``;
+        ``last_attempt`` surfaces the newest cancelled/interrupted/errored run when
+        it is newer than that (see :meth:`_last_attempt`); the ROM count is the
+        bound-shortcut count in ``roms``.
         """
         with self._uow_factory() as uow:
-            latest = uow.sync_runs.get_latest_completed()
-            last_sync = latest.finished_at if latest is not None else None
+            completed = uow.sync_runs.get_latest_completed()
+            terminal = uow.sync_runs.get_latest_terminal()
             rom_count = sum(1 for rom in uow.roms.iter_all() if rom.shortcut_app_id is not None)
-        return last_sync, rom_count
+        last_sync = completed.finished_at if completed is not None else None
+        return last_sync, self._last_attempt(completed, terminal), rom_count
+
+    @staticmethod
+    def _last_attempt(completed: SyncRun | None, terminal: SyncRun | None) -> dict[str, str] | None:
+        """The newest cancelled/interrupted/errored run, but only when it is newer than the last completed one.
+
+        A run that ended without completing (cancelled, interrupted, or errored)
+        still applied shortcuts; without this the last-completed-only ``last_sync``
+        read reports "Never" even after thousands of games synced. Returns ``None``
+        when the newest terminal run completed cleanly (``last_sync`` already covers
+        it) or when a completed run is at least as recent as the attempt.
+        ``finished_at`` is guaranteed set on a terminal run
+        (mark_cancelled/mark_interrupted/mark_errored stamp it).
+        """
+        if terminal is None or terminal.status == "completed":
+            return None
+        if completed is not None and (terminal.finished_at or "") <= (completed.finished_at or ""):
+            return None
+        return {"finished_at": terminal.finished_at or "", "status": terminal.status}
 
     def get_rom_by_steam_app_id(self, app_id):
         return self._read_rom_by_app_id_io(int(app_id))

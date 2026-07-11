@@ -9,9 +9,10 @@ One Repository per aggregate root, not per table. ``RomSaveStateRepository``
 spans two tables (``rom_save_states`` + ``rom_save_files``); that is an adapter
 concern — services see a single aggregate.
 
-The 9 Protocols match the 9 aggregate roots settled in ADR-0003: ``Rom``,
+The Protocols match the aggregate roots settled in ADR-0003 — ``Rom``,
 ``RomInstall``, ``RomMetadata``, ``Playtime``, ``RomSaveState``, ``BiosFile``,
-``FirmwareCacheEntry``, ``SyncRun``, and the ``kv_config`` key-value surface.
+``FirmwareCacheEntry``, ``SyncRun`` — plus ``PlatformSyncState`` (the per-platform
+completion stamp, ADR-0023) and the ``kv_config`` key-value surface.
 ``SyncSettings``/``Platform``/``Device`` are NOT repositories — ADR-0003 dropped
 those aggregates.
 
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
     from domain.bios_file import BiosFile
     from domain.firmware_cache import FirmwareCacheEntry
+    from domain.platform_sync_state import PlatformSyncState
     from domain.playtime import PendingSessionRow, Playtime
     from domain.rom import Rom
     from domain.rom_install import RomInstall
@@ -143,7 +145,26 @@ class RomMetadataRepository(Protocol):
         ...
 
     def iter_all(self) -> Iterator[tuple[int, RomMetadata]]:
-        """Iterate ``(rom_id, metadata)`` for every ROM. (metadata.py get_all_metadata_cache)"""
+        """Iterate ``(rom_id, metadata)`` for every ROM.
+
+        No production caller since the paged cache load (#1025) replaced the
+        full-scan read with :meth:`iter_page` + :meth:`count`; retained for
+        adapter/fake symmetry with the other repositories and exercised by the
+        SQLite adapter's own tests.
+        """
+        ...
+
+    def iter_page(self, offset: int, limit: int) -> Iterator[tuple[int, RomMetadata]]:
+        """Iterate ``(rom_id, metadata)`` for one ``rom_id``-ordered page.
+
+        Backs the paged frontend cache load so a large library never dumps every
+        row through the size-limited callable bridge in one response (#1025).
+        (metadata.py get_metadata_cache_page)
+        """
+        ...
+
+    def count(self) -> int:
+        """Return the number of cached metadata rows. (metadata.py get_metadata_cache_page total)"""
         ...
 
 
@@ -273,16 +294,65 @@ class SyncRunRepository(Protocol):
         """Return the newest run with status ``completed``, or ``None``. (library/reporter.py last_sync read)"""
         ...
 
+    def get_latest_terminal(self) -> SyncRun | None:
+        """Return the newest run in a terminal state, or ``None``.
+
+        Terminal = ``completed`` / ``cancelled`` / ``interrupted`` / ``errored``,
+        ordered by ``finished_at``. Backs the "Last sync" last-attempt hint: when
+        the newest terminal run did NOT complete, it is surfaced so a cancelled,
+        interrupted, or crash-resumed run reads as an attempt instead of "Never". (library/reporter.py)
+        """
+        ...
+
     def get_running(self) -> SyncRun | None:
         """Return any run with status ``running``, or ``None`` (is-a-sync-running check)."""
         ...
 
-    def delete_completed(self) -> None:
-        """Delete every ``completed`` run so ``get_latest_completed`` returns ``None``.
+    def delete_history(self) -> None:
+        """Delete every terminal run (keeping any ``running`` one) so both the
+        ``last_sync`` and last-attempt reads return ``None``.
 
-        Backs the "Force Full Sync" reset: clearing the completed-run history
-        resets the ``last_sync`` read the incremental-skip gate keys off, forcing
-        the next sync to full-fetch every platform. (library/reporter.py)
+        Backs the "Force Full Sync" reset: clearing the run history resets the
+        ``last_sync`` the incremental-skip gate keys off (forcing a full re-fetch)
+        AND drops the accumulated cancelled/interrupted/errored runs the last-attempt
+        hint reads — otherwise a stale cancelled run would surface as the "Last sync"
+        state right after a reset. A ``running`` row is preserved so a reset can
+        never orphan an in-flight run. (library/reporter.py)
+        """
+        ...
+
+
+class PlatformSyncStateRepository(Protocol):
+    """Persistence seam for the ``PlatformSyncState`` aggregate (per-platform completion stamp).
+
+    Identity is the ``platform_slug``. Backs the incremental-skip gate's honoring
+    of durable per-platform progress a cancelled/crashed run leaves behind
+    (ADR-0023).
+    """
+
+    def get(self, platform_slug: str) -> PlatformSyncState | None:
+        """Return the completion stamp for *platform_slug*, or ``None``. (library/fetcher.py skip gate)"""
+        ...
+
+    def save(self, state: PlatformSyncState) -> None:
+        """Upsert the completion stamp. (library/reporter.py final-chunk commit)"""
+        ...
+
+    def delete(self, platform_slug: str) -> None:
+        """Drop *platform_slug*'s stamp so that one platform full-fetches next run.
+
+        A no-op when no stamp exists. Called at a platform unit's apply start
+        (library/sync_orchestrator.py) so an interrupted re-apply leaves no stale
+        stamp, and by the local destructive flows (services/shortcut_removal.py)
+        that unbind a platform's shortcuts outside a sync (ADR-0023).
+        """
+        ...
+
+    def clear(self) -> None:
+        """Drop every stamp so no platform skips next run.
+
+        Backs the "Force Full Sync" reset alongside the completed-run history:
+        clearing the stamps forces every platform to full-fetch. (library/reporter.py)
         """
         ...
 

@@ -30,6 +30,8 @@ import {
   logError,
 } from "../api/backend";
 import { formatBytes } from "../utils/formatters";
+import { estimateApplySeconds, formatDuration } from "../utils/syncEstimate";
+import { observeApplyProgress, displayedEtaSeconds, resetEta, formatEtaCountdown } from "../utils/syncEta";
 import { getSyncProgress, setSyncProgress as setStoredSyncProgress, onSyncProgressChange } from "../utils/syncProgress";
 import { scrollToTop } from "../utils/scrollHelpers";
 import { getDownloadState } from "../utils/downloadStore";
@@ -60,6 +62,7 @@ import type {
 } from "../types";
 import { detach } from "../utils/detach";
 import { withTimeout } from "../utils/withTimeout";
+import { wrapText } from "../utils/textStyles";
 
 type Page = "settings" | "library" | "data" | "downloads" | "system";
 
@@ -142,13 +145,11 @@ function stageLabel(stage: SyncProgress["stage"]): string {
 }
 
 function formatProgressText(progress: SyncProgress | null): string {
+  // The bare fine-detail message. The coarse "step/totalSteps" is already shown
+  // on the bar row (sync-step), so it is not repeated here. The message wraps to
+  // up to two lines in the QAM via CSS rather than being clipped mid-word.
   if (!progress) return "Syncing...";
-  const step = progress.step && progress.totalSteps ? `[${progress.step}/${progress.totalSteps}] ` : "";
-  const msg = progress.message || "Syncing...";
-  // Truncate to ~40 chars to prevent multi-line jumping in the QAM panel
-  const maxLen = 40 - step.length;
-  const truncated = msg.length > maxLen ? msg.slice(0, maxLen - 1) + "\u2026" : msg;
-  return step + truncated;
+  return progress.message || "Syncing...";
 }
 
 function formatLastSync(iso: string | null): string {
@@ -167,6 +168,42 @@ function formatLastSync(iso: string | null): string {
   } catch {
     return iso;
   }
+}
+
+/** Wall-clock ``HH:MM`` for the "last attempt" hint; the raw ISO on a bad parse. */
+function formatClockTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/** The "Last sync" field value. A completed run shows its relative time (plus a
+ *  subtle newer cancelled/crashed attempt line); with no completed run ever, a
+ *  cancelled/crashed attempt is surfaced so it never reads a bare "Never" after
+ *  thousands of games synced (#1367); otherwise "Never". */
+function lastSyncValue(stats: SyncStats): ReactNode {
+  if (stats.last_sync) {
+    return (
+      <span style={{ fontSize: "12px", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+        <span>{formatLastSync(stats.last_sync)}</span>
+        {stats.last_attempt && (
+          <span style={{ opacity: 0.6 }}>
+            last attempt: {formatClockTime(stats.last_attempt.finished_at)} ({stats.last_attempt.status})
+          </span>
+        )}
+      </span>
+    );
+  }
+  if (stats.last_attempt) {
+    return (
+      <span style={{ fontSize: "12px" }}>
+        {formatClockTime(stats.last_attempt.finished_at)} ({stats.last_attempt.status})
+      </span>
+    );
+  }
+  return <span style={{ fontSize: "12px" }}>Never</span>;
 }
 
 function formatPreviewDescription(s: SyncPreviewSummary): string {
@@ -196,6 +233,22 @@ function formatPreviewDescription(s: SyncPreviewSummary): string {
   return sections.length > 0 ? sections.join("; ") : "Everything is up to date.";
 }
 
+/**
+ * Expected apply seconds for a preview — the WALK cost, not the raw delta. The
+ * apply re-walks every non-skipped item: an un-stamped platform's "unchanged"
+ * ROMs still get cheap update touches, not free skips, so pricing only new +
+ * changed undershoots badly on a resume (on-device: "~2 min" for 153 added while
+ * the apply walked ~3100 items). Pricing all non-new items (changed + unchanged)
+ * at the update rate gives an honest upper bound — platforms skipped by their
+ * completion stamp make it overshoot, which the "up to ~X"/"~X min" wording
+ * covers, and the live countdown corrects downward within seconds of applying.
+ * Used for BOTH the preview "Estimated time" row and the handleApply seed, so the
+ * number the user approves is the number the run starts with.
+ */
+function previewApplySeconds(s: SyncPreviewSummary): number {
+  return estimateApplySeconds(s.new_count, s.changed_count + s.unchanged_count);
+}
+
 export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   const [stats, setStats] = useState<SyncStats | null>(null);
   const [connected, setConnected] = useState<boolean | null | BackendFailed>(null);
@@ -207,6 +260,12 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   // sync_in_progress reject and look like an instant finish (#1202, RC-B).
   const [cancelling, setCancelling] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
+  // A dumb mirror of syncEta's live countdown (seconds), or null when not measured
+  // yet / between runs. syncEta owns the sticky deadline; the impure now-read that
+  // resolves it to seconds lives in the store subscriber (an event handler), NOT
+  // the render — the render must stay pure. Progress frames drive the subscriber,
+  // so the countdown ticks per frame exactly as before.
+  const [liveEtaDisplay, setLiveEtaDisplay] = useState<number | null>(null);
   const [status, setStatus] = useState("");
   const [preview, setPreview] = useState<SyncPreview | null>(null);
   const [skipPreview, setSkipPreview] = useState(false);
@@ -313,8 +372,40 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     // Backend is authoritative for in-flight sync state. Seed the module
     // store from get_sync_status() so a QAM close/reopen recovers the live
     // run rather than guessing from the event-fed store alone.
+    //
+    // But the backend snapshot is COARSE mid-apply: the fine within-unit
+    // counters (current/total/message) are advanced frontend-side per item and
+    // never round-trip to the backend, and etaSeconds is frontend-computed from
+    // sync_plan (never sent by the backend). A blind replace on remount would
+    // wipe the fine line + ETA until the next chunk boundary. So when the
+    // backend reports the SAME in-flight run the module store already tracks,
+    // MERGE: keep the store's fine fields + etaSeconds, take the backend's
+    // authoritative running/stage/runId. Run identity is compared via runId when
+    // both sides carry it; when the backend is idle or the runs differ, keep the
+    // replace behavior (the store holds nothing worth preserving).
     getSyncStatus()
-      .then((progress) => {
+      .then((backendProgress) => {
+        const stored = getSyncProgress();
+        const sameRun = backendProgress.runId && stored.runId ? backendProgress.runId === stored.runId : true;
+        const isSameLiveRun = backendProgress.running && stored.running && sameRun;
+        // Same live run: spread the store (keeping its fine fields + etaSeconds)
+        // and overlay the backend's authoritative running/stage/runId. The
+        // conditional spreads keep the optional stage/runId out when the backend
+        // omits them (exactOptionalPropertyTypes). One exception: "applying" is
+        // frontend-authoritative (the backend never emits it — its last frame is
+        // the fetch anchor), so a stored applying stage survives the seed; taking
+        // the backend's stale "fetching" would drop the coarse-bar interpolation
+        // and flip the label until the next per-item update. Otherwise replace
+        // wholesale.
+        const backendStage = stored.stage === "applying" ? undefined : backendProgress.stage;
+        const progress: SyncProgress = isSameLiveRun
+          ? {
+              ...stored,
+              running: backendProgress.running,
+              ...(backendStage !== undefined ? { stage: backendStage } : {}),
+              ...(backendProgress.runId !== undefined ? { runId: backendProgress.runId } : {}),
+            }
+          : backendProgress;
         setStoredSyncProgress(progress);
         if (progress.running) {
           setSyncing(true);
@@ -329,18 +420,40 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     // in-progress UI is torn down ONLY on a terminal stage, never on a bare
     // running:false (which can transiently race a fresh run's first event).
     const unsubProgress = onSyncProgressChange(() => {
+      // The local mirror must update FIRST and unconditionally — it is what
+      // drives the re-render. Everything after it is derived work (terminal
+      // teardown, estimator feeding, ETA state) that must never be able to break
+      // the re-render chain (on-device freeze, cause not yet reproduced in tests).
       const progress = getSyncProgress();
       setSyncProgress(progress);
-      if (isTerminalStage(progress.stage)) {
-        setSyncing(false);
-        setLoading(false);
-        // True terminal reached — re-arm the button out of any "Cancelling…"
-        // drain state (#1202, RC-B).
-        setCancelling(false);
-        showTransientStatus(progress.message || "Sync finished");
-        getSyncStats()
-          .then(setStats)
-          .catch((e) => logError(`Failed to refresh sync stats: ${e}`));
+      try {
+        if (isTerminalStage(progress.stage)) {
+          // Tear down the run's live-ETA state (deadline included) so the next run
+          // measures fresh, and clear the display mirror.
+          resetEta();
+          setLiveEtaDisplay(null);
+          setSyncing(false);
+          setLoading(false);
+          // True terminal reached — re-arm the button out of any "Cancelling…"
+          // drain state (#1202, RC-B).
+          setCancelling(false);
+          showTransientStatus(progress.message || "Sync finished");
+          getSyncStats()
+            .then(setStats)
+            .catch((e) => logError(`Failed to refresh sync stats: ${e}`));
+        } else {
+          // Feed the live-rate estimator from applying frames only (fetch frames
+          // carry page/cover counters, not item progress). syncEta re-anchors its
+          // sticky deadline internally; then mirror the current countdown into
+          // state here — the impure now-read must live in this subscriber (an
+          // event handler), never in render, which must stay pure.
+          if (progress.stage === "applying" && progress.step !== undefined && progress.current !== undefined) {
+            observeApplyProgress(progress.step, progress.current, Date.now());
+          }
+          setLiveEtaDisplay(displayedEtaSeconds(Date.now()));
+        }
+      } catch (e) {
+        logError(`sync-progress subscriber failed: ${e}`);
       }
     });
 
@@ -437,6 +550,11 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   const handleApply = async () => {
     if (!preview) return;
     const previewId = preview.preview_id;
+    // Seed the apply ETA from the walk cost (shared with the preview row via
+    // previewApplySeconds) so the number the user approved is the run's seed. It
+    // lands in the optimistic store write below, so the sync_plan listener sees an
+    // etaSeconds already present and leaves its cruder total_roms bound off.
+    const etaSeconds = previewApplySeconds(preview.summary);
     // Clear any stale cancel flag before the apply run starts (#1198). A Cancel
     // in the apply window reads "" from the sync_progress store until the
     // backend stamps the run id, which the backend treats as an unconditional
@@ -446,7 +564,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     setLoading(true);
     setSyncing(true);
     setCancelling(false);
-    setStoredSyncProgress({ running: true, stage: "applying", message: "Applying changes..." });
+    setStoredSyncProgress({ running: true, stage: "applying", message: "Applying changes...", etaSeconds });
     try {
       const result = await syncApplyDelta(previewId);
       if (!result.success) {
@@ -503,14 +621,45 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     }
   };
 
-  // Two-level progress. The main determinate bar tracks COARSE unit
-  // progress (step / totalSteps); 0/0 means the run hasn't reached a unit
-  // yet, so the bar goes indeterminate. Steam's ProgressBarWithInfo
-  // nProgress uses percentage (0-100), not fraction (0-1).
+  // Two-level progress. The main determinate bar tracks COARSE unit progress
+  // but INTERPOLATES within the running unit so a large unit (e.g. 2091 items at
+  // step 2/8) doesn't sit frozen: the bar fills from the step's floor
+  // ((step-1)/totalSteps) toward the next notch as the unit's items are applied.
+  // 0/0 totalSteps means the run hasn't reached a unit yet → indeterminate.
+  // ``nProgress`` is a percentage (0-100), not a fraction.
+  //
+  // While actively working a unit (``fetching``/``applying``) the current unit
+  // is not yet done, so the completed count is ``step - 1``; the terminal-ish
+  // stages (``finalizing``/``done``) carry ``step == totalSteps`` as a
+  // completed count, so they keep the full ``step`` and the bar reads 100%.
+  // The within-unit fill is taken ONLY from the ``applying`` stage: the fetch
+  // and cover frames also carry current/total (to drive the fine line), and
+  // letting those advance the coarse bar would make it jump backwards at each
+  // fetch→cover→apply boundary of the same unit. During fetch the bar therefore
+  // rests at the unit's floor and only the fine line moves.
+  const step = syncProgress?.step ?? 0;
+  const activeUnit = syncProgress?.stage === "fetching" || syncProgress?.stage === "applying";
+  const completedSteps = activeUnit ? Math.max(0, step - 1) : step;
+  const withinUnitFraction =
+    syncProgress?.stage === "applying" && syncProgress.current && syncProgress.total
+      ? syncProgress.current / syncProgress.total
+      : 0;
   const coarseFraction = syncProgress?.totalSteps
-    ? ((syncProgress.step ?? 0) / syncProgress.totalSteps) * 100
+    ? Math.max(0, Math.min(100, ((completedSteps + withinUnitFraction) / syncProgress.totalSteps) * 100))
     : undefined;
   const hasFineDetail = !!(syncProgress?.total && syncProgress.message);
+
+  // Estimated-time readout for the in-flight run. Prefer the live measured
+  // countdown ("~9 min left") once the estimator has a rate; before that, fall
+  // back to the static seed carried on the store as an upper bound ("up to
+  // ~X min"). Absent both, the row is omitted (honest silence).
+  const staticEtaSeconds = syncProgress?.etaSeconds;
+  let etaText: string | null = null;
+  if (liveEtaDisplay !== null) {
+    etaText = formatEtaCountdown(liveEtaDisplay);
+  } else if (staticEtaSeconds !== undefined) {
+    etaText = `up to ${formatDuration(staticEtaSeconds)}`;
+  }
 
   const activeDownloads = downloads.filter((d) => d.status === "queued" || d.status === "downloading");
   const completedDownloads = downloads.filter(
@@ -521,6 +670,26 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   // Sync is unavailable when the server test failed OR the plugin backend never
   // started — both gate the Sync buttons off.
   const connectionUnavailable = connected === false || connected === "backend_failed";
+
+  // The stamp/chunk sync model makes every re-sync an effective resume: a
+  // cancelled or interrupted run's committed chunks survive on disk, so the next
+  // run's incremental skip picks up where it stopped. ``last_attempt`` is
+  // non-null exactly when the newest terminal run did NOT complete. "errored"
+  // stays "Sync Library": an errored run often fails before applying anything
+  // (e.g. a config error), so "resume" isn't the right mental model. A completed
+  // sync clears last_attempt on the stats refresh, flipping the label back.
+  //
+  // But "resume" only holds while partial progress actually exists on disk. If
+  // the user removed all shortcuts after an incomplete run (e.g. DangerZone
+  // "remove all"), there are zero bound shortcuts and the next run is a full
+  // fresh import — nothing to resume — so the button must honestly read "Sync
+  // Library" again. ``stats.roms`` is the bound-shortcut count (registry-derived).
+  const incompleteAttempt =
+    stats?.last_attempt?.status === "interrupted" || stats?.last_attempt?.status === "cancelled";
+  // ``incompleteAttempt`` being true narrows ``stats`` non-null (it dereferenced
+  // stats.last_attempt), and ``roms`` is a required number — no ``?.``/``??`` needed.
+  const canResume = incompleteAttempt && stats.roms > 0;
+  const syncButtonLabel = canResume ? "Resume Sync" : "Sync Library";
 
   if (versionError) {
     return <VersionErrorCard message={versionError} compact />;
@@ -536,10 +705,27 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
       preview.summary.new_count + preview.summary.changed_count + preview.summary.remove_count > 0 ||
       !!(preview.summary.collection_diff?.added.length || preview.summary.collection_diff?.removed.length) ||
       preview.summary.platform_collection_diff?.has_changes;
+    // Walk cost, shared with the handleApply seed (previewApplySeconds) so the
+    // approved number equals the run's seed. Delta-only pricing here read "~2 min"
+    // for a resume whose apply walked ~3100 items.
+    const estimateText = formatDuration(previewApplySeconds(preview.summary));
     syncBody = (
       <>
         <PanelSectionRow>
           <Field label="Preview" description={formatPreviewDescription(preview.summary)} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field label="Estimated time">
+            <span data-testid="estimate-time" style={{ fontSize: "12px" }}>
+              {estimateText}
+            </span>
+          </Field>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.6)", padding: "4px 0" }}>
+            Progress is saved every ~200 games. Cancelling is safe — finished games are kept. Long syncs pause while the
+            Deck sleeps and resume on wake; keep it powered for a large first sync.
+          </div>
         </PanelSectionRow>
         {hasChanges ? (
           <>
@@ -601,7 +787,16 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
                 marginBottom: "4px",
               }}
             >
-              <span data-testid="sync-stage">{stageLabel(syncProgress?.stage)}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {/* During silent phases (the initial "Fetching library" anchor
+                    frame, before any narrated fine-detail page frame) there is
+                    no fine line to carry a spinner, so the panel looks hung.
+                    Show the spinner inline with the stage label so a running
+                    sync always has motion. When the fine line is present it
+                    already has its own spinner — don't show two. */}
+                {!hasFineDetail && <Spinner width={14} height={14} />}
+                <span data-testid="sync-stage">{stageLabel(syncProgress?.stage)}</span>
+              </span>
               {stepText && <span data-testid="sync-step">{stepText}</span>}
             </div>
             <ProgressBar
@@ -614,12 +809,37 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
           <PanelSectionRow>
             <Field
               label={
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
                   <Spinner width={14} height={14} />
-                  <span style={{ fontSize: "12px" }}>{formatProgressText(syncProgress)}</span>
+                  {/* Wrap the narrated messages ("Fetching Game Boy Advance
+                      (page 4/62)") on word boundaries instead of clipping them
+                      mid-parenthesis (shared wrap rule). The clamp caps this
+                      live-updating line at two lines so a long platform name
+                      can't grow the row unboundedly. */}
+                  <span
+                    data-testid="sync-fine"
+                    style={{
+                      ...wrapText,
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {formatProgressText(syncProgress)}
+                  </span>
                 </div>
               }
             />
+          </PanelSectionRow>
+        )}
+        {etaText !== null && (
+          <PanelSectionRow>
+            <Field label="Estimated time">
+              <span data-testid="estimate-time" style={{ fontSize: "12px" }}>
+                {etaText}
+              </span>
+            </Field>
           </PanelSectionRow>
         )}
         <PanelSectionRow>
@@ -650,7 +870,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
             // @ts-expect-error onFocus works at runtime; not in Decky's ButtonItem types
             onFocus={scrollToTop}
           >
-            Sync Library
+            {syncButtonLabel}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -661,7 +881,15 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
             onChange={setSkipPreview}
           />
         </PanelSectionRow>
-        {stats?.last_sync && (
+        {/* Visible whenever ANY terminal run is recorded — a completed run OR a
+            cancelled/interrupted/errored attempt. A resume (last_attempt set,
+            last_sync null) is exactly when the user may want a forced fresh
+            start, so gating on last_sync alone hid the button after a
+            history-clear left only interrupted runs. Still hidden on a pristine
+            install (neither recorded). Pressing it clears the history, which
+            drops last_attempt on the stats refresh below — the main button flips
+            back to "Sync Library" and this button hides itself. */}
+        {(stats?.last_sync || stats?.last_attempt) && (
           <PanelSectionRow>
             <ButtonItem
               layout="below"
@@ -718,17 +946,15 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
         {stats && (
           <>
             <PanelSectionRow>
-              <Field label="Last sync">
-                <span style={{ fontSize: "12px" }}>{formatLastSync(stats.last_sync)}</span>
-              </Field>
+              <Field label="Last sync">{lastSyncValue(stats)}</Field>
             </PanelSectionRow>
             {stats.roms > 0 && (
               <PanelSectionRow>
                 <Field label="Library">
-                  <span style={{ fontSize: "12px" }}>
-                    {stats.roms} games
-                    {stats.platforms > 0 ? ` · ${stats.platforms} platforms` : ""}
-                    {(stats.collections ?? 0) > 0 ? ` · ${stats.collections} collections` : ""}
+                  <span style={{ fontSize: "12px", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                    <span>{stats.roms} games</span>
+                    {stats.platforms > 0 && <span>{stats.platforms} platforms</span>}
+                    {(stats.collections ?? 0) > 0 && <span>{stats.collections} collections</span>}
                   </span>
                 </Field>
               </PanelSectionRow>

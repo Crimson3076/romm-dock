@@ -369,8 +369,8 @@ class TestLibrarySyncCallableDelegation:
     @pytest.mark.asyncio
     async def test_report_unit_results_delegates(self, plugin):
         plugin._sync_service.report_unit_results = AsyncMock(return_value={"ok": True})
-        result = await plugin.report_unit_results({"1": 100}, "run-1", 1)
-        plugin._sync_service.report_unit_results.assert_awaited_once_with({"1": 100}, "run-1", 1)
+        result = await plugin.report_unit_results({"1": 100}, "run-1", 1, 0)
+        plugin._sync_service.report_unit_results.assert_awaited_once_with({"1": 100}, "run-1", 1, 0)
         assert result == {"ok": True}
 
     @pytest.mark.asyncio
@@ -665,11 +665,11 @@ class TestMetadataCallableDelegation:
         assert result == {"name": "x"}
 
     @pytest.mark.asyncio
-    async def test_get_all_metadata_cache_delegates(self, plugin):
-        plugin._metadata_service.get_all_metadata_cache.return_value = {}
-        result = await plugin.get_all_metadata_cache()
-        plugin._metadata_service.get_all_metadata_cache.assert_called_once_with()
-        assert result == {}
+    async def test_get_metadata_cache_page_delegates(self, plugin):
+        plugin._metadata_service.get_metadata_cache_page.return_value = {"items": {}, "total": 0}
+        result = await plugin.get_metadata_cache_page(0, 500)
+        plugin._metadata_service.get_metadata_cache_page.assert_called_once_with(0, 500)
+        assert result == {"items": {}, "total": 0}
 
     @pytest.mark.asyncio
     async def test_get_app_id_rom_id_map_delegates(self, plugin):

@@ -46,10 +46,26 @@ export interface SyncProgress {
    * separate run id (#1202).
    */
   runId?: string;
+  /**
+   * Frontend-computed upper-bound apply duration (seconds) for the in-flight
+   * run, derived once from the ``sync_plan`` payload's ``total_roms`` — an
+   * honest ceiling (every ROM priced as new) that the applying UI surfaces as
+   * "up to ~X min". Never sent by the backend; set by the ``sync_plan``
+   * listener and preserved across backend ``sync_progress`` frames.
+   */
+  etaSeconds?: number;
 }
 
 export interface SyncStats {
   last_sync: string | null;
+  /**
+   * The latest run that ended in a terminal state OTHER than completed
+   * (cancelled / errored), surfaced only when it is newer than ``last_sync`` —
+   * so a cancelled or crash-resumed run reads as "17:48 (cancelled)" instead of
+   * "Never" after thousands of shortcuts were applied. ``null`` (or absent) when
+   * the most recent terminal run completed cleanly.
+   */
+  last_attempt?: { finished_at: string; status: "cancelled" | "errored" | "interrupted" } | null;
   platforms: number;
   collections?: number;
   roms: number;
@@ -137,6 +153,17 @@ export interface SyncApplyUnitData {
   unit_name: string;
   unit_index: number;
   total_units: number;
+  /**
+   * A unit's shortcuts are emitted in chunks, each acked + committed durably
+   * before the next, so a mid-unit CEF crash forfeits only the in-flight chunk.
+   * ``chunk_index`` (0-based) is echoed back in the ack so the backend rejects a
+   * stale chunk; ``chunk_offset`` / ``unit_total`` drive unit-wide progress that
+   * stays continuous across chunks; ``shortcuts`` is this chunk's slice.
+   */
+  chunk_index: number;
+  chunk_count: number;
+  chunk_offset: number;
+  unit_total: number;
   shortcuts: SyncAddItem[];
 }
 

@@ -57,12 +57,43 @@ async def test_sync_heartbeat_shape(harness):
 
 
 async def test_get_sync_stats_shape(harness):
-    """Stats dict: every count key present and an int; last_sync None when never synced."""
+    """Stats dict: every count key present and an int; last_sync + last_attempt None when never synced."""
     result = await harness.plugin.get_sync_stats()
-    assert set(result.keys()) == {"last_sync", "platforms", "collections", "roms", "total_shortcuts"}
+    assert set(result.keys()) == {"last_sync", "last_attempt", "platforms", "collections", "roms", "total_shortcuts"}
     assert result["last_sync"] is None
+    assert result["last_attempt"] is None
     for key in ("platforms", "collections", "roms", "total_shortcuts"):
         assert isinstance(result[key], int)
+
+
+async def test_get_sync_stats_surfaces_cancelled_attempt(harness):
+    """A cancelled run with no completed run → last_sync None, last_attempt carries finished_at + status."""
+    from domain.sync_run import SyncRun
+
+    run = SyncRun.start(id="run-c", at="2025-06-01T17:00:00", platforms_planned=1, roms_planned=1)
+    run.mark_cancelled("2025-06-01T17:48:00", "Sync cancelled")
+    with harness.uow_factory() as uow:
+        uow.sync_runs.save(run)
+
+    result = await harness.plugin.get_sync_stats()
+    assert result["last_sync"] is None
+    assert result["last_attempt"] == {"finished_at": "2025-06-01T17:48:00", "status": "cancelled"}
+
+
+async def test_get_sync_stats_surfaces_interrupted_attempt(harness):
+    """An interrupted run (external death) → last_attempt carries the 'interrupted'
+    status through the real SQLite stack (migration 013's widened CHECK accepts the
+    row; get_latest_terminal surfaces it)."""
+    from domain.sync_run import SyncRun
+
+    run = SyncRun.start(id="run-i", at="2025-06-01T17:00:00", platforms_planned=1, roms_planned=1)
+    run.mark_interrupted("2025-06-01T17:48:00", "Sync interrupted (Steam UI stopped responding)")
+    with harness.uow_factory() as uow:
+        uow.sync_runs.save(run)
+
+    result = await harness.plugin.get_sync_stats()
+    assert result["last_sync"] is None
+    assert result["last_attempt"] == {"finished_at": "2025-06-01T17:48:00", "status": "interrupted"}
 
 
 async def test_get_sync_stats_counts_bound_roms(harness):
@@ -168,9 +199,10 @@ async def test_report_unit_results_signal_shape(harness):
     box = harness.plugin._sync_service._box
     box.current_sync_id = "run-1"
     box.active_unit_id = 1
+    box.active_chunk_index = 0
     box.unit_complete_event = asyncio.Event()
 
-    result = await harness.plugin.report_unit_results({"10": 9001}, "run-1", 1)
+    result = await harness.plugin.report_unit_results({"10": 9001}, "run-1", 1, 0)
 
     assert result == {"success": True, "count": 1}
     assert box.unit_complete_event.is_set()
@@ -188,13 +220,34 @@ async def test_report_unit_results_stale_run_ignored(harness):
     # Active run B, waiting on its own unit's event.
     box.current_sync_id = "run-B"
     box.active_unit_id = 7
+    box.active_chunk_index = 0
     box.unit_complete_event = asyncio.Event()
 
     # Stale ack from the cancelled run A.
-    result = await harness.plugin.report_unit_results({"10": 9001}, "run-A", 1)
+    result = await harness.plugin.report_unit_results({"10": 9001}, "run-A", 1, 0)
 
     assert result == {"success": True, "count": 0, "ignored": True}
     # Run B's wait is untouched and nothing was bound.
+    assert not box.unit_complete_event.is_set()
+    assert await harness.plugin.get_app_id_rom_id_map() == {}
+
+
+async def test_report_unit_results_stale_chunk_ignored(harness):
+    """An ack for a superseded chunk of the ACTIVE unit is ignored (#1025). Run +
+    unit match, but the chunk index does not — pins the ``ignored`` shape and that
+    the in-flight chunk's wait event stays unset."""
+    import asyncio
+
+    box = harness.plugin._sync_service._box
+    box.current_sync_id = "run-1"
+    box.active_unit_id = 1
+    box.active_chunk_index = 1  # chunk 1 is in flight
+    box.unit_complete_event = asyncio.Event()
+
+    # Late ack for the already-committed chunk 0.
+    result = await harness.plugin.report_unit_results({"10": 9001}, "run-1", 1, 0)
+
+    assert result == {"success": True, "count": 0, "ignored": True}
     assert not box.unit_complete_event.is_set()
     assert await harness.plugin.get_app_id_rom_id_map() == {}
 
@@ -209,10 +262,12 @@ async def test_report_unit_results_late_ack_binds_orphan(harness):
     ``get_app_id_rom_id_map`` resolves the appId to the rom_id."""
     box = harness.plugin._sync_service._box
     # The state a heartbeat timeout leaves: pending_sync staged, event already
-    # None (the wait returned), unit flagged abandoned with its ROMs stashed.
-    # Run + unit identity survives the abandon window so the late ack validates.
+    # None (the wait returned), chunk flagged abandoned with its rows stashed.
+    # Run + unit + chunk identity survives the abandon window so the late ack
+    # validates.
     box.current_sync_id = "run-1"
     box.active_unit_id = 1
+    box.active_chunk_index = 0
     _entry = {
         "name": "Orphan Game",
         "fs_name": "orphan.gba",
@@ -221,7 +276,7 @@ async def test_report_unit_results_late_ack_binds_orphan(harness):
     }
     # ``pending_all_roms`` is the identity source for the group-aware persist;
     # ``pending_sync`` holds the emitted representative. Both survive the abandon
-    # window so the late ack can drive the full commit (ADR-0021).
+    # window so the late ack can drive the chunk's commit (ADR-0021).
     box.pending_sync = {42: _entry}
     box.pending_all_roms = {42: _entry}
     box.unit_complete_event = None
@@ -231,7 +286,7 @@ async def test_report_unit_results_late_ack_binds_orphan(harness):
     # Before the ack: the appId is NOT in the map (would be an orphan).
     assert await harness.plugin.get_app_id_rom_id_map() == {}
 
-    result = await harness.plugin.report_unit_results({"42": 100001}, "run-1", 1)
+    result = await harness.plugin.report_unit_results({"42": 100001}, "run-1", 1, 0)
 
     assert result == {"success": True, "count": 1}
     # The orphan is now a bound row — the next sync's getExistingRomMShortcuts

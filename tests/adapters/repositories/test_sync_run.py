@@ -75,6 +75,57 @@ class TestGetLatestCompleted:
         assert uow.sync_runs.get_latest_completed() is None
 
 
+class TestGetLatestTerminal:
+    def test_returns_newest_terminal_by_finished_at(self, uow: SqliteUnitOfWork):
+        # A completed run finished earlier, a cancelled run finished later.
+        completed = _running("done", started_at="2026-01-01T00:00:00Z")
+        completed.complete(at="2026-01-01T02:00:00Z", platforms=[], collections=[])
+        cancelled = _running("cancel", started_at="2026-01-02T00:00:00Z")
+        cancelled.mark_cancelled(at="2026-01-02T02:00:00Z", reason="user")
+        uow.sync_runs.save(completed)
+        uow.sync_runs.save(cancelled)
+
+        latest = uow.sync_runs.get_latest_terminal()
+        assert latest is not None
+        assert latest.id == "cancel"
+        assert latest.status == "cancelled"
+
+    def test_returns_completed_when_it_is_the_newest_terminal(self, uow: SqliteUnitOfWork):
+        cancelled = _running("cancel", started_at="2026-01-01T00:00:00Z")
+        cancelled.mark_cancelled(at="2026-01-01T02:00:00Z", reason="user")
+        completed = _running("done", started_at="2026-01-02T00:00:00Z")
+        completed.complete(at="2026-01-02T02:00:00Z", platforms=[], collections=[])
+        uow.sync_runs.save(cancelled)
+        uow.sync_runs.save(completed)
+
+        latest = uow.sync_runs.get_latest_terminal()
+        assert latest is not None
+        assert latest.id == "done"
+        assert latest.status == "completed"
+
+    def test_returns_interrupted_when_it_is_the_newest_terminal(self, uow: SqliteUnitOfWork):
+        # An interrupted run is terminal — it must surface as the newest terminal
+        # (the WHERE clause includes it, and migration 013's CHECK accepts the row).
+        completed = _running("done", started_at="2026-01-01T00:00:00Z")
+        completed.complete(at="2026-01-01T02:00:00Z", platforms=[], collections=[])
+        interrupted = _running("interrupt", started_at="2026-01-02T00:00:00Z")
+        interrupted.mark_interrupted(at="2026-01-02T02:00:00Z", reason="external death")
+        uow.sync_runs.save(completed)
+        uow.sync_runs.save(interrupted)
+
+        latest = uow.sync_runs.get_latest_terminal()
+        assert latest is not None
+        assert latest.id == "interrupt"
+        assert latest.status == "interrupted"
+
+    def test_ignores_running_runs(self, uow: SqliteUnitOfWork):
+        uow.sync_runs.save(_running("running-1"))
+        assert uow.sync_runs.get_latest_terminal() is None
+
+    def test_returns_none_when_no_runs(self, uow: SqliteUnitOfWork):
+        assert uow.sync_runs.get_latest_terminal() is None
+
+
 class TestGetRunning:
     def test_returns_the_running_run(self, uow: SqliteUnitOfWork):
         completed = _running("done")
@@ -106,33 +157,43 @@ class TestUpsert:
         assert loaded.platforms_completed == ["snes"]
 
 
-class TestDeleteCompleted:
+class TestDeleteHistory:
     def test_removes_completed_runs(self, uow: SqliteUnitOfWork):
         run = _running("done")
         run.complete(at="2026-01-01T02:00:00Z", platforms=["snes"], collections=[])
         uow.sync_runs.save(run)
 
-        uow.sync_runs.delete_completed()
+        uow.sync_runs.delete_history()
 
         assert uow.sync_runs.get("done") is None
         assert uow.sync_runs.get_latest_completed() is None
 
-    def test_keeps_running_and_errored_runs(self, uow: SqliteUnitOfWork):
+    def test_removes_cancelled_interrupted_and_errored_runs_keeps_running(self, uow: SqliteUnitOfWork):
         completed = _running("done")
         completed.complete(at="2026-01-01T02:00:00Z", platforms=[], collections=[])
         errored = _running("boom")
         errored.mark_errored(at="2026-01-01T02:00:00Z", error="x")
+        cancelled = _running("stopped")
+        cancelled.mark_cancelled(at="2026-01-01T02:00:00Z", reason="user")
+        interrupted = _running("dropped")
+        interrupted.mark_interrupted(at="2026-01-01T02:00:00Z", reason="external death")
         uow.sync_runs.save(completed)
         uow.sync_runs.save(_running("active"))
         uow.sync_runs.save(errored)
+        uow.sync_runs.save(cancelled)
+        uow.sync_runs.save(interrupted)
 
-        uow.sync_runs.delete_completed()
+        uow.sync_runs.delete_history()
 
+        # Only the in-flight run survives — no terminal run lingers as a stale
+        # last-attempt hint after a Force Full Sync reset.
         assert uow.sync_runs.get("done") is None
+        assert uow.sync_runs.get("boom") is None
+        assert uow.sync_runs.get("stopped") is None
+        assert uow.sync_runs.get("dropped") is None
         assert uow.sync_runs.get("active") is not None
-        assert uow.sync_runs.get("boom") is not None
 
-    def test_idempotent_when_no_completed_runs(self, uow: SqliteUnitOfWork):
+    def test_idempotent_when_no_terminal_runs(self, uow: SqliteUnitOfWork):
         uow.sync_runs.save(_running("active"))
-        uow.sync_runs.delete_completed()
+        uow.sync_runs.delete_history()
         assert uow.sync_runs.get("active") is not None

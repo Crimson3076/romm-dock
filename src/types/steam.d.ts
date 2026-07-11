@@ -5,6 +5,7 @@ declare var SteamClient: {
     SetShortcutName(appId: number, name: string): void;
     SetShortcutExe(appId: number, exePath: string): void;
     SetShortcutStartDir(appId: number, startDir: string): void;
+    SetShortcutIcon(appId: number, path: string): void;
     SetAppLaunchOptions(appId: number, options: string): void;
     OpenAppSettingsDialog(appId: number, section: string): void;
     SetCustomArtworkForApp(
@@ -66,6 +67,11 @@ interface SteamAppOverview {
   minutes_playtime_last_two_weeks?: number;
   rt_last_time_played?: number;
   rt_last_time_played_or_installed?: number;
+  // Epoch-seconds cache-buster for the library tile's custom-image URL
+  // (`/customimage/{appid}?v={rt_custom_image_mtime}`). A full client restart
+  // normally stamps it; the cover nudge stamps it per created shortcut so a
+  // freshly-written grid cover is picked up on the tile's next render.
+  rt_custom_image_mtime?: number;
   m_setStoreCategories?: Set<number>;
   local_per_client_data?: SteamPerClientData;
   per_client_data?: SteamPerClientData[];

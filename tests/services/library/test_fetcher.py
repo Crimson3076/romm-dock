@@ -12,6 +12,7 @@ import pytest
 
 from domain.sync_state import SyncCancelled, SyncState
 from domain.work_unit import WorkUnit
+from lib.romm_paging import LIST_PAGE_SIZE
 
 
 def _wire_fake(plugin, fake_romm_api):
@@ -338,12 +339,12 @@ class TestIncrementalSkipGroupParity:
     async def test_skips_when_all_persisted_rows_match_server_count(self, plugin, fake_romm_api):
         _wire_fake(plugin, fake_romm_api)
         uow = plugin._uow
-        _seed_completed_run(uow)
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=3)
         # A 3-sibling group: one bound representative + two unbound siblings.
         _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
         _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
         _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
-        # No server rows updated after last_sync → delta total 0. RomM's rom_count
+        # No server rows updated after the stamp → delta total 0. RomM's rom_count
         # (all siblings) matches the 3 persisted rows → skip. Under the old
         # bound-only count this platform full-fetched forever.
         unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
@@ -381,6 +382,239 @@ class TestIncrementalSkipGroupParity:
         result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
 
         assert result is None
+
+
+class TestIncrementalSkipZeroBoundRows:
+    """Skip-gate guard for a mass-deleted platform (on-device #1025).
+
+    Deleting every RomM shortcut leaves the ``roms`` rows behind as
+    unbind-only (their ``shortcut_app_id`` cleared, ADR-0007). A completed
+    run, an unchanged server, and matching counts otherwise satisfy the
+    skip — but the skip reconstructs the unit's ROMs from the *bound* rows,
+    so with zero bindings the reconstructed list is empty and the diff sees
+    nothing to re-add. The guard must fall through to a full fetch instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_skip_when_zero_bound_rows(self, plugin, fake_romm_api):
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_completed_run(uow)
+        # Rows persist but every shortcut_app_id was cleared by the mass delete;
+        # each carries a group key so the backfill gate would NOT fire — the
+        # only reason to full-fetch is the zero-bindings guard under test.
+        _seed_persisted_rom(uow, 10, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_platform_unit_full_fetches_when_zero_bound_rows(self, plugin, fake_romm_api):
+        """End-to-end: the mass-deleted platform re-paginates its ROMs (skipped=False)."""
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_completed_run(uow)
+        _seed_persisted_rom(uow, 10, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
+        # The full-fetch path paginates the live server list back into the re-add path.
+        fake_romm_api.roms = {i: {"id": i, "platform_id": 1, "name": f"G{i}"} for i in range(3)}
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+
+        unit_roms, skipped = await plugin._sync_service._fetcher.fetch_platform_unit(unit)
+
+        assert skipped is False
+        assert len(unit_roms) == 3
+
+    @pytest.mark.asyncio
+    async def test_skips_when_a_bound_row_survives(self, plugin, fake_romm_api):
+        """Guard is scoped to zero bindings: one surviving shortcut still skips."""
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=3)
+        # One bound representative survives + two unbound siblings → registry_count > 0.
+        _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is not None
+        assert {r["id"] for r in result} == {10}
+
+
+def _seed_platform_stamp(uow, slug, *, at, rom_count):
+    """Persist a per-platform completion stamp (ADR-0023) so the skip can honor it."""
+    from domain.platform_sync_state import PlatformSyncState
+
+    with uow:
+        uow.platform_sync_state.save(PlatformSyncState.stamp(platform_slug=slug, at=at, rom_count=rom_count))
+
+
+class TestIncrementalSkipFromPlatformStamp:
+    """Per-platform completion stamp drives the skip even without a completed run (ADR-0023 / #1025).
+
+    A run that durably synced a platform but was cancelled/crashed before the
+    whole run finished leaves NO completed ``SyncRun`` (so the library-wide
+    ``last_sync`` never advances) but DOES leave a per-platform stamp. The skip
+    reads that stamp's ``completed_at`` as the platform's effective ``last_sync``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_skip_fires_from_stamp_without_completed_run(self, plugin, fake_romm_api):
+        """The crash-resume scenario: stamp present, NO completed run → still skips."""
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        # NO completed run is seeded — only the per-platform stamp.
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=3)
+        _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is not None
+        assert {r["id"] for r in result} == {10}
+
+    @pytest.mark.asyncio
+    async def test_stamp_completed_at_is_the_delta_reference(self, plugin, fake_romm_api):
+        """The stamp's ``completed_at`` (not the older completed-run last_sync) is the
+        delta reference: a ROM updated between the two timestamps decides the skip.
+
+        The completed run is OLD; the stamp is NEWER. A platform ROM updated in the
+        window is > last_sync but <= stamp — so skip fires only if the stamp is the
+        reference. Also asserts the exact ``updated_after`` argument the fetcher sent.
+        """
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_completed_run(uow)  # completes at 2025-01-01T00:00:00 (old)
+        _seed_platform_stamp(uow, "n64", at="2025-06-01T00:00:00", rom_count=1)
+        _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
+        # A platform ROM updated between last_sync and the stamp: skip-blocking under
+        # the old last_sync reference, skip-safe under the newer stamp reference.
+        fake_romm_api.roms[10] = {"id": 10, "platform_id": 1, "updated_at": "2025-03-01T00:00:00"}
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=1)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is not None  # stamp reference → the window ROM is not "after"
+        delta_calls = [c for c in fake_romm_api.call_log if c[0] == "list_roms_updated_after"]
+        assert delta_calls, "delta check must have run"
+        assert delta_calls[-1][1][1] == "2025-06-01T00:00:00"  # updated_after == stamp.completed_at
+
+    @pytest.mark.asyncio
+    async def test_no_skip_when_stamp_rom_count_mismatches_server(self, plugin, fake_romm_api):
+        """A server-side platform count change since the stamp invalidates it — full fetch.
+
+        Isolates the stamp-count guard from the persisted-count guard: the persisted
+        rows still MATCH the server count (4 == 4) and the delta is empty, so WITHOUT
+        the stamp guard the platform would skip. The stamped count (3) no longer
+        equals the server count (4), so the guard forces a full fetch.
+        """
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=3)
+        _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 13, app_id=None, group_key="igdb:100:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=4)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_skip_when_stamp_and_zero_bound_rows(self, plugin, fake_romm_api):
+        """Guard precedence: even with a valid stamp, zero bound rows force a full fetch.
+
+        The zero-bound-rows guard (a mass-deleted platform, ADR-0007) is checked
+        before the stamp reference is trusted, so a stamp can never resurrect a
+        skip that has no shortcuts to reconstruct.
+        """
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=3)
+        _seed_persisted_rom(uow, 10, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 11, app_id=None, group_key="igdb:100:1")
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:100:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_stamp_never_skips_even_with_completed_run(self, plugin, fake_romm_api):
+        """The stamp is the SOLE skip authority: no stamp → full fetch, run history irrelevant.
+
+        A completed run alone cannot vouch for a platform's completeness — its
+        shortcuts may have been locally removed and only partially re-applied
+        since (the #1025 silent-gap scenario). With a completed run seeded but
+        no stamp, the skip must NOT fire and no delta probe is sent.
+        """
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_completed_run(uow)  # finished at 2025-01-01T00:00:00, no stamp
+        _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=1)
+
+        result = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+
+        assert result is None
+        delta_calls = [c for c in fake_romm_api.call_log if c[0] == "list_roms_updated_after"]
+        assert not delta_calls  # no stamp → no probe; the guard rejects before any server call
+
+
+class TestStaleStampPartialGapRegression:
+    """#1025 silent-gap: a stale stamp must never skip a platform left partially bound.
+
+    The whole fix — the apply-start stamp clear (``sync_orchestrator``) and the
+    local-removal stamp invalidation (``shortcut_removal``) — exists so this exact
+    state can't arise with a surviving stamp. This pins the fetcher end of the
+    contract: given the partial state, the presence or absence of the stamp is the
+    SOLE decider of the wrongful skip, so clearing the stamp is what closes the gap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stale_stamp_skips_partial_platform_but_cleared_stamp_refetches(self, plugin, fake_romm_api):
+        """The interrupted-re-apply aftermath: 5 persisted rows, only 2 rebound before a
+        crash, 3 still unbound. The server is unchanged (delta 0) and its rom_count (5)
+        still equals the 5 persisted rows — every count the skip matches on lines up,
+        and there is NO completed run, so the stamp alone can drive a skip.
+
+        With the stale stamp present the skip FIRES (the bug: the 3 unbound games are
+        never recreated). Once the stamp is cleared — exactly what the apply-start clear
+        / local-removal invalidation does — the platform full-fetches and recreates them.
+        """
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        # Two rebound representatives (chunk 0 committed before the crash) ...
+        _seed_persisted_rom(uow, 10, app_id=1010, group_key="igdb:10:1")
+        _seed_persisted_rom(uow, 11, app_id=1011, group_key="igdb:11:1")
+        # ... and three siblings the crashed run never rebound (still unbound).
+        _seed_persisted_rom(uow, 12, app_id=None, group_key="igdb:12:1")
+        _seed_persisted_rom(uow, 13, app_id=None, group_key="igdb:13:1")
+        _seed_persisted_rom(uow, 14, app_id=None, group_key="igdb:14:1")
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=5)
+
+        # A surviving stale stamp (rom_count still matches the server) → wrongful skip.
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=5)
+        skipped = await plugin._sync_service._fetcher._try_unit_incremental_skip(unit)
+        assert skipped is not None, "baseline: a stale stamp over a partially-bound platform skips (the bug)"
+        assert {r["id"] for r in skipped} == {10, 11}  # only the 2 rebound rows reconstruct — 3 games lost
+
+        # The fix clears that stamp; with no stamp and no completed run there is no
+        # time reference at all, so the skip cannot fire and the platform re-fetches.
+        with uow:
+            uow.platform_sync_state.delete("n64")
+        assert await plugin._sync_service._fetcher._try_unit_incremental_skip(unit) is None
 
 
 class TestFetchPlatformUnit:
@@ -421,13 +655,14 @@ class TestFetchPlatformUnit:
         """
         _wire_fake(plugin, fake_romm_api)
 
-        # Seed exactly one full page worth of ROMs (50 items at limit=50).
-        fake_romm_api.roms = {i: {"id": i, "platform_id": 1, "name": f"G{i}"} for i in range(50)}
+        # Seed exactly one full page worth of ROMs (500 items at limit=500) so a
+        # full page 1 advances the offset and a second request is attempted.
+        fake_romm_api.roms = {i: {"id": i, "platform_id": 1, "name": f"G{i}"} for i in range(LIST_PAGE_SIZE)}
 
         original_list_roms = fake_romm_api.list_roms
         call_count = {"n": 0}
 
-        def list_roms_with_second_page_failure(platform_id, limit=50, offset=0):
+        def list_roms_with_second_page_failure(platform_id, limit=LIST_PAGE_SIZE, offset=0):
             call_count["n"] += 1
             if call_count["n"] == 2:
                 raise RuntimeError("page 2 boom")
@@ -435,23 +670,25 @@ class TestFetchPlatformUnit:
 
         fake_romm_api.list_roms = list_roms_with_second_page_failure  # type: ignore[method-assign]
 
-        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=200)
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=LIST_PAGE_SIZE + 100)
         with pytest.raises(RuntimeError, match="page 2 boom"):
             await plugin._sync_service._fetcher.fetch_platform_unit(unit)
 
     @pytest.mark.asyncio
     async def test_paginates_across_multiple_pages(self, plugin, fake_romm_api):
-        """Line 514: a full first page must trigger offset += limit and a second fetch."""
+        """A full first page must trigger offset += limit and a second fetch."""
         _wire_fake(plugin, fake_romm_api)
 
-        # 51 ROMs at limit=50 => page 1 fills to limit, page 2 carries the tail.
-        fake_romm_api.roms = {i: {"id": i, "platform_id": 1, "name": f"G{i}"} for i in range(51)}
+        # One full page + a one-ROM tail at the 500-ROM page size => page 1 fills
+        # to the limit, page 2 carries the tail (exercises offset += limit).
+        rom_count = LIST_PAGE_SIZE + 1
+        fake_romm_api.roms = {i: {"id": i, "platform_id": 1, "name": f"G{i}"} for i in range(rom_count)}
 
-        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=51)
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=rom_count)
         unit_roms, skipped = await plugin._sync_service._fetcher.fetch_platform_unit(unit)
 
         assert skipped is False
-        assert len(unit_roms) == 51
+        assert len(unit_roms) == rom_count
         assert {r["platform_name"] for r in unit_roms} == {"N64"}
 
 
@@ -467,10 +704,11 @@ class TestFetchCollectionUnit:
 
     @pytest.mark.asyncio
     async def test_paginates_across_multiple_pages(self, plugin, fake_romm_api):
-        """Line 566: a full first page must trigger offset += limit and a second fetch."""
+        """A full first page must trigger offset += limit and a second fetch."""
         _wire_fake(plugin, fake_romm_api)
 
-        # 51 ROMs in collection id=7 => page 1 fills, page 2 carries the tail.
+        # One full page + a one-ROM tail at the 500-ROM page size => page 1 fills,
+        # page 2 carries the tail.
         fake_romm_api.roms = {
             i: {
                 "id": i,
@@ -480,7 +718,7 @@ class TestFetchCollectionUnit:
                 "platform_slug": "n64",
                 "collection_ids": [7],
             }
-            for i in range(50)
+            for i in range(LIST_PAGE_SIZE)
         }
         fake_romm_api.roms[999] = {
             "id": 999,
@@ -491,12 +729,13 @@ class TestFetchCollectionUnit:
             "collection_ids": [7],
         }
 
-        unit = WorkUnit(type="collection", id=7, name="Coll", slug="", rom_count=51, collection_kind="user")
+        rom_count = LIST_PAGE_SIZE + 1
+        unit = WorkUnit(type="collection", id=7, name="Coll", slug="", rom_count=rom_count, collection_kind="user")
         synced: set[int] = set()
         new_roms, all_collection_rom_ids = await plugin._sync_service._fetcher.fetch_collection_unit(unit, synced)
 
-        assert len(new_roms) == 51
-        assert len(all_collection_rom_ids) == 51
+        assert len(new_roms) == rom_count
+        assert len(all_collection_rom_ids) == rom_count
         assert 999 in synced
 
     @pytest.mark.asyncio
@@ -536,3 +775,125 @@ class TestFetchCollectionUnit:
         method_calls = [c[0] for c in fake_romm_api.call_log]
         assert "list_roms_by_virtual_collection" in method_calls
         assert "list_roms_by_smart_collection" not in method_calls
+
+
+def _fetching_frames(decky):
+    """Ordered ``sync_progress`` payloads whose stage is ``fetching``."""
+    return [
+        c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_progress" and c[0][1].get("stage") == "fetching"
+    ]
+
+
+def _seed_pages(fake_romm_api, *, platform_id, count):
+    """Seed *count* ROMs on one platform so a full fetch paginates over them."""
+    fake_romm_api.roms = {i: {"id": i, "platform_id": platform_id, "name": f"G{i}"} for i in range(count)}
+
+
+class TestFetchProgressNarration:
+    """Per-page ``fetching`` progress frames during the paginated fetch (#1025).
+
+    The QAM's coarse bar sat frozen on "Applying shortcuts" for the minutes a
+    large platform's fetch takes; the fetch now narrates page progress under the
+    ``fetching`` stage. At the 500-ROM page size a large platform is only a
+    handful of pages, so every page emits a frame
+    (``_FETCH_PROGRESS_PAGE_INTERVAL`` is 1) — "page 3/7" every few seconds.
+    """
+
+    @pytest.mark.asyncio
+    async def test_platform_fetch_emits_per_page_fetching_frames(self, plugin, fake_romm_api):
+        import decky
+
+        decky.emit.reset_mock()
+        _wire_fake(plugin, fake_romm_api)
+        # 3084 ROMs at the 500-ROM page size → 7 pages (6 full + an 84-item tail).
+        # Every page emits a frame (interval 1).
+        rom_count = 3084
+        _seed_pages(fake_romm_api, platform_id=1, count=rom_count)
+
+        unit = WorkUnit(type="platform", id=1, name="GBA", slug="gba", rom_count=rom_count)
+        await plugin._sync_service._fetcher.fetch_platform_unit(unit, progress_step=3, progress_total_steps=12)
+
+        frames = _fetching_frames(decky)
+        assert [f["current"] for f in frames] == [1, 2, 3, 4, 5, 6, 7]
+        # Every frame keeps the run's coarse position and names the platform+page.
+        for f in frames:
+            assert f["stage"] == "fetching"
+            assert f["step"] == 3
+            assert f["totalSteps"] == 12
+            assert f["total"] == 7
+        assert frames[0]["message"] == "Fetching GBA (page 1/7)"
+        assert frames[-1]["message"] == "Fetching GBA (page 7/7)"
+
+    @pytest.mark.asyncio
+    async def test_single_page_fetch_emits_one_frame(self, plugin, fake_romm_api):
+        import decky
+
+        decky.emit.reset_mock()
+        _wire_fake(plugin, fake_romm_api)
+        _seed_pages(fake_romm_api, platform_id=1, count=3)
+
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+        await plugin._sync_service._fetcher.fetch_platform_unit(unit, progress_step=1, progress_total_steps=1)
+
+        frames = _fetching_frames(decky)
+        assert [f["current"] for f in frames] == [1]
+        assert frames[0]["message"] == "Fetching N64 (page 1/1)"
+
+    @pytest.mark.asyncio
+    async def test_incremental_skip_emits_no_fetching_frame(self, plugin, fake_romm_api):
+        """A platform that incremental-skips returns before any page → no frames."""
+        import decky
+
+        _wire_fake(plugin, fake_romm_api)
+        uow = plugin._uow
+        _seed_platform_stamp(uow, "n64", at="2025-01-01T00:00:00", rom_count=1)
+        _seed_persisted_rom(uow, 10, app_id=1001, group_key="igdb:100:1")
+        decky.emit.reset_mock()
+
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=1)
+        _unit_roms, skipped = await plugin._sync_service._fetcher.fetch_platform_unit(
+            unit, progress_step=1, progress_total_steps=1
+        )
+
+        assert skipped is True
+        assert _fetching_frames(decky) == []
+
+    @pytest.mark.asyncio
+    async def test_collection_fetch_emits_per_page_fetching_frames(self, plugin, fake_romm_api):
+        import decky
+
+        decky.emit.reset_mock()
+        _wire_fake(plugin, fake_romm_api)
+        # 1200 ROMs in collection 7 → 3 pages (500 + 500 + 200) at the 500-ROM
+        # page size; every page emits a frame (interval 1).
+        rom_count = 1200
+        fake_romm_api.roms = {
+            i: {"id": i, "platform_id": 1, "name": f"G{i}", "collection_ids": [7]} for i in range(rom_count)
+        }
+
+        unit = WorkUnit(type="collection", id=7, name="Favorites", slug="", rom_count=rom_count, collection_kind="user")
+        await plugin._sync_service._fetcher.fetch_collection_unit(unit, set(), progress_step=2, progress_total_steps=8)
+
+        frames = _fetching_frames(decky)
+        assert [f["current"] for f in frames] == [1, 2, 3]
+        assert frames[0]["message"] == "Fetching Favorites (page 1/3)"
+        assert frames[0]["step"] == 2
+        assert frames[0]["totalSteps"] == 8
+
+    @pytest.mark.asyncio
+    async def test_no_step_context_leaves_bar_indeterminate(self, plugin, fake_romm_api):
+        """Callers that pass no coarse position (default 0) still narrate pages,
+        but leave step/totalSteps at 0 so the main bar stays indeterminate."""
+        import decky
+
+        decky.emit.reset_mock()
+        _wire_fake(plugin, fake_romm_api)
+        _seed_pages(fake_romm_api, platform_id=1, count=3)
+
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=3)
+        await plugin._sync_service._fetcher.fetch_platform_unit(unit)
+
+        frames = _fetching_frames(decky)
+        assert len(frames) == 1
+        assert frames[0]["step"] == 0
+        assert frames[0]["totalSteps"] == 0

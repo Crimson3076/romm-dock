@@ -21,10 +21,12 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from domain.platform_sync_state import PlatformSyncState
 from domain.preview_delta import PreviewDelta
 from domain.shortcut_data import EmulatorInvocation, build_shortcuts_data
 from domain.sibling_group import compute_component_group_keys
 from domain.sibling_resolution import AUTO_REGION
+from domain.sync_chunking import build_unit_chunks
 from domain.sync_diff import (
     BIND_ROM_ID_KEY,
     classify_roms,
@@ -60,6 +62,11 @@ if TYPE_CHECKING:
 
 
 _SYNC_CANCELLED = "Sync cancelled"
+# Terminal reason when the run died externally (heartbeat timeout — the
+# frontend crashed or reloaded) rather than by the user's Cancel. Stored in
+# ``sync_runs.error`` via ``mark_interrupted``; the status split lets the UI
+# report "(interrupted)" instead of "(cancelled)" for a crash.
+_SYNC_INTERRUPTED = "Sync interrupted (Steam UI stopped responding)"
 _PREVIEW_MAX_AGE_SECONDS = 1800  # 30 minutes — preview snapshots stale beyond this
 
 # Per-unit heartbeat-based timeout. If the frontend stops calling
@@ -72,6 +79,12 @@ _UNIT_HEARTBEAT_TIMEOUT_SEC = 60.0
 # clock. Kept short so cancel propagation feels responsive without
 # burning CPU.
 _UNIT_WAIT_POLL_SEC = 1.0
+# Emitted-shortcut count per apply chunk. A unit's emitted shortcuts are split
+# into chunks of about this many entries, each emitted → acked → committed
+# durably before the next, so a mid-unit CEF crash forfeits only the in-flight
+# chunk. A chunk may overflow this to keep a sibling group whole (see
+# :func:`domain.sync_chunking.build_unit_chunks`).
+_APPLY_CHUNK_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -214,7 +227,15 @@ class SyncOrchestrator:
                     step=unit_index,
                     total_steps=total_units,
                 )
-                await self._fetch_preview_unit(unit, all_roms, platform_rom_ids, synced_rom_ids, collection_memberships)
+                await self._fetch_preview_unit(
+                    unit,
+                    all_roms,
+                    platform_rom_ids,
+                    synced_rom_ids,
+                    collection_memberships,
+                    progress_step=unit_index,
+                    progress_total_steps=total_units,
+                )
 
             installed_paths = await self._loop.run_in_executor(None, self._scan_installed_paths)
             core_overrides = await self._loop.run_in_executor(None, self._build_core_overrides, all_roms)
@@ -323,22 +344,32 @@ class SyncOrchestrator:
         platform_rom_ids: set[int],
         synced_rom_ids: set[int],
         collection_memberships: dict[str, list[int]],
+        *,
+        progress_step: int = 0,
+        progress_total_steps: int = 0,
     ) -> None:
         """Fetch one work unit's ROMs and fold them into the preview accumulators.
 
         Platform units add every ROM to ``platform_rom_ids`` and
         ``synced_rom_ids``; collection units record their full membership
         list under the unit name. ``all_roms`` is extended in both cases.
-        Mutates the passed-in accumulators in place.
+        Mutates the passed-in accumulators in place. ``progress_step`` /
+        ``progress_total_steps`` thread the unit's coarse position into the
+        fetcher's per-page ``fetching`` frames (on top of the per-unit frame
+        the preview loop already emits).
         """
         if unit.type == "platform":
-            unit_roms, _skipped = await self._fetcher.fetch_platform_unit(unit)
+            unit_roms, _skipped = await self._fetcher.fetch_platform_unit(
+                unit, progress_step=progress_step, progress_total_steps=progress_total_steps
+            )
             for rom in unit_roms:
                 platform_rom_ids.add(rom["id"])
                 synced_rom_ids.add(rom["id"])
             all_roms.extend(unit_roms)
         else:
-            unit_roms, all_collection_rom_ids = await self._fetcher.fetch_collection_unit(unit, synced_rom_ids)
+            unit_roms, all_collection_rom_ids = await self._fetcher.fetch_collection_unit(
+                unit, synced_rom_ids, progress_step=progress_step, progress_total_steps=progress_total_steps
+            )
             if all_collection_rom_ids:
                 collection_memberships[unit.name] = all_collection_rom_ids
             all_roms.extend(unit_roms)
@@ -465,6 +496,7 @@ class SyncOrchestrator:
         # happy-path and late-ack commit paths). The stale scan excludes it so
         # a new rom_id reusing an old appId is never wrongly removed (#1036).
         box.committed_app_ids = set()
+        box.run_interrupted = False
         # Capture the run id up front so the terminal SyncRun writes and the
         # ``finally`` reset below operate on a stable id for the lifetime of
         # this run. Every terminal IDLE/None reset for this run is collapsed
@@ -570,7 +602,13 @@ class SyncOrchestrator:
             # mark cancelled; clean runs complete with the synced platform
             # and collection names derived from the built maps.
             if cancelled:
-                await self._loop.run_in_executor(None, self._mark_sync_run_cancelled, run_id, _SYNC_CANCELLED)
+                # A heartbeat-timeout cancel is an external death (frontend
+                # crash/reload) — record it as ``interrupted`` so the UI never
+                # blames a crash on the user's Cancel button.
+                if box.run_interrupted:
+                    await self._loop.run_in_executor(None, self._mark_sync_run_interrupted, run_id, _SYNC_INTERRUPTED)
+                else:
+                    await self._loop.run_in_executor(None, self._mark_sync_run_cancelled, run_id, _SYNC_CANCELLED)
             else:
                 await self._loop.run_in_executor(
                     None,
@@ -629,6 +667,10 @@ class SyncOrchestrator:
     def _mark_sync_run_cancelled(self, run_id: str | None, reason: str) -> None:
         """Transition the SyncRun to ``cancelled``."""
         self._terminate_sync_run(run_id, lambda run: run.mark_cancelled(self._clock.now().isoformat(), reason))
+
+    def _mark_sync_run_interrupted(self, run_id: str | None, reason: str) -> None:
+        """Transition the SyncRun to ``interrupted`` (external death, not user cancel)."""
+        self._terminate_sync_run(run_id, lambda run: run.mark_interrupted(self._clock.now().isoformat(), reason))
 
     def _mark_sync_run_errored(self, run_id: str | None, error: str) -> None:
         """Transition the SyncRun to ``errored``."""
@@ -743,6 +785,17 @@ class SyncOrchestrator:
             if key is not None:
                 rom["sibling_group_key"] = key
 
+    def _clear_platform_stamp_io(self, platform_slug: str) -> None:
+        """Delete *platform_slug*'s completion stamp in one short write UoW.
+
+        Called at a platform unit's apply start (ADR-0023 / #1025): the stamp
+        asserts "this platform's last apply completed", so a fresh apply must
+        drop it up front and let the final chunk re-write it only on a clean
+        finish. A no-op when no stamp exists.
+        """
+        with self._uow_factory() as uow:
+            uow.platform_sync_state.delete(platform_slug)
+
     async def _sync_one_unit(
         self,
         unit: WorkUnit,
@@ -769,9 +822,14 @@ class SyncOrchestrator:
         ``total_games_applied`` total returned to the user.
         """
         box = self._sync_state
+        # Coarse anchor for the unit: FETCHING (not APPLYING) so the whole
+        # per-unit prep phase — the paginated fetch + cover download below —
+        # reads as "Fetching library". The label flips to "Applying shortcuts"
+        # exactly once, when the chunk loop starts (frontend-driven), instead of
+        # showing a frozen "Applying shortcuts" bar for the minutes-long fetch.
         await self.emit_progress(
-            SyncStage.APPLYING,
-            message=f"{unit.name} ({unit_index + 1}/{total_units})",
+            SyncStage.FETCHING,
+            message=f"Fetching {unit.name}",
             step=unit_index + 1,
             total_steps=total_units,
         )
@@ -779,17 +837,23 @@ class SyncOrchestrator:
         # Fetch this unit's ROMs. Platform units may incremental-skip;
         # collection units always paginate (collection membership is
         # the source of truth, no per-collection "last_sync" gate today).
+        # The unit's coarse step/total is threaded so the fetcher's per-page
+        # ``fetching`` frames keep the bar's position.
         if unit.type == "platform":
             unit_roms, skipped = await self._sync_platform_unit(
                 unit,
                 synced_rom_ids=synced_rom_ids,
                 platform_rom_ids=platform_rom_ids,
+                progress_step=unit_index + 1,
+                progress_total_steps=total_units,
             )
         else:
             unit_roms, skipped = await self._sync_collection_unit(
                 unit,
                 synced_rom_ids=synced_rom_ids,
                 collection_memberships=collection_memberships,
+                progress_step=unit_index + 1,
+                progress_total_steps=total_units,
             )
 
         if box.is_cancelling():
@@ -839,93 +903,214 @@ class SyncOrchestrator:
             preferred_region=self._settings.get("preferred_region", AUTO_REGION),
         )
 
-        # Download artwork only for the ROMs that actually get a shortcut (the
-        # representatives + grandfathered siblings), not every dump — no eager
-        # covers for versions with no shortcut. A rebind entry pulls its cover
-        # from the representative it binds (``bind_rom_id``), whose raw dict is
-        # the one present in unit_roms.
-        if emitted:
-            artwork_ids = {int(e.get(BIND_ROM_ID_KEY, e["rom_id"])) for e in emitted}
-            artwork_roms = [rom for rom in unit_roms if rom["id"] in artwork_ids]
-            cover_paths = await self._download_artwork(
-                artwork_roms, progress_step=unit_index + 1, progress_total_steps=total_units
-            )
-            for e in emitted:
-                e["cover_path"] = cover_paths.get(int(e.get(BIND_ROM_ID_KEY, e["rom_id"])), "")
+        # Download artwork for the ROMs about to get a shortcut and stamp each
+        # emitted entry's cover path in place (a no-op when nothing is emitted).
+        await self._attach_unit_cover_paths(unit, unit_roms, emitted, unit_index=unit_index, total_units=total_units)
 
         if box.is_cancelling():
             return 0
 
+        # Clear this platform's completion stamp now that its apply is actually
+        # beginning — the fetch succeeded, artwork is done, and the cancel guard
+        # above has passed, so the next line starts emitting chunks. The stamp's
+        # contract is "this platform's last apply ran to completion", which a
+        # fresh apply invalidates the instant it starts: a crash / cancel /
+        # heartbeat-timeout before the final chunk must leave NO stamp, so the
+        # skip gate can't honour a stale one over a half-applied platform (the
+        # #1025 silent-gap regression). The final chunk re-writes the stamp on a
+        # clean finish. A fetch that failed raised before here (fetch failure ≠
+        # apply started) and a cancel during fetch/artwork returned at a guard
+        # above with the old stamp intact, so an unstarted apply keeps it. A
+        # skipped platform returned before this point and keeps its stamp. Only
+        # platform units carry a skip gate, so only they are stamped/cleared.
+        # A dedicated short write UoW (not folded into the first chunk's commit)
+        # so the clear is unconditional at apply start — even a first-chunk
+        # heartbeat-timeout, whose late ack commits without the stamp, leaves no
+        # stale stamp behind (ADR-0023 / #1025).
+        if unit.type == "platform" and unit.slug:
+            await self._loop.run_in_executor(None, self._clear_platform_stamp_io, unit.slug)
+
         # Stage the emitted representatives for cover finalise + binding, and the
         # full built set for the ack-independent identity + version persist (the
         # reporter upserts a row for every sibling, binds only representatives).
+        # Staging stays whole-unit; the apply is chunked below, so a mid-unit CEF
+        # crash forfeits only the in-flight chunk, not every prior chunk.
         box.pending_sync = {e["rom_id"]: e for e in emitted}
         box.pending_all_roms = {sd["rom_id"]: sd for sd in shortcuts_data}
 
-        # Emit per-unit apply event + wait for the frontend callback.
-        box.unit_complete_event = asyncio.Event()
-        box.last_unit_results = None
-        # Stamp the unit's identity so the reporter can validate the ack's
-        # run_id + unit_id and reject a late ack from a cancelled run or a
-        # stray ack for a different unit (#1041).
-        box.active_unit_id = unit.id
-        # Reset the abandoned-unit stash so a prior timed-out unit can't
-        # leak its state into this one's late-ack commit (#1052).
-        box.unit_abandoned = False
-        box.pending_unit_roms = []
-        box.sync_last_heartbeat = self._clock.monotonic()
-        await self._emit(
-            "sync_apply_unit",
-            {
-                "run_id": str(box.current_sync_id or ""),
-                "unit_type": unit.type,
-                "unit_id": unit.id,
-                "unit_name": unit.name,
-                "unit_index": unit_index,
-                "total_units": total_units,
-                "shortcuts": emitted,
-            },
+        return await self._apply_unit_in_chunks(
+            unit,
+            unit_index=unit_index,
+            total_units=total_units,
+            emitted=emitted,
+            shortcuts_data=shortcuts_data,
+            unit_roms=unit_roms,
         )
 
-        applied = await self._wait_for_unit_complete(unit, box.unit_complete_event)
-        if applied is None:
-            # The wait gave up — but the reason matters. The outer loop
-            # observes CANCELLING and stops either way; what differs is
-            # whether the frontend's in-flight work is recoverable.
+    async def _attach_unit_cover_paths(
+        self,
+        unit: WorkUnit,
+        unit_roms: list[dict[str, Any]],
+        emitted: list[dict[str, Any]],
+        *,
+        unit_index: int,
+        total_units: int,
+    ) -> None:
+        """Download artwork for the shortcuts about to be emitted and stamp each
+        emitted entry's ``cover_path`` in place.
+
+        Only the ROMs that actually get a shortcut (representatives + grandfathered
+        siblings) are fetched — no eager covers for versions with no shortcut. A
+        rebind entry pulls its cover from the representative it binds
+        (``BIND_ROM_ID_KEY``), whose raw dict is the one present in *unit_roms*.
+        A no-op when nothing is emitted.
+        """
+        if not emitted:
+            return
+        artwork_ids = {int(e.get(BIND_ROM_ID_KEY, e["rom_id"])) for e in emitted}
+        artwork_roms = [rom for rom in unit_roms if rom["id"] in artwork_ids]
+        cover_paths = await self._download_artwork(
+            artwork_roms,
+            progress_step=unit_index + 1,
+            progress_total_steps=total_units,
+            label=unit.name,
+        )
+        for e in emitted:
+            e["cover_path"] = cover_paths.get(int(e.get(BIND_ROM_ID_KEY, e["rom_id"])), "")
+
+    async def _apply_unit_in_chunks(
+        self,
+        unit: WorkUnit,
+        *,
+        unit_index: int,
+        total_units: int,
+        emitted: list[dict[str, Any]],
+        shortcuts_data: list[dict[str, Any]],
+        unit_roms: list[dict[str, Any]],
+    ) -> int:
+        """Emit → wait → commit the unit's shortcuts one durable chunk at a time.
+
+        The emitted shortcuts are split into commit chunks processed one at a time
+        (emit → wait → commit durably → next), so a mid-unit CEF crash forfeits
+        only the in-flight chunk, not every prior chunk. ``chunk.rom_ids`` are the
+        chunk's fetched ROMs (its sibling groups' rows); a keyed lookup into the
+        whole unit's live fetch yields the chunk's commit subset. Returns the
+        running count of shortcuts applied — a cancel or heartbeat timeout returns
+        early with the chunks committed so far.
+        """
+        box = self._sync_state
+        chunks = build_unit_chunks(emitted, shortcuts_data, _APPLY_CHUNK_SIZE)
+        roms_by_id = {r["id"]: r for r in unit_roms if "id" in r}
+        chunk_count = len(chunks)
+        applied_count = 0
+        for chunk_index, chunk in enumerate(chunks):
+            # A cancel landing in the inter-chunk window — after the prior chunk's
+            # commit but before this chunk's emit — discards the rest of the unit
+            # here, before any per-chunk mutation or emit. Without this the
+            # frontend would fully process another ~200-shortcut chunk (~2 min)
+            # whose ack the backend then rejects, orphaning those shortcuts until
+            # the next sync. Same cleanup as the mid-wait user-cancel branch.
             if box.is_cancelling():
-                # User cancel: in-flight work is intentionally discarded.
-                # Drop the pending state, null the event, and clear the unit
-                # identity so a stray late ack can't commit a cancelled unit.
-                box.pending_sync = {}
-                box.pending_all_roms = {}
-                box.unit_complete_event = None
-                box.active_unit_id = None
-            else:
-                # Heartbeat timeout: the frontend has already created this
-                # unit's Steam shortcuts and will still fire its late
-                # ``report_unit_results`` ack. Keep ``pending_sync`` +
-                # ``pending_all_roms`` + ``unit_complete_event`` and stash the
-                # unit's ROMs so the late ack commits the delivered bindings
-                # instead of leaving orphan shortcuts (#1052). Flag the unit
-                # abandoned so the reporter drives that commit itself.
-                box.unit_abandoned = True
-                box.pending_unit_roms = unit_roms
-                box.request_cancel()
-            return 0
+                box.clear_active_unit()
+                return applied_count
 
-        # Per-unit commit: the reporter upserts EVERY fetched ROM into the
-        # ``roms`` aggregate (identity + version metadata, unbound for non-
-        # representatives) and binds only the acked representatives, stamping
-        # each ROM's cached ``rom_metadata`` in the same write UoW (Rom row
-        # first, metadata second — FK-safe). ``unit_roms`` is the live RomM
-        # fetch for the whole unit — the source of ``metadatum``.
-        await self._reporter.get().commit_unit_results(applied, unit_roms)
+            chunk_rows = [roms_by_id[rid] for rid in chunk.rom_ids if rid in roms_by_id]
 
-        box.pending_sync = {}
-        box.pending_all_roms = {}
-        box.unit_complete_event = None
-        box.active_unit_id = None
-        return len(applied)
+            # Fresh per-chunk coordination: a new event + identity (run + unit +
+            # chunk index) so the reporter validates each chunk's ack, and the
+            # abandoned-chunk stash from a prior chunk can't leak into this one.
+            box.unit_complete_event = asyncio.Event()
+            box.last_unit_results = None
+            box.active_unit_id = unit.id
+            box.active_chunk_index = chunk_index
+            box.unit_abandoned = False
+            box.pending_unit_roms = []
+            box.sync_last_heartbeat = self._clock.monotonic()
+            await self._emit(
+                "sync_apply_unit",
+                {
+                    "run_id": str(box.current_sync_id or ""),
+                    "unit_type": unit.type,
+                    "unit_id": unit.id,
+                    "unit_name": unit.name,
+                    "unit_index": unit_index,
+                    "total_units": total_units,
+                    "chunk_index": chunk_index,
+                    "chunk_count": chunk_count,
+                    "chunk_offset": chunk.offset,
+                    "unit_total": len(emitted),
+                    "shortcuts": chunk.emitted,
+                },
+            )
+
+            applied = await self._wait_for_unit_complete(unit, box.unit_complete_event)
+            if applied is None:
+                # The wait gave up — the reason (user cancel vs heartbeat timeout)
+                # decides whether this chunk's in-flight work is recoverable. Chunks
+                # committed before this one stay committed either way.
+                self._abandon_active_chunk(box, chunk_rows)
+                return applied_count
+
+            platform_stamp = self._build_final_platform_stamp(unit, chunk_index, chunk_count)
+
+            # Per-chunk commit: the reporter upserts every fetched ROM of this
+            # chunk into the ``roms`` aggregate (identity + version metadata,
+            # unbound for non-representatives) and binds only the acked
+            # representatives, stamping each ROM's cached ``rom_metadata`` in the
+            # same write UoW (Rom row first, metadata second — FK-safe).
+            # ``chunk_rows`` is this chunk's slice of the live RomM fetch — the
+            # source of ``metadatum`` — so each committed chunk is a crash-safe
+            # checkpoint. ``platform_stamp`` (final platform chunk only) rides the
+            # same UoW.
+            await self._reporter.get().commit_unit_results(applied, chunk_rows, platform_stamp=platform_stamp)
+            applied_count += len(applied)
+
+        box.clear_active_unit()
+        return applied_count
+
+    def _abandon_active_chunk(self, box: LibrarySyncStateBox, chunk_rows: list[dict[str, Any]]) -> None:
+        """Tear down or stash the in-flight chunk after its wait gave up.
+
+        A user cancel (box already CANCELLING) intentionally discards the chunk:
+        drop the whole-unit staging, null the event, and clear the unit + chunk
+        identity so a stray late ack can't commit it. A heartbeat timeout (box
+        still RUNNING) instead KEEPS the staging + ``unit_complete_event`` and
+        stashes THIS chunk's rows so a late ``report_unit_results`` still commits
+        the delivered bindings instead of leaving orphan shortcuts (#1052); it
+        flags the chunk abandoned so the reporter drives that commit, marks the run
+        ``interrupted`` (the frontend went dark, not the user's Cancel — so the
+        terminal SyncRun write records ``interrupted``), and requests the cancel
+        that stops the chunk loop.
+        """
+        if box.is_cancelling():
+            box.clear_active_unit()
+        else:
+            box.unit_abandoned = True
+            box.pending_unit_roms = chunk_rows
+            box.run_interrupted = True
+            box.request_cancel()
+
+    def _build_final_platform_stamp(
+        self, unit: WorkUnit, chunk_index: int, chunk_count: int
+    ) -> PlatformSyncState | None:
+        """Build the completion stamp for a platform unit's FINAL chunk, else ``None``.
+
+        On the final chunk of a PLATFORM unit the stamp rides that chunk's commit
+        UoW so "platform fully synced" ⟺ "stamp exists" is atomic on a crash. The
+        stamp lets the next sync's incremental-skip gate skip this platform even
+        when the whole run is later cancelled (its library-wide ``last_sync`` never
+        advances). Only platform units carry a skip gate — collections have none,
+        so they are never stamped. A cancel or heartbeat timeout mid-unit returns
+        before the final chunk, so an incomplete platform is never stamped
+        (ADR-0023 / #1025).
+        """
+        if unit.type == "platform" and unit.slug and chunk_index == chunk_count - 1:
+            return PlatformSyncState.stamp(
+                platform_slug=unit.slug,
+                at=self._clock.now().isoformat(),
+                rom_count=unit.rom_count,
+            )
+        return None
 
     async def _sync_platform_unit(
         self,
@@ -933,6 +1118,8 @@ class SyncOrchestrator:
         *,
         synced_rom_ids: set[int],
         platform_rom_ids: set[int],
+        progress_step: int = 0,
+        progress_total_steps: int = 0,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Resolve ROMs for a platform unit and update cross-unit accumulators.
 
@@ -940,8 +1127,12 @@ class SyncOrchestrator:
         shortcut + artwork + apply phases. ROMs come from a live per-unit
         fetch (no preview cache); the fetcher's incremental-skip path
         handles the "unchanged platform" optimisation internally.
+        ``progress_step`` / ``progress_total_steps`` thread the unit's coarse
+        position into the fetcher's per-page ``fetching`` frames.
         """
-        unit_roms, skipped = await self._fetcher.fetch_platform_unit(unit)
+        unit_roms, skipped = await self._fetcher.fetch_platform_unit(
+            unit, progress_step=progress_step, progress_total_steps=progress_total_steps
+        )
         platform_rom_ids.update(r["id"] for r in unit_roms)
         synced_rom_ids.update(r["id"] for r in unit_roms)
         return unit_roms, skipped
@@ -952,16 +1143,22 @@ class SyncOrchestrator:
         *,
         synced_rom_ids: set[int],
         collection_memberships: dict[str, list[int]],
+        progress_step: int = 0,
+        progress_total_steps: int = 0,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Resolve ROMs for a collection unit and record its membership.
 
         Returns ``(unit_roms, skipped)`` — ``skipped`` is always
         ``False`` because collection units have no incremental-skip
         gate today. ROMs come from a live per-unit fetch that already
-        dedups against ``synced_rom_ids``.
+        dedups against ``synced_rom_ids``. ``progress_step`` /
+        ``progress_total_steps`` thread the unit's coarse position into the
+        fetcher's per-page ``fetching`` frames.
         """
         skipped = False
-        unit_roms, all_collection_rom_ids = await self._fetcher.fetch_collection_unit(unit, synced_rom_ids)
+        unit_roms, all_collection_rom_ids = await self._fetcher.fetch_collection_unit(
+            unit, synced_rom_ids, progress_step=progress_step, progress_total_steps=progress_total_steps
+        )
         if all_collection_rom_ids:
             collection_memberships[unit.name] = all_collection_rom_ids
         return unit_roms, skipped
@@ -1130,8 +1327,12 @@ class SyncOrchestrator:
 
     # ── Artwork delegation ───────────────────────────────────────
 
-    async def _download_artwork(self, all_roms, progress_step=4, progress_total_steps=6):
-        """Delegate artwork download to ArtworkService callback."""
+    async def _download_artwork(self, all_roms, progress_step=4, progress_total_steps=6, label=""):
+        """Delegate artwork download to ArtworkService callback.
+
+        ``label`` is the unit's display name, threaded into the cover-download
+        progress frames ("Preparing covers for <label>").
+        """
         box = self._sync_state
         return await self._artwork.download_artwork(
             all_roms,
@@ -1139,4 +1340,5 @@ class SyncOrchestrator:
             is_cancelling=box.is_cancelling,
             progress_step=progress_step,
             progress_total_steps=progress_total_steps,
+            label=label,
         )

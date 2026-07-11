@@ -33,14 +33,22 @@ class FakeSyncRunRepository:
             return None
         return copy.deepcopy(max(completed, key=lambda run: run.started_at))
 
+    def get_latest_terminal(self) -> SyncRun | None:
+        terminal = [
+            run for run in self._runs.values() if run.status in ("completed", "cancelled", "interrupted", "errored")
+        ]
+        if not terminal:
+            return None
+        return copy.deepcopy(max(terminal, key=lambda run: run.finished_at or ""))
+
     def get_running(self) -> SyncRun | None:
         for run in self._runs.values():
             if run.status == "running":
                 return copy.deepcopy(run)
         return None
 
-    def delete_completed(self) -> None:
-        self._runs = {run_id: run for run_id, run in self._runs.items() if run.status != "completed"}
+    def delete_history(self) -> None:
+        self._runs = {run_id: run for run_id, run in self._runs.items() if run.status == "running"}
 
     def _snapshot(self) -> dict[str, SyncRun]:
         return copy.deepcopy(self._runs)

@@ -91,6 +91,14 @@ class LibrarySyncStateBox:
     # heartbeat-timeout abandon window so the late ack for the SAME unit still
     # validates; the cleared cross-run/cross-unit case is what it rejects.
     active_unit_id: int | str | None = None
+    # 0-based index of the unit's apply chunk currently dispatched to the
+    # frontend. A unit's emitted shortcuts are split into chunks emitted +
+    # committed one at a time (each chunk is a durable checkpoint); this stamps
+    # which chunk is in flight so ``SyncReporter.report_unit_results`` can reject
+    # an ack for a stale chunk alongside the run/unit identity check. Set by the
+    # orchestrator before each chunk's ``sync_apply_unit`` emit and cleared to
+    # ``None`` once the unit's last chunk is committed (or the unit is cancelled).
+    active_chunk_index: int | None = None
     # Holds the frontend-supplied ``rom_id_to_app_id`` mapping reported
     # for the active unit. Surfaces the result so the orchestrator can
     # accumulate the per-unit registry into the cross-run accumulators.
@@ -101,9 +109,17 @@ class LibrarySyncStateBox:
     # observes this flag and drives the per-unit commit itself so the
     # delivered bindings are persisted rather than discarded (#1052).
     unit_abandoned: bool = False
-    # The abandoned unit's live RomM fetch (the source of each ROM's
-    # ``metadatum``), stashed so a late ack can rebuild ``acked_roms`` for
-    # the commit it drives. Reset between units alongside ``last_unit_results``.
+    # Set True (alongside ``unit_abandoned``) when a heartbeat timeout ends the
+    # run, so the terminal ``SyncRun`` write records ``interrupted`` — an
+    # external death (frontend crash/reload) — instead of ``cancelled``, which
+    # is reserved for the user's own Cancel. Reset at the start of each run;
+    # never reset by the per-chunk loop, so a timeout anywhere in the run wins.
+    run_interrupted: bool = False
+    # The abandoned CHUNK's rows (the fetched ROMs of the in-flight chunk's
+    # sibling groups, each the source of its ``metadatum``), stashed so a late
+    # ack can rebuild ``acked_roms`` for the commit it drives. Only the chunk
+    # that timed out is stashed — already-committed chunks stay committed. Reset
+    # between chunks alongside ``last_unit_results``.
     pending_unit_roms: list[dict[str, Any]] = field(default_factory=list)
     # Every Steam appId bound by a ``commit_unit_results`` this run, across
     # BOTH the happy path and the heartbeat-timeout late-ack path (#1052).
@@ -171,3 +187,21 @@ class LibrarySyncStateBox:
     def is_cancelling(self) -> bool:
         """True while a cancel has been requested for the in-flight run."""
         return self.sync_state is SyncState.CANCELLING
+
+    def clear_active_unit(self) -> None:
+        """Tear down the active unit's in-flight dispatch state.
+
+        Resets the chunk-coordination quintet: the emitted + all-ROM staging
+        (``pending_sync`` / ``pending_all_roms``), the ack event
+        (``unit_complete_event``), and the unit + chunk identity
+        (``active_unit_id`` / ``active_chunk_index``). The single teardown for a
+        unit that finished, was cancelled, or whose inter-chunk window closed.
+        NOT called on the heartbeat-timeout branch, which deliberately KEEPS this
+        staging so a late ``report_unit_results`` can still commit the delivered
+        bindings (#1052).
+        """
+        self.pending_sync = {}
+        self.pending_all_roms = {}
+        self.unit_complete_event = None
+        self.active_unit_id = None
+        self.active_chunk_index = None

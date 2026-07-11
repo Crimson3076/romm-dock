@@ -30,28 +30,39 @@ silent omission. The CI check enforces this.
 - **Frontend API**: `@decky/ui` + `@decky/api` (NOT deprecated `decky-frontend-lib`). Use `callable()` (NOT
   `ServerAPI.callPluginMethod()`).
 - **RomM API quirks**: Filter param is `platform_ids` (plural). Cover URLs have unencoded spaces (must URL-encode).
-  Paginated: `{"items": [...], "total": N}`.
-- **AddShortcut timing**: Must wait 300-500ms after `AddShortcut()` before setting properties. Use 50ms delay between
-  operations.
+  Paginated: `{"items": [...], "total": N}`. The `/api/roms` list calls page at `limit=500` (`lib/romm_paging.py`
+  `LIST_PAGE_SIZE`; the endpoint bounds `limit` at `le=10_000`, unchanged across 4.9.x) and append
+  `&with_char_index=false&with_filter_values=false` to skip the unused char-index + filter-values aggregations the
+  server computes on every list request — so a typical platform is one request, not dozens.
+- **AddShortcut timing**: After `AddShortcut()`, wait for the new app's overview before setting properties — poll
+  `appStore.GetAppOverviewByAppID(appId)` (`waitForAppOverview`, ~100ms cadence, 1000ms fallback that proceeds anyway)
+  instead of a blind fixed delay. On create, an empty `launch_options` (uninstalled ROM) skips both
+  `SetAppLaunchOptions` and the confirm poll — a fresh shortcut's launch options are already empty, and skipping avoids
+  the confirm poll's fat `AppDetails` cache hit. Use 50ms delay between operations in the apply loop.
 - **Large payloads**: Never send bulk base64 data through `decky.emit()` — WebSocket bridge has size limits. Use
-  per-item callables instead.
+  per-item callables instead. Bulk lists are chunked too: the library apply emits shortcuts ~200 at a time
+  (`_APPLY_CHUNK_SIZE`, ADR-0023) and the metadata cache is loaded page-by-page (`get_metadata_cache_page`), so a large
+  library never pushes a multi-MB frame in one response.
 - **User-Agent on outgoing HTTP**: SteamGridDB **and** RomM behind Cloudflare Tunnel reject the default `Python-urllib`
   UA with 403 (Bot Fight Mode at the edge). Every HTTP-talking adapter (`RommHttpAdapter`, `SteamGridDbAdapter`) takes a
   `user_agent: str` ctor param. Bootstrap reads `package.json` once via `PluginMetadataReader` and threads
   `decky-romm-sync/<version>` to both — single source of truth, no hardcoded version strings.
 - **AddShortcut ignores most params**: `SteamClient.Apps.AddShortcut(name, exe, startDir, launchOptions)` ignores
   startDir and launchOptions (confirmed by MoonDeck plugin). Must use `Set*` calls (`SetShortcutName`, `SetShortcutExe`,
-  `SetShortcutStartDir`, `SetAppLaunchOptions`) after a 500ms delay. Do NOT pass quoted exe paths — the API handles
-  quoting internally.
+  `SetShortcutStartDir`, `SetAppLaunchOptions`) once the new app's overview is registered (see AddShortcut timing
+  above). Do NOT pass quoted exe paths — the API handles quoting internally.
 - **BIsModOrShortcut bypass DROPPED**: Phase 5.6 removed the bypass counter entirely. Shortcuts return
   `BIsModOrShortcut() = true` (natural state). We own the entire game detail UI via RomMPlaySection + future
   RomMGameInfoPanel.
-- **Shortcut property updates**: A shortcut's appId is derived from `exe + appName` (CRC32), so
-  `launchOptions`/`startDir` changes are **appId-safe** (same shortcut, binding/artwork/collections survive) and
-  `SetAppLaunchOptions`-on-existing is **reliable** (hardware-validated in #827: in-session + restart + churn). Use the
-  fire-then-poll-`AppDetails` confirm (`setLaunchOptionsConfirmed`) since `Set*` returns void. Delete + recreate
-  (re-sync) is only needed for **exe/name** changes, which produce a different appId. The real hazard is removal-churn
-  corrupting Steam's in-memory shortcut state (a restart clears it).
+- **Shortcut property updates**: Steam **assigns** a shortcut's appId at creation and it is **stable for the shortcut's
+  lifetime** (the plugin never computes it — it records the assigned id in `roms.shortcut_app_id` and detects ownership
+  by the exe path; the old `CRC32(exe + appName)` derivation is disproven on current Steam, see
+  `docs/architecture/steam-non-steam-shortcuts.md` §App IDs). So `launchOptions`/`startDir` changes are **appId-safe**
+  (same shortcut, binding/artwork/collections survive) and `SetAppLaunchOptions`-on-existing is **reliable**
+  (hardware-validated in #827: in-session + restart + churn). Use the fire-then-poll-`AppDetails` confirm
+  (`setLaunchOptionsConfirmed`) since `Set*` returns void. Delete + recreate (re-sync) is still the path for
+  **exe/name** changes (a fresh `AddShortcut` yields a new appId). The real hazard is removal-churn corrupting Steam's
+  in-memory shortcut state (a restart clears it).
 - **Launcher + launch_options model**: `bin/rom-launcher` (renamed from `bin/romm-launcher`, #778) is a pure `exec "$@"`
   wrapper — no state, no path resolution, no emulator knowledge. The Steam shortcut's `launch_options` carries the FULL
   launch command (`flatpak run net.retrodeck.retrodeck "<rom-path>"`) for installed ROMs, or `""` (placeholder) for
@@ -262,11 +273,11 @@ purity.)
 
 **Aggregates** (CP chapters 1–7 scope — locked in #788, refined by
 [ADR-0003](docs/adr/0003-json-sqlite-persistence-boundary.md)). The aggregate roots, their tables, and the enforcement
-layers live in `docs/architecture/database-design.md` (canonical — 8 roots after ADR-0003). Persistence boundary:
-config-shaped toggles (`save_sync_enabled`, `sync_before_launch`, `sync_after_exit`, `default_slot`,
-`autocleanup_limit`, `device_name`, `enabled_platforms`) live in `settings.json`, not SQLite —
-`SyncSettings`/`Platform`/`Device` were considered as aggregates and dropped. The rules below apply to the relational
-state that _does_ live in SQLite:
+layers live in `docs/architecture/database-design.md` (canonical — 9 roots: ADR-0003's 8 plus ADR-0023's
+`PlatformSyncState`). Persistence boundary: config-shaped toggles (`save_sync_enabled`, `sync_before_launch`,
+`sync_after_exit`, `default_slot`, `autocleanup_limit`, `device_name`, `enabled_platforms`) live in `settings.json`, not
+SQLite — `SyncSettings`/`Platform`/`Device` were considered as aggregates and dropped. The rules below apply to the
+relational state that _does_ live in SQLite:
 
 - `[CP]` One Repository Protocol per aggregate root, not per table. Aggregate boundaries are domain-modeling decisions;
   table layout is downstream and may need multiple tables to back one aggregate.

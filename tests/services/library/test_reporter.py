@@ -79,6 +79,8 @@ class TestGetSyncStats:
         assert stats["roms"] == 3
         assert stats["total_shortcuts"] == 3
         assert stats["last_sync"] == "2025-01-01T00:00:00"
+        # Only a completed run exists — no separate attempt to surface.
+        assert stats["last_attempt"] is None
 
     @pytest.mark.asyncio
     async def test_empty_registry(self, plugin):
@@ -87,6 +89,7 @@ class TestGetSyncStats:
         assert stats["roms"] == 0
         assert stats["total_shortcuts"] == 0
         assert stats["last_sync"] is None
+        assert stats["last_attempt"] is None
 
     @pytest.mark.asyncio
     async def test_excludes_unbound_roms_from_count(self, plugin):
@@ -115,6 +118,98 @@ class TestGetSyncStats:
         with uow:
             assert uow.roms.get(10).shortcut_app_id is None
             assert uow.roms.get(20).shortcut_app_id is None
+
+
+class TestGetSyncStatsLastAttempt:
+    """last_attempt — surface a cancelled/crashed run so 'Last sync' isn't 'Never' (#1367-class)."""
+
+    @staticmethod
+    def _cancelled(uow, *, id, started, finished, reason="Sync cancelled"):
+        from domain.sync_run import SyncRun
+
+        run = SyncRun.start(id=id, at=started, platforms_planned=1, roms_planned=1)
+        run.mark_cancelled(finished, reason)
+        with uow:
+            uow.sync_runs.save(run)
+
+    @staticmethod
+    def _completed(uow, *, id, started, finished):
+        from domain.sync_run import SyncRun
+
+        run = SyncRun.start(id=id, at=started, platforms_planned=1, roms_planned=1)
+        run.complete(finished, ["N64"], [])
+        with uow:
+            uow.sync_runs.save(run)
+
+    @staticmethod
+    def _interrupted(uow, *, id, started, finished, reason="Sync interrupted (Steam UI stopped responding)"):
+        from domain.sync_run import SyncRun
+
+        run = SyncRun.start(id=id, at=started, platforms_planned=1, roms_planned=1)
+        run.mark_interrupted(finished, reason)
+        with uow:
+            uow.sync_runs.save(run)
+
+    @pytest.mark.asyncio
+    async def test_no_runs_reports_no_attempt(self, plugin):
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] is None
+        assert stats["last_attempt"] is None
+
+    @pytest.mark.asyncio
+    async def test_only_cancelled_run_surfaces_attempt(self, plugin):
+        """A cancelled run with no completed run ever → last_sync None, last_attempt set."""
+        self._cancelled(plugin._uow, id="run-c", started="2025-06-01T17:00:00", finished="2025-06-01T17:48:00")
+
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] is None
+        assert stats["last_attempt"] == {"finished_at": "2025-06-01T17:48:00", "status": "cancelled"}
+
+    @pytest.mark.asyncio
+    async def test_errored_run_surfaces_attempt_with_errored_status(self, plugin):
+        run_uow = plugin._uow
+        from domain.sync_run import SyncRun
+
+        run = SyncRun.start(id="run-e", at="2025-06-01T10:00:00", platforms_planned=1, roms_planned=1)
+        run.mark_errored("2025-06-01T10:05:00", "boom")
+        with run_uow:
+            run_uow.sync_runs.save(run)
+
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] is None
+        assert stats["last_attempt"] == {"finished_at": "2025-06-01T10:05:00", "status": "errored"}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_newer_than_completed_surfaces_attempt(self, plugin):
+        """A cancelled run newer than the last completed one → both surface."""
+        self._completed(plugin._uow, id="run-ok", started="2025-06-01T09:00:00", finished="2025-06-01T09:30:00")
+        self._cancelled(plugin._uow, id="run-c", started="2025-06-02T08:00:00", finished="2025-06-02T08:20:00")
+
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] == "2025-06-01T09:30:00"
+        assert stats["last_attempt"] == {"finished_at": "2025-06-02T08:20:00", "status": "cancelled"}
+
+    @pytest.mark.asyncio
+    async def test_interrupted_newer_than_completed_surfaces_attempt(self, plugin):
+        """An interrupted run (external death) newer than the last completed one →
+        last_attempt carries the 'interrupted' status (get_latest_terminal must
+        include interrupted, or this run would be invisible to the hint)."""
+        self._completed(plugin._uow, id="run-ok", started="2025-06-01T09:00:00", finished="2025-06-01T09:30:00")
+        self._interrupted(plugin._uow, id="run-i", started="2025-06-02T08:00:00", finished="2025-06-02T08:20:00")
+
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] == "2025-06-01T09:30:00"
+        assert stats["last_attempt"] == {"finished_at": "2025-06-02T08:20:00", "status": "interrupted"}
+
+    @pytest.mark.asyncio
+    async def test_completed_newer_than_cancelled_hides_attempt(self, plugin):
+        """A clean run after a cancelled one → last_sync only, no stale attempt line."""
+        self._cancelled(plugin._uow, id="run-c", started="2025-06-01T08:00:00", finished="2025-06-01T08:20:00")
+        self._completed(plugin._uow, id="run-ok", started="2025-06-02T09:00:00", finished="2025-06-02T09:30:00")
+
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] == "2025-06-02T09:30:00"
+        assert stats["last_attempt"] is None
 
 
 class TestGetRegistryPlatforms:
@@ -310,6 +405,44 @@ class TestCommitUnitResults:
         assert rom.igdb_id == 555
         assert rom.sgdb_id == 999
         assert rom.ra_id == 777
+
+    def test_commit_persists_platform_stamp_atomically(self, plugin):
+        """A passed ``platform_stamp`` lands in the SAME committed UoW as the rom
+        upsert — the per-platform completion stamp is atomic with the chunk (ADR-0023)."""
+        from domain.platform_sync_state import PlatformSyncState
+
+        uow = plugin._uow
+        _stage(
+            plugin._sync_service._box,
+            42,
+            {"name": "Game", "fs_name": "game.z64", "platform_slug": "n64", "cover_path": ""},
+        )
+        stamp = PlatformSyncState.stamp(platform_slug="n64", at="2026-01-01T00:00:00+00:00", rom_count=7)
+
+        plugin._sync_service._reporter._commit_unit_results_io({"42": 100001}, [{"id": 42}], stamp)
+
+        assert uow.committed is True
+        with uow:
+            assert uow.roms.get(42) is not None  # chunk rom upserted
+            loaded = uow.platform_sync_state.get("n64")
+        assert loaded is not None
+        assert loaded.rom_count == 7
+        assert loaded.completed_at == "2026-01-01T00:00:00+00:00"
+
+    def test_commit_without_stamp_writes_no_platform_state(self, plugin):
+        """A commit with the default ``platform_stamp=None`` (non-final chunk, or a
+        collection/late-ack path) leaves ``platform_sync_state`` untouched."""
+        uow = plugin._uow
+        _stage(
+            plugin._sync_service._box,
+            42,
+            {"name": "Game", "fs_name": "game.z64", "platform_slug": "n64", "cover_path": ""},
+        )
+
+        plugin._sync_service._reporter._commit_unit_results_io({"42": 100001}, [{"id": 42}])
+
+        with uow:
+            assert uow.platform_sync_state.get("n64") is None
 
     def test_commit_persists_version_metadata_from_pending(self, plugin):
         """The sibling-group key + version dimensions ride the pending entry onto
@@ -739,6 +872,37 @@ class TestCommitUnitMetadataStamp:
             assert list(uow.rom_metadata.iter_all()) == []
 
 
+class TestAckMatchesActiveUnit:
+    """The reporter's ack identity guard now spans run + unit + chunk (#1025).
+
+    A chunked apply dispatches one chunk at a time; an ack must echo back the
+    active chunk index or it is rejected, so a crash-late ack for a superseded
+    chunk can never be credited to the chunk in flight.
+    """
+
+    def test_matches_when_run_unit_and_chunk_all_agree(self, plugin):
+        box = plugin._sync_service._box
+        box.current_sync_id = "run-1"
+        box.active_unit_id = 5
+        box.active_chunk_index = 2
+        assert plugin._sync_service._reporter._ack_matches_active_unit("run-1", 5, 2) is True
+
+    def test_rejects_wrong_chunk_index(self, plugin):
+        box = plugin._sync_service._box
+        box.current_sync_id = "run-1"
+        box.active_unit_id = 5
+        box.active_chunk_index = 2
+        # Run + unit agree, but the ack is for a stale chunk.
+        assert plugin._sync_service._reporter._ack_matches_active_unit("run-1", 5, 1) is False
+
+    def test_rejects_when_no_active_chunk(self, plugin):
+        box = plugin._sync_service._box
+        box.current_sync_id = "run-1"
+        box.active_unit_id = 5
+        box.active_chunk_index = None  # no chunk in flight (cancelled / committed)
+        assert plugin._sync_service._reporter._ack_matches_active_unit("run-1", 5, 0) is False
+
+
 class TestClearSyncCache:
     """Tests for clear_sync_cache() — Force Full Sync resets the completed-run history."""
 
@@ -762,7 +926,7 @@ class TestClearSyncCache:
         assert stats["last_sync"] is None
 
     def test_keeps_running_run(self, plugin):
-        """A running run is untouched — only completed history is cleared."""
+        """A running run is untouched — only terminal history is cleared."""
         from domain.sync_run import SyncRun
 
         uow = plugin._uow
@@ -774,6 +938,54 @@ class TestClearSyncCache:
 
         with uow:
             assert uow.sync_runs.get_running() is not None
+
+    def test_reset_leaves_last_sync_never_not_a_stale_cancelled_attempt(self, plugin):
+        """After Force Full Sync, "Last sync" reads Never — not a stale cancelled run.
+
+        clear_sync_cache deletes the completed run; if it left older cancelled
+        runs behind, the last-attempt hint would surface one as the "Last sync"
+        state right after a reset (the on-device #1025 regression). Clearing all
+        terminal history keeps last_sync + last_attempt both None.
+        """
+        from domain.sync_run import SyncRun
+
+        uow = plugin._uow
+        completed = SyncRun.start(id="run-ok", at="2025-01-01T00:00:00", platforms_planned=1, roms_planned=1)
+        completed.complete("2025-01-01T00:10:00", ["N64"], [])
+        cancelled = SyncRun.start(id="run-x", at="2025-01-01T01:00:00", platforms_planned=1, roms_planned=1)
+        cancelled.mark_cancelled("2025-01-01T01:05:00", reason="user")
+        with uow:
+            uow.sync_runs.save(completed)
+            uow.sync_runs.save(cancelled)
+
+        plugin._sync_service.clear_sync_cache()
+
+        stats = plugin._sync_service.get_sync_stats()
+        assert stats["last_sync"] is None
+        assert stats["last_attempt"] is None
+
+    def test_clears_platform_completion_stamps(self, plugin):
+        """Force Full Sync also drops the per-platform completion stamps (ADR-0023).
+
+        Each stamp is its own effective ``last_sync``; leaving them would let an
+        unchanged platform still skip after the user asked for a full re-fetch.
+        """
+        from domain.platform_sync_state import PlatformSyncState
+
+        uow = plugin._uow
+        with uow:
+            uow.platform_sync_state.save(
+                PlatformSyncState.stamp(platform_slug="n64", at="2025-01-01T00:00:00", rom_count=100)
+            )
+            uow.platform_sync_state.save(
+                PlatformSyncState.stamp(platform_slug="snes", at="2025-01-01T00:00:00", rom_count=200)
+            )
+
+        plugin._sync_service.clear_sync_cache()
+
+        with uow:
+            assert uow.platform_sync_state.get("n64") is None
+            assert uow.platform_sync_state.get("snes") is None
 
 
 class TestFinalizePerUnitRun:
@@ -889,6 +1101,49 @@ class TestFinalizePerUnitRun:
         complete_events = [c for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
         assert len(complete_events) == 1
         assert "cancelled" not in complete_events[0][0][1]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_finalize_frame_says_cancelled_when_not_interrupted(self, plugin):
+        """A user cancel (box.run_interrupted False) → the terminal CANCELLED frame
+        leads with 'Sync cancelled:'."""
+        import decky
+
+        decky.emit.reset_mock()
+        plugin._sync_service._box.run_interrupted = False
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={},
+            pending_platform_rom_ids=set(),
+            total_games=3,
+            platform_names={},
+            cancelled=True,
+        )
+
+        progress = plugin._sync_service._sync_progress
+        assert progress["stage"] == "cancelled"
+        assert progress["message"].startswith("Sync cancelled: ")
+
+    @pytest.mark.asyncio
+    async def test_cancelled_finalize_frame_says_interrupted_when_run_interrupted(self, plugin):
+        """A heartbeat-timeout run routes through the same cancelled finalize; with
+        box.run_interrupted set the terminal frame leads with 'Sync interrupted:'
+        (stage stays CANCELLED — no new SyncStage)."""
+        import decky
+
+        decky.emit.reset_mock()
+        plugin._sync_service._box.run_interrupted = True
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={},
+            pending_platform_rom_ids=set(),
+            total_games=3,
+            platform_names={},
+            cancelled=True,
+        )
+
+        progress = plugin._sync_service._sync_progress
+        assert progress["stage"] == "cancelled"
+        assert progress["message"].startswith("Sync interrupted: ")
 
     @pytest.mark.asyncio
     async def test_does_not_reset_run_lifecycle(self, plugin):

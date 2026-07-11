@@ -228,7 +228,7 @@ export const getSgdbResolution = callable<[number], SgdbResolution>("get_sgdb_re
 export const searchSgdbGames = callable<[string], SgdbSearchResult>("search_sgdb_games");
 export const applySgdbGameId = callable<[number, number], { success: boolean }>("apply_sgdb_game_id");
 export const reportUnitResults = callable<
-  [Record<string, number>, string, number | string],
+  [Record<string, number>, string, number | string, number],
   { success: boolean; count: number; ignored?: boolean }
 >("report_unit_results");
 export const reportRemovalResults = callable<[(string | number)[]], { success: boolean; message: string }>(
@@ -471,14 +471,19 @@ export const fixRetroarchInputDriver = callable<[], { success: boolean; message:
   "fix_retroarch_input_driver",
 );
 export const getRomMetadata = callable<[number], RomMetadata>("get_rom_metadata");
-export const getAllMetadataCache = callable<[], Record<string, RomMetadata>>("get_all_metadata_cache");
+export const getMetadataCachePage = callable<[number, number], { items: Record<string, RomMetadata>; total: number }>(
+  "get_metadata_cache_page",
+);
 export const getAppIdRomIdMap = callable<[], Record<string, number>>("get_app_id_rom_id_map");
 export const getInstalledRelaunchOptions = callable<[], { app_id: number; launch_options: string }[]>(
   "get_installed_relaunch_options",
 );
 
-// Icon support (VDF-based)
-export const saveShortcutIcon = callable<[number, string], { success: boolean }>("save_shortcut_icon");
+// Icon support — writes the icon PNG into Steam's grid dir and returns its
+// path; the caller points the shortcut at it via SteamClient.Apps.SetShortcutIcon.
+export const saveShortcutIcon = callable<[number, string], { success: boolean; icon_path?: string }>(
+  "save_shortcut_icon",
+);
 
 // Save sync callables
 export const ensureDeviceRegistered = callable<[], { success: boolean; device_id: string; device_name: string }>(
