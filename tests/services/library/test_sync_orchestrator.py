@@ -4343,3 +4343,593 @@ class TestComponentGroupKeyStamping:
         keys = plugin._sync_service._orchestrator._read_resident_group_keys()
 
         assert keys == {1: "igdb:5:1"}
+
+
+class TestSessionBudgetGate:
+    """The RSS-based session-budget pause at chunk boundaries (#1383)."""
+
+    # ── _maybe_pause_for_budget (the gate primitive) ─────────────
+
+    @pytest.mark.asyncio
+    async def test_pauses_and_marks_paused_when_over_budget(self, plugin):
+        from services.library.sync_orchestrator import _SYNC_PAUSED_BUDGET
+
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-1"
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 2_100_000  # + 200*1500 = 2.4M ≥ ceiling 2.2M
+
+        await orch._maybe_pause_for_budget(box, chunk_items=200)
+
+        # 2.1M is above the GC-skip floor, so the reading is GC-settled: one GC and
+        # two RSS reads (raw sample + post-GC re-read).
+        assert plugin._renderer_gc.calls == 1
+        assert plugin._renderer_rss.calls == 2
+        # A budget stop flags run_paused (→ 'paused'), NOT run_interrupted.
+        assert box.run_paused is True
+        assert box.run_interrupted is False
+        assert box.interrupt_reason == _SYNC_PAUSED_BUDGET
+        assert box.is_cancelling() is True
+
+    @pytest.mark.asyncio
+    async def test_proceeds_with_ample_headroom(self, plugin):
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-1"
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 440_000  # fresh baseline — nowhere near the cliff
+
+        await orch._maybe_pause_for_budget(box, chunk_items=200)
+
+        # 440K is below the GC-skip floor: even the worst-case chunk cost can't cross
+        # the ceiling, so the raw reading is trusted and the ~5 s GC is skipped.
+        assert plugin._renderer_gc.calls == 0
+        assert plugin._renderer_rss.calls == 1  # a single raw sample, no re-read
+        assert box.run_interrupted is False
+        assert box.interrupt_reason is None
+        assert box.is_cancelling() is False
+
+    @pytest.mark.asyncio
+    async def test_fail_open_when_rss_unavailable(self, plugin):
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-1"
+        plugin._renderer_rss.rss_kb = None  # measurement unavailable
+
+        await orch._maybe_pause_for_budget(box, chunk_items=200)
+
+        # Fail-open: no pause, and the "RSS unavailable" note is armed once-per-run.
+        assert box.run_interrupted is False
+        assert box.is_cancelling() is False
+        assert box.budget_measure_unavailable_logged is True
+
+    @pytest.mark.asyncio
+    async def test_cliff_limit_proceeds_just_below_the_cliff_bound(self, plugin):
+        from domain.session_budget import CLIFF_KB, WORST_CASE_CREATE_KB
+
+        # The first-chunk call passes limit_kb=CLIFF. One KB below the full-chunk
+        # cliff bound the gate lets the chunk through (spends into the margin, never
+        # past the crash line).
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-1"
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = CLIFF_KB - 200 * WORST_CASE_CREATE_KB - 1  # 2_149_999
+
+        await orch._maybe_pause_for_budget(box, chunk_items=200, limit_kb=CLIFF_KB)
+
+        assert box.run_paused is False
+        assert box.is_cancelling() is False
+
+    @pytest.mark.asyncio
+    async def test_cliff_limit_pauses_when_full_chunk_would_reach_the_cliff(self, plugin):
+        from domain.session_budget import CLIFF_KB, WORST_CASE_CREATE_KB
+        from services.library.sync_orchestrator import _SYNC_PAUSED_BUDGET
+
+        # At the full-chunk cliff bound the projection reaches the cliff exactly and
+        # the gate pauses (>=) — a first chunk this high is stopped before the crash
+        # line even though it would clear the more-permissive absolute-ceiling check
+        # the old first-chunk mode used.
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-1"
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = CLIFF_KB - 200 * WORST_CASE_CREATE_KB  # 2_150_000
+
+        await orch._maybe_pause_for_budget(box, chunk_items=200, limit_kb=CLIFF_KB)
+
+        assert box.run_paused is True
+        assert box.interrupt_reason == _SYNC_PAUSED_BUDGET
+        assert box.is_cancelling() is True
+
+    # ── _gc_then_measure_rss (GC-skip below the floor, LOW-3) ────
+
+    @pytest.mark.asyncio
+    async def test_gc_skipped_below_floor_returns_raw_reading(self, plugin):
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 1_400_000  # below the 1.5M GC-skip floor
+
+        result = await orch._gc_then_measure_rss(box)
+
+        assert result == 1_400_000  # the raw reading is returned as-is
+        assert plugin._renderer_gc.calls == 0  # GC skipped — buys nothing this low
+        assert plugin._renderer_rss.calls == 1  # a single raw read, no re-read
+
+    @pytest.mark.asyncio
+    async def test_gc_fires_and_rereads_at_or_above_floor(self, plugin):
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 1_600_000  # at/above the floor → settle first
+
+        result = await orch._gc_then_measure_rss(box)
+
+        assert result == 1_600_000
+        assert plugin._renderer_gc.calls == 1  # GC fired to settle the reading
+        assert plugin._renderer_rss.calls == 2  # raw sample + post-GC re-read
+
+    # ── End-to-end through the chunk loop ────────────────────────
+
+    @staticmethod
+    def _arm_two_chunk_apply(plugin, fake_romm_api, monkeypatch):
+        """Seed a 2-ROM platform and force one shortcut per chunk (2 chunks)."""
+        from services.library import sync_orchestrator
+
+        plugin.loop = asyncio.get_event_loop()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 10, "name": "Alpha"}, {"id": 11, "name": "Beta"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
+        monkeypatch.setattr(sync_orchestrator, "_APPLY_CHUNK_SIZE", 1)
+
+        async def fake_wait(_u, event):
+            event.set()
+            return {}
+
+        plugin._sync_service._orchestrator._wait_for_unit_complete = fake_wait
+        plugin._sync_service._box.sync_state = SyncState.RUNNING
+        plugin._sync_service._box.current_sync_id = "run-budget"
+
+    @pytest.mark.asyncio
+    async def test_pause_at_second_chunk_persists_paused_with_budget_reason(self, plugin, fake_romm_api, monkeypatch):
+        import decky
+
+        from services.library.sync_orchestrator import _SYNC_PAUSED_BUDGET
+
+        self._arm_two_chunk_apply(plugin, fake_romm_api, monkeypatch)
+        plugin._renderer_gc.result = True
+        # Just under the ceiling: the first chunk's predictive-vs-CLIFF check
+        # (2.199 GB + one item's 1500 KB well below the 2.45 GB cliff) passes, but
+        # the second chunk's predictive-vs-ceiling check (+1500 ≥ 2.2 GB) crosses.
+        plugin._renderer_rss.rss_kb = 2_199_000
+
+        decky.emit.reset_mock()
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        with plugin._uow as uow:
+            run = uow.sync_runs.get("run-budget")
+        assert run is not None
+        # A deliberate session-budget stop is 'paused', NOT 'interrupted' (which is
+        # reserved for an external death — a crash/heartbeat timeout).
+        assert run.status == "paused"
+        assert run.error == _SYNC_PAUSED_BUDGET
+        # The first chunk's predictive-vs-cliff check passed (well below the cliff)
+        # so it committed its ROM; the gate fired the GC before measuring on both
+        # chunk boundaries.
+        assert plugin._renderer_gc.calls >= 2
+        # The distinct pause reason reaches the frontend via sync_complete so the
+        # toast + QAM status read the resume-friendly guidance, not "cancelled".
+        complete = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
+        assert complete and complete[-1].get("interrupt_reason") == _SYNC_PAUSED_BUDGET
+        assert complete[-1].get("cancelled") is True
+
+    @staticmethod
+    def _arm_single_chunk_apply(plugin, fake_romm_api, monkeypatch, *, run_id):
+        """Seed a 1-ROM platform (→ one chunk = the run's first chunk)."""
+        from services.library import sync_orchestrator
+
+        plugin.loop = asyncio.get_event_loop()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 10, "name": "Solo"}])
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
+        monkeypatch.setattr(sync_orchestrator, "_APPLY_CHUNK_SIZE", 1)
+
+        async def fake_wait(_u, event):
+            event.set()
+            return {}
+
+        plugin._sync_service._orchestrator._wait_for_unit_complete = fake_wait
+        plugin._sync_service._box.sync_state = SyncState.RUNNING
+        plugin._sync_service._box.current_sync_id = run_id
+
+    @pytest.mark.asyncio
+    async def test_first_chunk_proceeds_when_projection_stays_below_cliff(self, plugin, fake_romm_api, monkeypatch):
+        # One ROM → one chunk = the run's first. It is gated PREDICTIVELY against the
+        # CLIFF (2.45 GB), not the ceiling: at 2.4 GB — ABOVE the 2.2 GB ceiling the
+        # old absolute first-chunk check would have paused at — this light 1-item
+        # chunk projects 2.4015 GB, still below the cliff, so it proceeds into the
+        # safety margin and the run completes. The gate DID run, so the GC fired.
+        self._arm_single_chunk_apply(plugin, fake_romm_api, monkeypatch, run_id="run-solo")
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 2_400_000  # above the 2.2M ceiling, below the 2.45M cliff
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        with plugin._uow as uow:
+            run = uow.sync_runs.get("run-solo")
+        assert run is not None
+        assert run.status == "completed"
+        assert plugin._renderer_gc.calls >= 1  # the predictive-vs-cliff check GCs + measures
+
+    @pytest.mark.asyncio
+    async def test_first_chunk_repauses_when_projection_reaches_cliff(self, plugin, fake_romm_api, monkeypatch):
+        from services.library.sync_orchestrator import _SYNC_PAUSED_BUDGET
+
+        # A resume whose first chunk would be PROJECTED to reach the cliff (no Steam
+        # restart) must re-pause on that very first chunk rather than drive it into
+        # the crash line. At 2.449 GB even the light 1-item chunk projects ≥ the
+        # 2.45 GB cliff, so the run re-pauses with zero forward progress — intended.
+        self._arm_single_chunk_apply(plugin, fake_romm_api, monkeypatch, run_id="run-over")
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 2_449_000  # +1500 for the one item ≥ the 2.45M cliff
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        with plugin._uow as uow:
+            run = uow.sync_runs.get("run-over")
+        assert run is not None
+        assert run.status == "paused"
+        assert run.error == _SYNC_PAUSED_BUDGET
+        assert plugin._renderer_gc.calls >= 1
+
+    @pytest.mark.asyncio
+    async def test_fail_open_rss_none_completes_all_chunks(self, plugin, fake_romm_api, monkeypatch):
+        self._arm_two_chunk_apply(plugin, fake_romm_api, monkeypatch)
+        plugin._renderer_gc.result = False
+        plugin._renderer_rss.rss_kb = None  # measurement unavailable → gate skipped
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        with plugin._uow as uow:
+            run = uow.sync_runs.get("run-budget")
+        assert run is not None
+        assert run.status == "completed"  # both chunks applied, no pause
+        assert plugin._sync_service._box.budget_measure_unavailable_logged is True
+        # The raw-first measure detects the unavailable reading (raw is None) BEFORE
+        # any GC, and the once-per-run flag short-circuits every later measure, so a
+        # run whose renderer RSS is unreadable never GCs at all.
+        assert plugin._renderer_gc.calls == 0
+
+    # ── Preview prognosis + post-run advisory ────────────────────
+
+    @pytest.mark.asyncio
+    async def test_preview_flags_pause_likely_when_run_would_cross(self, plugin, fake_romm_api):
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        decky.emit.reset_mock()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 1, "name": "A"}])
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._renderer_rss.rss_kb = 2_199_000  # 1 planned touch (+1500) crosses 2.2M ceiling
+
+        result = await plugin.sync_preview()
+
+        assert result["success"] is True
+        assert result["pause_likely"] is True
+
+    @pytest.mark.asyncio
+    async def test_preview_pause_likely_false_with_headroom(self, plugin, fake_romm_api):
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        decky.emit.reset_mock()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 1, "name": "A"}])
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._renderer_rss.rss_kb = 440_000  # fresh baseline
+
+        result = await plugin.sync_preview()
+
+        assert result["pause_likely"] is False
+
+    @pytest.mark.asyncio
+    async def test_preview_pause_likely_false_when_rss_unavailable(self, plugin, fake_romm_api):
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        decky.emit.reset_mock()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 1, "name": "A"}])
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._renderer_rss.rss_kb = None  # fail-open → no warning
+
+        result = await plugin.sync_preview()
+
+        assert result["pause_likely"] is False
+
+    @pytest.mark.asyncio
+    async def test_preview_large_unchanged_resync_does_not_warn(self, plugin, fake_romm_api):
+        # MEDIUM-1: unchanged items are not priced, so a fully-unchanged re-sync
+        # near the ceiling does NOT warn — even though the OLD all-touches formula
+        # (which priced unchanged at the create rate) would have crossed here.
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        decky.emit.reset_mock()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[
+                {"id": 1, "name": "A", "fs_name": "a.z64"},
+                {"id": 2, "name": "B", "fs_name": "b.z64"},
+                {"id": 3, "name": "C", "fs_name": "c.z64"},
+            ],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        # Matching bound baseline rows → all three classify as unchanged.
+        _seed_rom_row(plugin, 1, app_id=1001, platform_slug="n64", name="A", fs_name="a.z64")
+        _seed_rom_row(plugin, 2, app_id=1002, platform_slug="n64", name="B", fs_name="b.z64")
+        _seed_rom_row(plugin, 3, app_id=1003, platform_slug="n64", name="C", fs_name="c.z64")
+        # rss + 3*1500 would cross (the old formula); rss + 0 new + 0 changed does not.
+        plugin._renderer_rss.rss_kb = 2_199_000
+
+        result = await plugin.sync_preview()
+
+        assert result["success"] is True
+        assert result["summary"]["unchanged_count"] == 3
+        assert result["summary"]["new_count"] == 0
+        assert result["summary"]["changed_count"] == 0
+        assert result["pause_likely"] is False
+
+    @pytest.mark.asyncio
+    async def test_completed_run_recommends_restart_when_rss_high(self, plugin, fake_romm_api):
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 10, "name": "A"}])
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
+        plugin._renderer_rss.rss_kb = 1_900_000  # > 1.8M post-run advisory floor
+
+        async def fake_wait(_u, event):
+            event.set()
+            return {"10": 9001}
+
+        plugin._sync_service._orchestrator._wait_for_unit_complete = fake_wait
+        plugin._sync_service._box.sync_state = SyncState.RUNNING
+        plugin._sync_service._box.current_sync_id = "run-restart"
+
+        decky.emit.reset_mock()
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        complete = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
+        assert complete, "sync_complete must be emitted"
+        assert complete[-1].get("restart_recommended") is True
+
+    # ── Last-run memory delta (#32) ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_finalize_computes_and_retains_memory_delta(self, plugin):
+        # The signed growth is retained in the box for QAM remounts
+        # (get_session_budget_status). _finalize_per_unit itself no longer emits
+        # sync_complete (that moved to the orchestrator's post-write emit_sync_complete,
+        # #39), so this test just pins the retained box value.
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.committed_app_ids = set()
+        box.run_start_rss_kb = 500_000  # raw baseline captured at run start
+        plugin._renderer_rss.rss_kb = 1_300_000  # post-run reading (below floor → raw)
+
+        await orch._finalize_per_unit(
+            synced_rom_ids=set(),
+            collection_memberships={},
+            platform_rom_ids=set(),
+            platform_names={},
+            cancelled=False,
+        )
+
+        assert box.last_run_delta_kb == 800_000
+
+    @pytest.mark.asyncio
+    async def test_finalize_no_delta_when_run_start_unmeasured(self, plugin):
+        # A run whose run-start baseline read was unavailable (None) leaves the delta
+        # unmeasurable — no number retained (degrade gracefully, never a stale delta).
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.committed_app_ids = set()
+        box.run_start_rss_kb = None
+        plugin._renderer_rss.rss_kb = 1_300_000
+
+        await orch._finalize_per_unit(
+            synced_rom_ids=set(),
+            collection_memberships={},
+            platform_rom_ids=set(),
+            platform_names={},
+            cancelled=False,
+        )
+
+        assert box.last_run_delta_kb is None
+
+    @pytest.mark.asyncio
+    async def test_finalize_stores_delta_on_a_stopped_run(self, plugin):
+        # #36: the delta is measured at EVERY terminal, not just clean completion —
+        # so a paused/cancelled run overwrites a PRIOR run's delta with ITS OWN
+        # consumption-so-far instead of leaving the stale number on the row.
+        from services.library.sync_orchestrator import _SYNC_PAUSED_BUDGET
+
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.committed_app_ids = set()
+        box.run_start_rss_kb = 500_000  # this run's raw run-start baseline
+        box.last_run_delta_kb = 700_000  # a PRIOR clean run's delta, must not linger
+        box.run_paused = True
+        box.interrupt_reason = _SYNC_PAUSED_BUDGET
+        plugin._renderer_rss.rss_kb = 2_100_000  # terminal reading — the run grew memory
+
+        await orch._finalize_per_unit(
+            synced_rom_ids=set(),
+            collection_memberships={},
+            platform_rom_ids=set(),
+            platform_names={},
+            cancelled=True,  # a stopped (paused) run
+        )
+
+        # 2_100_000 - 500_000 = 1_600_000 — this paused run's own growth, overwriting 700_000.
+        assert box.last_run_delta_kb == 1_600_000
+
+    @pytest.mark.asyncio
+    async def test_baseline_captured_at_run_start_so_skip_only_run_reports_zero_delta(self, plugin, fake_romm_api):
+        # LOW-1: the baseline is captured at RUN START, not at the first chunk gate,
+        # so a fully-incremental-skip run (nothing applied, no gate ever fires) still
+        # records a baseline and reports an honest ≈ +0.0 GB delta instead of wiping
+        # last_run_delta_kb to None on every no-op re-sync.
+        plugin.loop = asyncio.get_event_loop()
+        _use_fake_romm(plugin, fake_romm_api)
+        # roms matches platform count + zero updates → the platform incremental-skips.
+        _seed_platform_stamp(plugin, "n64", at="2025-01-01T00:00:00Z", rom_count=1)
+        _seed_rom_row(plugin, 10, app_id=1010, platform_slug="n64", name="A", fs_name="a.z64")
+        fake_romm_api.platforms = [{"id": 1, "name": "N64", "slug": "n64", "rom_count": 1}]
+        plugin.settings["enabled_platforms"] = {"1": True}
+        plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
+        plugin._renderer_rss.rss_kb = 1_200_000  # below the GC-skip floor → raw both ends
+        # A stale delta from a prior run — the fresh no-op run must overwrite it, not
+        # leave it and not wipe it to None.
+        plugin._sync_service._box.last_run_delta_kb = 500_000
+        plugin._sync_service._box.sync_state = SyncState.RUNNING
+        plugin._sync_service._box.current_sync_id = "run-skip"
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        box = plugin._sync_service._box
+        assert box.run_start_rss_kb == 1_200_000  # captured at run start despite no chunk
+        assert box.last_run_delta_kb == 0  # honest zero, not None
+
+    # ── Terminal emit ordering (#39): sync_complete AFTER the SyncRun write ──
+
+    @staticmethod
+    async def _capture_run_status_at_sync_complete(plugin, run_id: str) -> str | None:
+        """Run the pipeline with a decky.emit hook that reads the run's persisted
+        status the instant ``sync_complete`` is emitted; return that status."""
+        import decky
+
+        seen: dict[str, str | None] = {}
+
+        async def _hook(event, payload=None):
+            if event == "sync_complete" and "value" not in seen:
+                with plugin._uow as uow:
+                    run = uow.sync_runs.get(run_id)
+                    seen["value"] = run.status if run is not None else None
+
+        decky.emit.side_effect = _hook
+        try:
+            await plugin._sync_service._orchestrator._do_sync_per_unit()
+        finally:
+            decky.emit.side_effect = None
+        return seen.get("value")
+
+    @pytest.mark.asyncio
+    async def test_sync_complete_emits_after_completed_syncrun_persisted(self, plugin, fake_romm_api, monkeypatch):
+        # A clean run: when sync_complete fires, the SyncRun is ALREADY 'completed', so
+        # a frontend stats refetch can't read the prior run's status (#39).
+        self._arm_single_chunk_apply(plugin, fake_romm_api, monkeypatch, run_id="run-order-done")
+        plugin._renderer_rss.rss_kb = 440_000  # low → completes
+
+        status = await self._capture_run_status_at_sync_complete(plugin, "run-order-done")
+
+        assert status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_sync_complete_emits_after_paused_syncrun_persisted(self, plugin, fake_romm_api, monkeypatch):
+        # A budget-paused run: when sync_complete fires, the SyncRun is ALREADY 'paused'
+        # — the emit-last ordering that closes the emit-before-persist race (#39).
+        self._arm_two_chunk_apply(plugin, fake_romm_api, monkeypatch)  # run id "run-budget"
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 2_199_000  # first chunk passes, second pauses
+
+        status = await self._capture_run_status_at_sync_complete(plugin, "run-budget")
+
+        assert status == "paused"
+
+    # ── get_session_budget_status callable ───────────────────────
+
+    @pytest.mark.asyncio
+    async def test_session_budget_status_happy(self, plugin):
+        from domain.session_budget import CLIFF_KB, EFFECTIVE_CEILING_KB, POST_RUN_ADVISORY_KB
+
+        plugin.loop = asyncio.get_event_loop()
+        plugin._renderer_rss.rss_kb = 1_234_000
+
+        result = await plugin.get_session_budget_status()
+
+        assert result == {
+            "success": True,
+            "rss_kb": 1_234_000,
+            # All three colour thresholds ride the payload (single source of truth).
+            "warn_kb": POST_RUN_ADVISORY_KB,
+            "ceiling_kb": EFFECTIVE_CEILING_KB,
+            "cliff_kb": CLIFF_KB,
+            # No clean run has completed in this test, so the retained delta is None.
+            "memory_delta_kb": None,
+            # 1.234 + 0.3 = 1.534 < 2.2 ceiling → a paused run could resume now.
+            "resume_ready": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_session_budget_status_rss_none(self, plugin):
+        from domain.session_budget import CLIFF_KB, EFFECTIVE_CEILING_KB, POST_RUN_ADVISORY_KB
+
+        plugin.loop = asyncio.get_event_loop()
+        plugin._renderer_rss.rss_kb = None  # measurement unavailable → fail-open
+
+        result = await plugin.get_session_budget_status()
+
+        assert result["success"] is True
+        assert result["rss_kb"] is None
+        assert result["warn_kb"] == POST_RUN_ADVISORY_KB
+        assert result["ceiling_kb"] == EFFECTIVE_CEILING_KB
+        assert result["cliff_kb"] == CLIFF_KB
+        assert result["memory_delta_kb"] is None
+        assert result["resume_ready"] is None  # RSS unreadable → undecidable
+
+    @pytest.mark.asyncio
+    async def test_session_budget_status_resume_not_ready_at_high_rss(self, plugin):
+        # A still-high RSS (a paused run before a Steam restart): resume would re-pause.
+        plugin.loop = asyncio.get_event_loop()
+        plugin._renderer_rss.rss_kb = 2_100_000  # 2.1 + 0.3 = 2.4 ≥ 2.2 ceiling
+
+        result = await plugin.get_session_budget_status()
+
+        assert result["resume_ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_session_budget_status_returns_retained_delta(self, plugin):
+        # A prior clean run's delta is retained in the box and surfaced on a QAM
+        # remount even though the live RSS read is a separate poll.
+        plugin.loop = asyncio.get_event_loop()
+        plugin._renderer_rss.rss_kb = 1_234_000
+        plugin._sync_service._box.last_run_delta_kb = 800_000
+
+        result = await plugin.get_session_budget_status()
+
+        assert result["rss_kb"] == 1_234_000
+        assert result["memory_delta_kb"] == 800_000

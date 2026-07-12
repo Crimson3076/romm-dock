@@ -115,6 +115,13 @@ class LibrarySyncStateBox:
     # is reserved for the user's own Cancel. Reset at the start of each run;
     # never reset by the per-chunk loop, so a timeout anywhere in the run wins.
     run_interrupted: bool = False
+    # Set True when the session-budget gate stops the run deliberately at a chunk
+    # boundary (Steam's renderer is near its heap budget). The terminal ``SyncRun``
+    # write then records ``paused`` — a resumable, self-imposed stop distinct from
+    # both ``cancelled`` (the user's Cancel) and ``interrupted`` (an external
+    # death). Takes precedence over ``run_interrupted`` in the terminal branch.
+    # Reset at the start of each run (#1383).
+    run_paused: bool = False
     # The abandoned CHUNK's rows (the fetched ROMs of the in-flight chunk's
     # sibling groups, each the source of its ``metadatum``), stashed so a late
     # ack can rebuild ``acked_roms`` for the commit it drives. Only the chunk
@@ -127,6 +134,38 @@ class LibrarySyncStateBox:
     # reuses an old appId (CRC32 of unchanged exe+name) can't wipe the shortcut
     # the run just bound (#1036). Reset at the start of each run.
     committed_app_ids: set[int] = field(default_factory=set)
+    # Count of apply chunks emitted so far this run — the session-budget gate
+    # skips its very first chunk (this counter still 0) so every run/resume makes
+    # at least one chunk of forward progress before it can pause, never an
+    # immediate no-progress pause loop. Incremented after each ``sync_apply_unit``
+    # emit; reset at the start of each run (#1383).
+    chunks_emitted_this_run: int = 0
+    # Distinct terminal reason for an ``interrupted`` run, when the interrupt was
+    # a deliberate session-budget pause rather than a heartbeat timeout. Set by
+    # the gate alongside ``run_interrupted``; ``None`` leaves the interrupted
+    # write on its default heartbeat-timeout reason. Surfaced in the
+    # ``sync_complete`` payload so the UI shows the pause guidance distinctly.
+    # Reset at the start of each run (#1383).
+    interrupt_reason: str | None = None
+    # One-shot guard so the session-budget gate logs "RSS unavailable" at most
+    # once per run instead of on every chunk boundary (the reading is fail-open —
+    # a ``None`` reading skips the gate). Reset at the start of each run (#1383).
+    budget_measure_unavailable_logged: bool = False
+    # Renderer RSS (KB) captured at run START — a RAW read (may include transient
+    # garbage; not GC-settled), taken before any chunk is applied. The run-end
+    # advisory read is differenced against it to report roughly how much the run
+    # grew Steam's memory; the delta is an approximation for information only, which
+    # a raw baseline is fine for. ``None`` when the run-start reading was unavailable
+    # (delta then unmeasurable). Set at the start of each run (#1383).
+    run_start_rss_kb: int | None = None
+    # Signed renderer-RSS growth (KB) of the last run to reach the terminal
+    # finalize (end - start) — completed, paused, cancelled, and interrupted all
+    # overwrite it with THEIR OWN delta (#36), so ``get_session_budget_status``
+    # can surface "last run: ±X GB" on a QAM remount. An errored run aborts
+    # before the finalize and keeps the prior value. In-memory only — lost on
+    # plugin reload, which is acceptable (no migration). ``None`` when either
+    # endpoint of that run was unmeasurable.
+    last_run_delta_kb: int | None = None
 
     # ── Run lifecycle — the only writers of sync_state / current_sync_id ──
     #

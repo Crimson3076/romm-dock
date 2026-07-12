@@ -150,6 +150,15 @@ class TestGetSyncStatsLastAttempt:
         with uow:
             uow.sync_runs.save(run)
 
+    @staticmethod
+    def _paused(uow, *, id, started, finished, reason="Sync paused: Steam's memory is nearly full."):
+        from domain.sync_run import SyncRun
+
+        run = SyncRun.start(id=id, at=started, platforms_planned=1, roms_planned=1)
+        run.mark_paused(finished, reason)
+        with uow:
+            uow.sync_runs.save(run)
+
     @pytest.mark.asyncio
     async def test_no_runs_reports_no_attempt(self, plugin):
         stats = await plugin.get_sync_stats()
@@ -210,6 +219,18 @@ class TestGetSyncStatsLastAttempt:
         stats = await plugin.get_sync_stats()
         assert stats["last_sync"] == "2025-06-02T09:30:00"
         assert stats["last_attempt"] is None
+
+    @pytest.mark.asyncio
+    async def test_paused_newer_than_completed_surfaces_resumable_attempt(self, plugin):
+        """A session-budget 'paused' run newer than the last completed one → last_attempt
+        carries the 'paused' status (get_latest_terminal must include paused, or the
+        run — and the Resume Sync affordance it drives — would be invisible, #1383)."""
+        self._completed(plugin._uow, id="run-ok", started="2025-07-11T09:00:00", finished="2025-07-11T09:30:00")
+        self._paused(plugin._uow, id="run-p", started="2025-07-11T10:00:00", finished="2025-07-11T10:20:00")
+
+        stats = await plugin.get_sync_stats()
+        assert stats["last_sync"] == "2025-07-11T09:30:00"
+        assert stats["last_attempt"] == {"finished_at": "2025-07-11T10:20:00", "status": "paused"}
 
 
 class TestGetRegistryPlatforms:
@@ -989,7 +1010,9 @@ class TestClearSyncCache:
 
 
 class TestFinalizePerUnitRun:
-    """SyncReporter.finalize_per_unit_run — emits sync_collections + sync_complete after the per-unit loop."""
+    """SyncReporter.finalize_per_unit_run (stale unbind + sync_collections) and the
+    separate emit_sync_complete (terminal sync_complete + progress frame, emitted
+    LAST by the orchestrator after the SyncRun write, #39)."""
 
     @pytest.mark.asyncio
     async def test_builds_platform_collections_from_roms(self, plugin):
@@ -1004,7 +1027,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids={1, 2},
-            total_games=2,
             platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
         )
 
@@ -1032,7 +1054,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={"Faves": [1, 2]},
             pending_platform_rom_ids={1},
-            total_games=1,
             platform_names={"n64": "Nintendo 64"},
         )
 
@@ -1056,7 +1077,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={"Faves": [2]},  # the UNBOUND sibling is collected
             pending_platform_rom_ids={1},
-            total_games=1,
             platform_names={"n64": "Nintendo 64"},
         )
 
@@ -1078,7 +1098,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={"Faves": [1, 2]},  # BOTH siblings collected
             pending_platform_rom_ids={1},
-            total_games=1,
             platform_names={"n64": "Nintendo 64"},
         )
 
@@ -1086,24 +1105,47 @@ class TestFinalizePerUnitRun:
         assert payload["romm_collection_app_ids"] == {"Faves": [1001]}
 
     @pytest.mark.asyncio
-    async def test_emits_sync_complete_terminal(self, plugin):
+    async def test_emit_sync_complete_terminal(self, plugin):
         import decky
 
         decky.emit.reset_mock()
 
-        await plugin._sync_service._reporter.finalize_per_unit_run(
-            pending_collection_memberships={},
-            pending_platform_rom_ids=set(),
+        await plugin._sync_service._reporter.emit_sync_complete(
+            platform_app_ids={},
+            romm_collection_app_ids={},
             total_games=0,
-            platform_names={},
+            cancelled=False,
+            interrupt_reason=None,
+            restart_recommended=False,
         )
 
         complete_events = [c for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
         assert len(complete_events) == 1
         assert "cancelled" not in complete_events[0][0][1]
+        # The last-run memory delta is retained in the box and read via
+        # get_session_budget_status, NOT ridden on the sync_complete wire (#1383 LOW-3).
+        assert "memory_delta_kb" not in complete_events[0][0][1]
 
     @pytest.mark.asyncio
-    async def test_cancelled_finalize_frame_says_cancelled_when_not_interrupted(self, plugin):
+    async def test_emit_sync_complete_carries_restart_recommended_on_clean_run(self, plugin):
+        import decky
+
+        decky.emit.reset_mock()
+
+        await plugin._sync_service._reporter.emit_sync_complete(
+            platform_app_ids={},
+            romm_collection_app_ids={},
+            total_games=0,
+            cancelled=False,
+            interrupt_reason=None,
+            restart_recommended=True,
+        )
+
+        complete = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
+        assert complete and complete[-1]["restart_recommended"] is True
+
+    @pytest.mark.asyncio
+    async def test_emit_sync_complete_cancelled_frame_says_cancelled_when_not_interrupted(self, plugin):
         """A user cancel (box.run_interrupted False) → the terminal CANCELLED frame
         leads with 'Sync cancelled:'."""
         import decky
@@ -1111,12 +1153,13 @@ class TestFinalizePerUnitRun:
         decky.emit.reset_mock()
         plugin._sync_service._box.run_interrupted = False
 
-        await plugin._sync_service._reporter.finalize_per_unit_run(
-            pending_collection_memberships={},
-            pending_platform_rom_ids=set(),
+        await plugin._sync_service._reporter.emit_sync_complete(
+            platform_app_ids={},
+            romm_collection_app_ids={},
             total_games=3,
-            platform_names={},
             cancelled=True,
+            interrupt_reason=None,
+            restart_recommended=False,
         )
 
         progress = plugin._sync_service._sync_progress
@@ -1124,8 +1167,8 @@ class TestFinalizePerUnitRun:
         assert progress["message"].startswith("Sync cancelled: ")
 
     @pytest.mark.asyncio
-    async def test_cancelled_finalize_frame_says_interrupted_when_run_interrupted(self, plugin):
-        """A heartbeat-timeout run routes through the same cancelled finalize; with
+    async def test_emit_sync_complete_frame_says_interrupted_when_run_interrupted(self, plugin):
+        """A heartbeat-timeout run routes through the same cancelled emit; with
         box.run_interrupted set the terminal frame leads with 'Sync interrupted:'
         (stage stays CANCELLED — no new SyncStage)."""
         import decky
@@ -1133,12 +1176,13 @@ class TestFinalizePerUnitRun:
         decky.emit.reset_mock()
         plugin._sync_service._box.run_interrupted = True
 
-        await plugin._sync_service._reporter.finalize_per_unit_run(
-            pending_collection_memberships={},
-            pending_platform_rom_ids=set(),
+        await plugin._sync_service._reporter.emit_sync_complete(
+            platform_app_ids={},
+            romm_collection_app_ids={},
             total_games=3,
-            platform_names={},
             cancelled=True,
+            interrupt_reason=None,
+            restart_recommended=False,
         )
 
         progress = plugin._sync_service._sync_progress
@@ -1146,12 +1190,33 @@ class TestFinalizePerUnitRun:
         assert progress["message"].startswith("Sync interrupted: ")
 
     @pytest.mark.asyncio
-    async def test_does_not_reset_run_lifecycle(self, plugin):
-        """finalize_per_unit_run no longer owns the terminal reset (#1202).
+    async def test_emit_sync_complete_uses_interrupt_reason_verbatim(self, plugin):
+        """A budget-pause interrupt_reason rides the payload AND becomes the terminal
+        frame message verbatim (resume-friendly guidance, #1383)."""
+        import decky
 
-        The IDLE/None reset moved to the orchestrator's single run-scoped
-        ``finally: box.finish_run(run_id)``; the reporter only emits the
-        terminal events, leaving ``sync_state`` / ``current_sync_id`` untouched.
+        decky.emit.reset_mock()
+
+        await plugin._sync_service._reporter.emit_sync_complete(
+            platform_app_ids={},
+            romm_collection_app_ids={},
+            total_games=2,
+            cancelled=True,
+            interrupt_reason="Sync paused: restart Steam, then Resume Sync.",
+            restart_recommended=False,
+        )
+
+        complete = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
+        assert complete[-1]["interrupt_reason"] == "Sync paused: restart Steam, then Resume Sync."
+        assert plugin._sync_service._sync_progress["message"] == "Sync paused: restart Steam, then Resume Sync."
+
+    @pytest.mark.asyncio
+    async def test_finalize_does_not_reset_run_lifecycle(self, plugin):
+        """finalize_per_unit_run + emit_sync_complete never touch the run lifecycle (#1202).
+
+        The IDLE/None reset lives in the orchestrator's single run-scoped
+        ``finally: box.finish_run(run_id)``; the reporter only unbinds/collects and
+        emits, leaving ``sync_state`` / ``current_sync_id`` untouched.
         """
         import decky
 
@@ -1164,7 +1229,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids=set(),
-            total_games=0,
             platform_names={},
         )
 
@@ -1185,7 +1249,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids={1},
-            total_games=1,
             platform_names={"n64": "Nintendo 64"},
             stale_rom_ids=[2, 3],
         )
@@ -1212,7 +1275,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids={1, 2},
-            total_games=1,
             platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
             stale_rom_ids=[2],
         )
@@ -1236,7 +1298,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids={1},
-            total_games=1,
             platform_names={"n64": "Nintendo 64"},
             stale_rom_ids=[2, 5, 99],  # 2 bound, 5 already unbound, 99 missing
         )
@@ -1264,7 +1325,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids={1, 2},
-            total_games=2,
             platform_names={},
         )
 
@@ -1292,7 +1352,6 @@ class TestFinalizePerUnitRun:
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={},
             pending_platform_rom_ids={1},
-            total_games=1,
             platform_names={"n64": "Nintendo 64"},
             stale_rom_ids=[2, 3],
         )

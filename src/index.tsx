@@ -201,6 +201,54 @@ function startCoverHealPoll(appIds: number[]): void {
   coverHealTimer = setTimeout(tick, COVER_HEAL_INTERVAL_MS);
 }
 
+/**
+ * Build the completion-toast body (and optional on-screen duration) for a
+ * finished sync run from the run outcome and the true created/removed delta.
+ */
+function buildSyncCompleteToast(
+  data: { interrupt_reason?: string; cancelled?: boolean; restart_recommended?: boolean },
+  delta: { added: number; removed: number },
+): { body: string; duration?: number } {
+  // Report the TRUE delta, not the total processed set. The library applies
+  // whole platforms, so total_games is not a real delta — the exact, honest
+  // counts are the shortcuts the frontend actually created and removed this
+  // run (tracked in syncDeltaStore, deduplicated across platform/collection
+  // units). Omit a zero part; "Library up to date." when nothing changed.
+  const parts: string[] = [];
+  if (delta.added > 0) parts.push(`${delta.added} added`);
+  if (delta.removed > 0) parts.push(`${delta.removed} removed`);
+  const summary = parts.join(", ");
+  if (data.interrupt_reason) {
+    // A session-budget pause carries its own resume-friendly guidance — show it
+    // verbatim, appending the delta so the user sees what did get saved. Strip
+    // the reason's trailing period so the parenthetical reads as one sentence:
+    // "…then Resume Sync (2 added so far)." not "…Resume Sync. (2 added so far.)".
+    const body = summary ? `${data.interrupt_reason.replace(/\.$/, "")} (${summary} so far).` : data.interrupt_reason;
+    // A session-budget pause needs the full guidance readable — persistent QAM
+    // banners carry the numbers, but the toast is the immediate cue, so give it a
+    // longer on-screen duration than the default so the guidance isn't truncated
+    // away before it is read (#1383).
+    return { body, duration: 15000 };
+  }
+  if (data.cancelled) {
+    return { body: summary ? `Sync cancelled — ${summary} so far.` : "Sync cancelled." };
+  }
+  let body = summary ? `Sync complete — ${summary}.` : "Library up to date.";
+  if (data.restart_recommended) {
+    body += " Steam restart recommended before further large operations.";
+  }
+  return { body };
+}
+
+/** Register every appId in *map* (values are per-key appId arrays) as RomM-owned. */
+function registerAppIds(map: Record<string, number[]>): void {
+  for (const appIds of Object.values(map)) {
+    for (const appId of appIds) {
+      registerRomMAppId(appId);
+    }
+  }
+}
+
 export default definePlugin(() => {
   registerGameDetailPatch();
   registerLaunchInterceptor();
@@ -384,26 +432,24 @@ export default definePlugin(() => {
     romm_collection_app_ids?: Record<string, number[]>;
     total_games: number;
     cancelled?: boolean;
+    /**
+     * Present only when the run paused itself at a chunk boundary because
+     * Steam's renderer is near its per-session heap budget (#1383). A
+     * full-sentence, resume-friendly guidance string shown verbatim instead of
+     * the generic "cancelled" wording.
+     */
+    interrupt_reason?: string;
+    /**
+     * Set on a CLEAN run whose post-run renderer RSS is high enough that the
+     * next large operation would likely pause or crash — the UI appends a
+     * "restart Steam" nudge to the completion toast (#1383).
+     */
+    restart_recommended?: boolean;
   }) => {
     logInfo(`sync_complete received: ${data.total_games} games, cancelled=${data.cancelled ?? false}`);
 
-    // Report the TRUE delta, not the total processed set. The library applies
-    // whole platforms, so total_games is not a real delta — the exact, honest
-    // counts are the shortcuts the frontend actually created and removed this
-    // run (tracked in syncDeltaStore, deduplicated across platform/collection
-    // units). Omit a zero part; "Library up to date." when nothing changed.
-    const { added, removed } = getSyncDelta();
-    const parts: string[] = [];
-    if (added > 0) parts.push(`${added} added`);
-    if (removed > 0) parts.push(`${removed} removed`);
-    const summary = parts.join(", ");
-    let body: string;
-    if (data.cancelled) {
-      body = summary ? `Sync cancelled — ${summary} so far.` : "Sync cancelled.";
-    } else {
-      body = summary ? `Sync complete — ${summary}.` : "Library up to date.";
-    }
-    toaster.toast({ title: "RomM Sync", body });
+    const { body, duration } = buildSyncCompleteToast(data, getSyncDelta());
+    toaster.toast({ title: "RomM Sync", body, ...(duration !== undefined ? { duration } : {}) });
 
     // Drive the terminal UI teardown from ``sync_complete`` — the guaranteed
     // terminal signal. The backend ALSO emits a separate stage:"done"/"cancelled"
@@ -454,16 +500,8 @@ export default definePlugin(() => {
     // the unit loop didn't reach. Iterate BOTH maps: a collection-only sync
     // touches only romm_collection_app_ids, so skipping it would leave those
     // shortcuts unregistered until a Steam restart (#1205).
-    for (const appIds of Object.values(data.platform_app_ids)) {
-      for (const appId of appIds) {
-        registerRomMAppId(appId);
-      }
-    }
-    for (const appIds of Object.values(data.romm_collection_app_ids ?? {})) {
-      for (const appId of appIds) {
-        registerRomMAppId(appId);
-      }
-    }
+    registerAppIds(data.platform_app_ids);
+    registerAppIds(data.romm_collection_app_ids ?? {});
 
     // Re-confirm launch_options for every installed+bound ROM after a sync. A
     // normal sync skips unchanged platforms (no per-unit sync_apply_unit emit),

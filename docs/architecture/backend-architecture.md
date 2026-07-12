@@ -149,10 +149,14 @@ SQLite, not JSON. The reporter upserts each acked ROM into the `roms` table via 
 / `assign_sgdb_id` (artwork and steamgrid patch `cover_path` / `sgdb_id` on the same aggregate during the per-unit
 commit) and, in the same write UoW, stamps the ROM's cached `rom_metadata` (`build_rom_metadata` maps the live RomM
 `metadatum` — Rom row saved first so the `rom_id` FK holds); the orchestrator drives the `SyncRun` lifecycle (`start` at
-apply-dispatch, `complete` / `mark_cancelled` / `mark_interrupted` / `mark_errored` at finalize). `sync_stats.roms` is a
-registry-derived bound-shortcut count computed at read time (the ROMs still bound to a shortcut in `roms`, i.e.
-`shortcut_app_id` not NULL), not a stored scalar. The old JSON `shortcut_registry` / `last_sync` / `sync_stats` are gone
-from this path; all writes go through the `roms` / `sync_runs` Repository Protocols behind a narrow Unit of Work (per
+apply-dispatch, `complete` / `mark_cancelled` / `mark_interrupted` / `mark_errored` at finalize). The terminal
+`sync_complete` event (and its progress frame) is emitted LAST — `reporter.emit_sync_complete`, called by the
+orchestrator only AFTER that terminal `SyncRun` status is persisted — so a frontend stats refetch triggered by the event
+reads the fresh run status instead of racing the write (the #39 lag); `reporter.finalize_per_unit_run` keeps only the
+stale-unbind + `sync_collections` emit and returns the app-id maps. `sync_stats.roms` is a registry-derived
+bound-shortcut count computed at read time (the ROMs still bound to a shortcut in `roms`, i.e. `shortcut_app_id` not
+NULL), not a stored scalar. The old JSON `shortcut_registry` / `last_sync` / `sync_stats` are gone from this path; all
+writes go through the `roms` / `sync_runs` Repository Protocols behind a narrow Unit of Work (per
 [ADR-0006](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0006-narrow-unit-of-work-scope.md) the UoW
 spans only the DB write, never the up-to-60s frontend ack). The platform `slug → display_name` map resolves live from
 RomM each sync and is cached in a `kv_config` row for offline reads. Removing a shortcut **unbinds** the ROM
@@ -191,6 +195,57 @@ teardown branches on the cause (#1052) — and either way, **every chunk committ
   delivered bindings instead of leaving orphan shortcuts that the next sync re-creates as duplicates. The committed
   binding is mapped by the next sync's existing-shortcut scan, so no active orphan deletion is needed (a Steam shortcut
   is the sole record of its tile).
+
+**Session-budget gate: GC-before-measure at each chunk boundary
+([ADR-0024](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0024-session-budget-rss-gate.md)).**
+Steam's `SharedJSContext` renderer OOM-crashes at ~2.45–2.53 GB RSS and never self-recovers within a session; each
+created shortcut costs 0.7–1.5 MB permanently (measured on-device). Chunking (ADR-0023) makes hitting that cliff a cheap
+resume; this gate stops the run _before_ it, at a chunk boundary, as a controlled pause. At each chunk boundary the
+orchestrator reads the renderer's RSS (`RendererRssFn`, `adapters/renderer_rss.py` — the max `VmRSS` across
+`steamwebhelper` processes from `/proc`) and, when that raw reading is at/above `GC_SKIP_BELOW_KB` (1.5 GB), forces a
+renderer GC (`RendererGcFn`, `adapters/renderer_gc.py` — an `HeapProfiler.collectGarbage` over the CEF debugger on
+`localhost:8080`, so the reading reflects settled heap not transient garbage that Steam's measured-unreliable natural GC
+hasn't reclaimed) and re-reads; below the floor the raw reading (which can only over-estimate) already clears every
+threshold, so the ~5 s GC is skipped and a small sync pays zero GC cost. It then runs the pure
+`domain/session_budget.py::gate_decision`: pause iff `rss + chunk_items × worst_case_rate ≥ limit`. Both modes are
+predictive and differ only in the `limit` line: every **later** chunk projects against `cliff − margin` (≈2.2 GB,
+keeping the anti-thrash safety margin), while the run's **very first chunk** projects against `CLIFF_KB` (≈2.45 GB)
+instead. Forward progress must be guaranteed (the run has to apply at least one chunk or it loops forever on a
+no-progress pause), so the first chunk is allowed to spend _into_ the safety margin — but the predictive projection
+still stops it before the crash line. A resume's first chunk therefore proceeds only when its worst-case peak stays
+below the cliff (≈2.15 GB for a full 200-item chunk) and can never be projected past it; a resume attempted without a
+Steam restart re-pauses cleanly rather than driving a chunk into the cliff. On a pause it sets `run_paused` + a distinct
+`interrupt_reason` and requests cancel — the loop returns cleanly with prior chunks committed and the terminal write
+records the new terminal status **`paused`** (migration 014, its own status distinct from a crash's `interrupted`; both
+resumable, but the split lets the UI say "(paused)"). Completed platforms keep their `PlatformSyncState` stamps, so
+Resume Sync redoes only the remainder. Every step is **fail-open**: an unavailable RSS reading (no `steamwebhelper`,
+unreadable `/proc`) skips the gate — and short-circuits further GC attempts — for the rest of the run (logged once), a
+seam error is caught locally, and a failed GC only makes the reading less precise; measurement never blocks a sync. The
+same seams feed the UI surfaces: `sync_preview` returns `pause_likely` (a `predict_run_crosses` prognosis pricing only
+new creates + changed updates, never fully-unchanged items, so an unchanged re-sync never warns), a clean run's
+`sync_complete` carries `restart_recommended` (`post_run_advisory`, RSS > ~1.8 GB, read GC-first), and the
+`get_session_budget_status` callable returns a live RSS reading (no GC) plus the three fixed threshold lines (`warn_kb`
+≈1.8 GB, `ceiling_kb` ≈2.2 GB, `cliff_kb` ≈2.45 GB) for the persistent QAM banners (a blue "paused" banner, a yellow
+high-heap banner) and the always-on "Steam memory" status row. The row's value text is traffic-light coloured against
+those three thresholds — green / yellow (`warn_kb`) / red (`ceiling_kb`) — so the frontend holds no threshold magic
+numbers, and while a sync runs (or a paused banner is showing) the row polls the callable (~5 s during a sync, ~10 s
+while paused) so the number tracks the climbing RSS and the blue paused banner notices once a Steam restart frees
+memory. That notice is driven by `resume_ready` on the callable (`domain.session_budget.resume_would_proceed`:
+`rss + FULL_CHUNK_WORST_KB < ceiling`, the gate's own full-chunk predictive condition; `None` when RSS is unreadable) —
+when it flips `true` the blue banner reads "Steam memory is free again — press Resume Sync" and hides the restart
+button. That row also shows the **last run's signed RSS growth** ("last run: ±X GB"), measured at EVERY terminal
+(completed / paused / cancelled / interrupted) so a paused run reads as _its own_ consumption-so-far rather than a prior
+clean run's: a RAW read taken unconditionally at run start is the baseline (`run_start_rss_kb` — captured before any
+chunk, so even a fully-incremental-skip run still records one and reports ≈ +0.0 GB), the terminal RSS read is the end,
+and `session_memory_delta` differences them (an approximation for information only, which a raw start baseline is fine
+for). The value is retained in `last_run_delta_kb` so `get_session_budget_status` surfaces it on a QAM remount
+(in-memory only, lost on reload, no migration; `None` when either endpoint was unmeasurable, so a stale delta is never
+shown); the UI reads it from that callable, so it is deliberately NOT put on the `sync_complete` wire. Both banners also
+offer a **Restart Steam now** button that calls `SteamClient.User.StartRestart` directly from the frontend — a
+deterministic full client restart that resets the renderer's per-session budget to the ~430 MB baseline. The button is
+disabled while a game is running and hard-guarded on click (`isAnyAppRunning`) so a restart can never close a game. The
+RSS reader and GC trigger are wired through `SyncOrchestratorConfig`; the gate's per-item cost is a parameter so a later
+per-item cover term can be added without touching the kernel's shape.
 
 **Run/unit/chunk identity on the ack (#1041).** Every `sync_apply_unit` event carries the `run_id` (the run's
 `current_sync_id` UUID), the `unit_id` (the `WorkUnit.id`), and the `chunk_index`; the frontend echoes all three back on
@@ -694,25 +749,26 @@ identity survive. This heals drift from every cause at the next plugin load.
 
 Adapters own all I/O and implement the Protocols defined in `services/protocols/`. Selected adapters:
 
-| Module                                                                     | Role                                                                                                                                                                          |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `romm/http.py`                                                             | `RommHttpAdapter` — HTTP transport: auth, SSL, retry, User-Agent, platform map                                                                                                |
-| `romm/romm_api.py`                                                         | `RommApiAdapter` — RomM REST surface (saves, ROMs, platforms, firmware, devices, play-sessions) over the HTTP transport                                                       |
-| `steam_config.py`                                                          | `SteamConfigAdapter` — Steam VDF read/write, grid dir, shortcut icon write, Steam Input config                                                                                |
-| `steamgriddb.py`                                                           | `SteamGridDbAdapter` — SteamGridDB REST client                                                                                                                                |
-| `sgdb_artwork_cache.py`                                                    | `SgdbArtworkCacheAdapter` — on-disk SGDB artwork cache                                                                                                                        |
-| `cover_art_file_store.py`                                                  | `CoverArtFileStoreAdapter` — RomM cover art I/O across the per-ROM cover cache and the Steam grid dir (download, `copy_file` publish/seed, read, prune)                       |
-| `persistence.py`                                                           | `PersistenceAdapter` + per-domain persister adapters — `settings.json` read/write plus the one-time legacy `save_sync_state.json` read that feeds the bootstrap settings fold |
-| `repositories/`                                                            | `SqliteUnitOfWork` + per-aggregate repository adapters — SQLite I/O (the live persistence path; see [Database Design](database-design.md))                                    |
-| `sqlite_migrations.py`                                                     | `apply_migrations` — schema migration runner (`db/migrations/NNN_*.sql`, `PRAGMA user_version`)                                                                               |
-| `download_file.py`                                                         | `DownloadFileAdapter` — download filesystem                                                                                                                                   |
-| `firmware_file.py` / `migration_file.py` / `rom_files.py` / `save_file.py` | per-subtree filesystem adapters (BIOS, RetroDECK migration, ROM removal, local saves)                                                                                         |
-| `retrodeck_paths.py`                                                       | `RetroDeckPathsAdapter` — reads `retrodeck.json` for ROMs/saves/BIOS/home paths                                                                                               |
-| `retroarch_config.py`                                                      | `RetroArchConfigAdapter` — reads `retroarch.cfg` save-sort flags                                                                                                              |
-| `retroarch_core_info.py`                                                   | `RetroArchCoreInfoAdapter` — reads RetroArch `.info` files (`corename`, metadata)                                                                                             |
-| `es_de_config.py`                                                          | `CoreResolver` — ES-DE `es_systems.xml` (system-layer default core + available cores); the gamelist is no longer read or written                                              |
-| `system_clock.py` / `system_uuid_gen.py` / `asyncio_sleeper.py`            | concrete `Clock` / `UuidGen` / `Sleeper` seams                                                                                                                                |
-| `hostname.py` / `path_probe.py` / `plugin_metadata.py` / `debug_logger.py` | hostname, path-exists probe, `package.json` version reader, settings-aware debug logger                                                                                       |
+| Module                                                                     | Role                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `romm/http.py`                                                             | `RommHttpAdapter` — HTTP transport: auth, SSL, retry, User-Agent, platform map                                                                                                                                                                                                         |
+| `romm/romm_api.py`                                                         | `RommApiAdapter` — RomM REST surface (saves, ROMs, platforms, firmware, devices, play-sessions) over the HTTP transport                                                                                                                                                                |
+| `steam_config.py`                                                          | `SteamConfigAdapter` — Steam VDF read/write, grid dir, shortcut icon write, Steam Input config                                                                                                                                                                                         |
+| `steamgriddb.py`                                                           | `SteamGridDbAdapter` — SteamGridDB REST client                                                                                                                                                                                                                                         |
+| `sgdb_artwork_cache.py`                                                    | `SgdbArtworkCacheAdapter` — on-disk SGDB artwork cache                                                                                                                                                                                                                                 |
+| `cover_art_file_store.py`                                                  | `CoverArtFileStoreAdapter` — RomM cover art I/O across the per-ROM cover cache and the Steam grid dir (download, `copy_file` publish/seed, read, prune)                                                                                                                                |
+| `persistence.py`                                                           | `PersistenceAdapter` + per-domain persister adapters — `settings.json` read/write plus the one-time legacy `save_sync_state.json` read that feeds the bootstrap settings fold                                                                                                          |
+| `repositories/`                                                            | `SqliteUnitOfWork` + per-aggregate repository adapters — SQLite I/O (the live persistence path; see [Database Design](database-design.md))                                                                                                                                             |
+| `sqlite_migrations.py`                                                     | `apply_migrations` — schema migration runner (`db/migrations/NNN_*.sql`, `PRAGMA user_version`)                                                                                                                                                                                        |
+| `download_file.py`                                                         | `DownloadFileAdapter` — download filesystem                                                                                                                                                                                                                                            |
+| `firmware_file.py` / `migration_file.py` / `rom_files.py` / `save_file.py` | per-subtree filesystem adapters (BIOS, RetroDECK migration, ROM removal, local saves)                                                                                                                                                                                                  |
+| `retrodeck_paths.py`                                                       | `RetroDeckPathsAdapter` — reads `retrodeck.json` for ROMs/saves/BIOS/home paths                                                                                                                                                                                                        |
+| `retroarch_config.py`                                                      | `RetroArchConfigAdapter` — reads `retroarch.cfg` save-sort flags                                                                                                                                                                                                                       |
+| `retroarch_core_info.py`                                                   | `RetroArchCoreInfoAdapter` — reads RetroArch `.info` files (`corename`, metadata)                                                                                                                                                                                                      |
+| `es_de_config.py`                                                          | `CoreResolver` — ES-DE `es_systems.xml` (system-layer default core + available cores); the gamelist is no longer read or written                                                                                                                                                       |
+| `system_clock.py` / `system_uuid_gen.py` / `asyncio_sleeper.py`            | concrete `Clock` / `UuidGen` / `Sleeper` seams                                                                                                                                                                                                                                         |
+| `hostname.py` / `path_probe.py` / `plugin_metadata.py` / `debug_logger.py` | hostname, path-exists probe, `package.json` version reader, settings-aware debug logger                                                                                                                                                                                                |
+| `renderer_rss.py` / `renderer_gc.py`                                       | `RendererRssFn` — max `steamwebhelper` `VmRSS` from `/proc`; `RendererGcFn` (`HeapProfiler.collectGarbage`) over the CEF debugger. The session-budget measure + settle seams (ADR-0024). The "free memory" action is a frontend `SteamClient.User.StartRestart`, not a backend adapter |
 
 #### PersistenceAdapter notes
 

@@ -26,6 +26,7 @@ import {
   clearSyncCache,
   refreshMigrationState,
   getSyncStatus,
+  getSessionBudgetStatus,
   getRetroDeckStatus,
   logError,
 } from "../api/backend";
@@ -51,12 +52,14 @@ import { WarningCard } from "./WarningCard";
 import { MigrationBlockedPage } from "./MigrationBlockedPage";
 import { SettingsResetBanner } from "./SettingsResetBanner";
 import { PlaytimeScopeBanner } from "./PlaytimeScopeBanner";
+import { SessionBudgetBanner, formatGb, formatSignedGb, memoryLevelColor } from "./SessionBudgetBanner";
 import type {
   SyncProgress,
   SyncStage,
   SyncStats,
   SyncPreview,
   SyncPreviewSummary,
+  SessionBudgetStatus,
   DownloadItem,
   MigrationStatus,
 } from "../types";
@@ -234,6 +237,23 @@ function formatPreviewDescription(s: SyncPreviewSummary): string {
 }
 
 /**
+ * Informational scope line for the preview — "N platforms · M collections" — the
+ * count of enabled platforms/collections the run spans, shown always (independent
+ * of the change diffs, #29). Each part is omitted when its count is 0, so a
+ * collections-only run reads "3 collections" (not "0 platforms · 3 collections")
+ * and a platforms-only run reads "5 platforms". Counts default to 0 when an older
+ * backend omits them; a fully-empty scope falls back to "0 platforms".
+ */
+function formatSyncScope(s: SyncPreviewSummary): string {
+  const platforms = s.sync_platform_count ?? 0;
+  const collections = s.sync_collection_count ?? 0;
+  const parts: string[] = [];
+  if (platforms > 0) parts.push(`${platforms} platform${platforms === 1 ? "" : "s"}`);
+  if (collections > 0) parts.push(`${collections} collection${collections === 1 ? "" : "s"}`);
+  return parts.length > 0 ? parts.join(" · ") : "0 platforms";
+}
+
+/**
  * Expected apply seconds for a preview — the WALK cost, not the raw delta. The
  * apply re-walks every non-skipped item: an un-stamped platform's "unchanged"
  * ROMs still get cheap update touches, not free skips, so pricing only new +
@@ -251,6 +271,7 @@ function previewApplySeconds(s: SyncPreviewSummary): number {
 
 export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   const [stats, setStats] = useState<SyncStats | null>(null);
+  const [budgetStatus, setBudgetStatus] = useState<SessionBudgetStatus | null>(null);
   const [connected, setConnected] = useState<boolean | null | BackendFailed>(null);
   const versionError = useVersionError();
   const [syncing, setSyncing] = useState(false);
@@ -302,6 +323,12 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     getSyncStats()
       .then(setStats)
       .catch((e) => logError(`Failed to load sync stats: ${e}`));
+    // Live renderer-heap reading for the session-budget banners (#1383). Fail-open:
+    // the backend always resolves (rss_kb null when unreadable), so the banners
+    // degrade to text-only rather than erroring.
+    getSessionBudgetStatus()
+      .then(setBudgetStatus)
+      .catch((e) => logError(`Failed to load session budget status: ${e}`));
 
     // Probe the backend for the connection row. Each attempt has a deadline
     // because the callable hangs (rather than rejects) while the backend is
@@ -441,6 +468,11 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
           getSyncStats()
             .then(setStats)
             .catch((e) => logError(`Failed to refresh sync stats: ${e}`));
+          // Refresh the live heap reading so the paused / high-heap banner reflects
+          // the run's end state (a pause leaves it high; a completed run may too).
+          getSessionBudgetStatus()
+            .then(setBudgetStatus)
+            .catch((e) => logError(`Failed to refresh session budget status: ${e}`));
         } else {
           // Feed the live-rate estimator from applying frames only (fetch frames
           // carry page/cover counters, not item progress). syncEta re-anchors its
@@ -478,6 +510,36 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
       if (downloadPollRef.current) clearInterval(downloadPollRef.current);
     };
   }, []);
+
+  // Poll the live renderer-heap reading while it can still change: during a sync (so
+  // the "Steam memory" row tracks the climbing RSS mid-apply) AND while the last run
+  // is paused (so the paused banner notices once a Steam restart frees memory and
+  // ``resume_ready`` flips — otherwise it sits stale after the restart). One dumb
+  // interval, faster during a sync than while merely waiting for a restart; torn down
+  // when neither condition holds or on unmount.
+  const lastRunPaused = stats?.last_attempt?.status === "paused";
+  useEffect(() => {
+    if (!syncing && !lastRunPaused) return;
+    const id = setInterval(
+      () => {
+        getSessionBudgetStatus()
+          .then(setBudgetStatus)
+          .catch((e) => logError(`Failed to poll session budget status: ${e}`));
+        // Belt-and-braces on top of the backend emit-last fix (#39): while the paused
+        // banner is showing (idle), also re-read stats so the "Last sync" line + the
+        // paused banner (which keys on last_attempt) recover if the one-shot terminal
+        // refetch was ever missed/dropped. Then this poll self-stops (last_attempt is
+        // no longer paused).
+        if (!syncing) {
+          getSyncStats()
+            .then(setStats)
+            .catch((e) => logError(`Failed to poll sync stats: ${e}`));
+        }
+      },
+      syncing ? 5000 : 10000,
+    );
+    return () => clearInterval(id);
+  }, [syncing, lastRunPaused]);
 
   // A start/apply call never reached a running backend sync (rejected up
   // front or threw). Reset both the local UI and the MODULE store so the
@@ -685,7 +747,9 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   // fresh import — nothing to resume — so the button must honestly read "Sync
   // Library" again. ``stats.roms`` is the bound-shortcut count (registry-derived).
   const incompleteAttempt =
-    stats?.last_attempt?.status === "interrupted" || stats?.last_attempt?.status === "cancelled";
+    stats?.last_attempt?.status === "interrupted" ||
+    stats?.last_attempt?.status === "cancelled" ||
+    stats?.last_attempt?.status === "paused";
   // ``incompleteAttempt`` being true narrows ``stats`` non-null (it dereferenced
   // stats.last_attempt), and ``roms`` is a required number — no ``?.``/``??`` needed.
   const canResume = incompleteAttempt && stats.roms > 0;
@@ -709,10 +773,18 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     // approved number equals the run's seed. Delta-only pricing here read "~2 min"
     // for a resume whose apply walked ~3100 items.
     const estimateText = formatDuration(previewApplySeconds(preview.summary));
+    const scopeText = formatSyncScope(preview.summary);
     syncBody = (
       <>
         <PanelSectionRow>
           <Field label="Preview" description={formatPreviewDescription(preview.summary)} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field label="Scope">
+            <span data-testid="sync-scope" style={{ fontSize: "12px" }}>
+              {scopeText}
+            </span>
+          </Field>
         </PanelSectionRow>
         <PanelSectionRow>
           <Field label="Estimated time">
@@ -727,6 +799,24 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
             Deck sleeps and resume on wake; keep it powered for a large first sync.
           </div>
         </PanelSectionRow>
+        {preview.pause_likely ? (
+          <PanelSectionRow>
+            <div
+              data-testid="budget-advisory"
+              style={{
+                fontSize: "12px",
+                color: "#7fbcff",
+                borderLeft: "3px solid rgba(61, 157, 246, 0.6)",
+                paddingLeft: "8px",
+                margin: "4px 0",
+                lineHeight: 1.4,
+              }}
+            >
+              This sync is large enough that it will likely pause partway to protect Steam&apos;s memory. That is normal
+              — restart Steam when prompted, then Resume Sync to finish.
+            </div>
+          </PanelSectionRow>
+        ) : null}
         {hasChanges ? (
           <>
             <PanelSectionRow>
@@ -860,6 +950,16 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   } else {
     syncBody = (
       <>
+        {/* Persistent session-budget banner (#1383): blue while the last run was
+            paused (restart Steam, then Resume Sync), or yellow when the live heap
+            is high after a completed run. Only in the idle state, so it clears the
+            moment a resume/new sync starts. */}
+        <SessionBudgetBanner
+          lastAttemptStatus={stats?.last_attempt?.status}
+          rssKb={budgetStatus?.rss_kb ?? null}
+          resumeReady={budgetStatus?.resume_ready ?? null}
+          restartDisabled={loading || connectionUnavailable}
+        />
         <PanelSectionRow>
           <ButtonItem
             layout="below"
@@ -960,6 +1060,33 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
               </PanelSectionRow>
             )}
           </>
+        )}
+        {/* Steam renderer memory (#1383): the live RSS as an always-on info row,
+            plus the last completed sync's signed growth. Omitted entirely when the
+            reading is unavailable (rss_kb null) rather than shown as a blank. */}
+        {budgetStatus?.rss_kb != null && (
+          <PanelSectionRow>
+            <Field label="Steam memory">
+              <span
+                data-testid="steam-memory"
+                style={{ fontSize: "12px", display: "flex", flexDirection: "column", alignItems: "flex-end" }}
+              >
+                {/* Only the value gets traffic-light colouring (green/yellow/red),
+                    driven by the payload thresholds; the label + delta stay uncoloured. */}
+                <span
+                  data-testid="steam-memory-value"
+                  style={{
+                    color: memoryLevelColor(budgetStatus.rss_kb, budgetStatus.warn_kb, budgetStatus.ceiling_kb),
+                  }}
+                >
+                  {formatGb(budgetStatus.rss_kb)}
+                </span>
+                {budgetStatus.memory_delta_kb != null && (
+                  <span style={{ opacity: 0.6 }}>last run: {formatSignedGb(budgetStatus.memory_delta_kb)}</span>
+                )}
+              </span>
+            </Field>
+          </PanelSectionRow>
         )}
         {retroarchWarning?.warning && (
           <PanelSectionRow>

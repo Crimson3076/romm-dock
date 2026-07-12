@@ -257,12 +257,10 @@ class SyncReporter:
         self,
         pending_collection_memberships: dict[str, list[int]],
         pending_platform_rom_ids: set[int] | None,
-        total_games: int,
         platform_names: dict[str, str] | None = None,
-        cancelled: bool = False,
         stale_rom_ids: list[int] | None = None,
     ):
-        """Emit ``sync_collections`` + ``sync_complete`` after all units finish.
+        """Unbind stale ROMs, rebuild Steam-collection maps, and emit ``sync_collections``.
 
         Stale-removal is emitted separately by the orchestrator via
         ``sync_stale`` so the frontend can apply removals before
@@ -272,6 +270,14 @@ class SyncReporter:
         keeping the backend registry in sync with the frontend removals.
         ``platform_names`` is the live ``platform_slug → display_name``
         map from the work-queue, cached for offline registry queries.
+
+        Returns the ``(platform_app_ids, romm_collection_app_ids)`` maps the caller
+        needs for the completed-run ``SyncRun`` write and the terminal emit. The
+        terminal ``sync_complete`` + progress frame is deliberately NOT emitted here
+        — it is the orchestrator's separate :meth:`emit_sync_complete` call made
+        AFTER the terminal ``SyncRun`` status is persisted, so a frontend stats
+        refetch triggered by those terminal signals reads the fresh run status
+        instead of racing the DB write (#39).
         """
         names = platform_names or {}
         platform_app_ids, romm_collection_app_ids = await self._loop.run_in_executor(
@@ -291,27 +297,64 @@ class SyncReporter:
             },
         )
 
-        complete_payload = {
+        return platform_app_ids, romm_collection_app_ids
+
+    async def emit_sync_complete(
+        self,
+        *,
+        platform_app_ids: dict[str, list[int]],
+        romm_collection_app_ids: dict[str, list[int]],
+        total_games: int,
+        cancelled: bool,
+        interrupt_reason: str | None,
+        restart_recommended: bool,
+    ) -> None:
+        """Emit the terminal ``sync_complete`` event + the terminal progress frame.
+
+        Called by the orchestrator AFTER the terminal ``SyncRun`` status is
+        persisted — this is the "emit last" ordering that closes the emit-before-
+        persist race (#39): a frontend stats refetch triggered by these terminal
+        signals now reads the freshly-written run status, not the prior run's.
+
+        Session-budget surfacing (#1383): ``interrupt_reason`` (present only when a
+        run was paused by the budget gate) rides the ``sync_complete`` payload and
+        becomes the terminal progress message, so the UI shows the resume-friendly
+        pause guidance distinctly instead of the generic cancelled/interrupted
+        wording. ``restart_recommended`` (only on a clean run whose post-run RSS is
+        high) sets an additive payload flag the UI turns into a "restart Steam" nudge.
+        """
+        complete_payload: dict[str, Any] = {
             "platform_app_ids": platform_app_ids,
             "romm_collection_app_ids": romm_collection_app_ids,
             "total_games": total_games,
         }
         if cancelled:
             complete_payload["cancelled"] = True
+            if interrupt_reason:
+                complete_payload["interrupt_reason"] = interrupt_reason
+        elif restart_recommended:
+            complete_payload["restart_recommended"] = True
         await self._emit("sync_complete", complete_payload)
 
         total = await self._loop.run_in_executor(None, self._count_bound_roms)
         if cancelled:
-            # A heartbeat-timeout run routes through this same cancelled finalize,
-            # so key the leading word on the box's run_interrupted flag — the frame
-            # then reads "interrupted" instead of blaming the user's Cancel button
-            # (stage stays CANCELLED; last_attempt already reads "interrupted").
-            lead = "Sync interrupted" if self._sync_state.run_interrupted else "Sync cancelled"
+            # A budget pause carries its own full-sentence guidance — use it as the
+            # terminal message verbatim so the QAM status reads the resume-friendly
+            # reason. Otherwise a heartbeat-timeout run routes through this same
+            # cancelled finalize, so key the leading word on the box's
+            # run_interrupted flag — the frame then reads "interrupted" instead of
+            # blaming the user's Cancel button (stage stays CANCELLED; last_attempt
+            # already reads "interrupted").
+            if interrupt_reason:
+                message = interrupt_reason
+            else:
+                lead = "Sync interrupted" if self._sync_state.run_interrupted else "Sync cancelled"
+                message = f"{lead}: {total_games} of {total} games processed"
             await self._emit_progress(
                 SyncStage.CANCELLED,
                 current=total_games,
                 total=total,
-                message=f"{lead}: {total_games} of {total} games processed",
+                message=message,
                 running=False,
             )
         else:
@@ -322,8 +365,6 @@ class SyncReporter:
                 message=f"Sync complete: {total} games from {len(platform_app_ids)} platforms",
                 running=False,
             )
-
-        return platform_app_ids, romm_collection_app_ids
 
     def _count_bound_roms(self) -> int:
         """Count ROMs that still carry a Steam-shortcut binding."""
@@ -618,7 +659,7 @@ class SyncReporter:
         runs would leave the per-platform stamps in place, and each stamp is its
         own ``effective_last_sync`` that would still skip an unchanged platform.
         Deleting the run history (every terminal run, not only completed ones, so
-        no stale cancelled/interrupted/errored run lingers as the last-attempt "Last
+        no stale cancelled/interrupted/paused/errored run lingers as the last-attempt "Last
         sync" hint) and clearing every stamp in one short write UoW resets both reads so
         every platform full-fetches next time (and "Last sync" honestly reads
         "Never" until a fresh run completes).
@@ -653,7 +694,7 @@ class SyncReporter:
         """Read ``(last_sync_iso, last_attempt, bound_rom_count)`` from SQLite.
 
         ``last_sync`` is the ``finished_at`` of the latest completed ``SyncRun``;
-        ``last_attempt`` surfaces the newest cancelled/interrupted/errored run when
+        ``last_attempt`` surfaces the newest cancelled/interrupted/paused/errored run when
         it is newer than that (see :meth:`_last_attempt`); the ROM count is the
         bound-shortcut count in ``roms``.
         """
@@ -666,9 +707,9 @@ class SyncReporter:
 
     @staticmethod
     def _last_attempt(completed: SyncRun | None, terminal: SyncRun | None) -> dict[str, str] | None:
-        """The newest cancelled/interrupted/errored run, but only when it is newer than the last completed one.
+        """The newest cancelled/interrupted/paused/errored run, but only when it is newer than the last completed one.
 
-        A run that ended without completing (cancelled, interrupted, or errored)
+        A run that ended without completing (cancelled, interrupted, paused, or errored)
         still applied shortcuts; without this the last-completed-only ``last_sync``
         read reports "Never" even after thousands of games synced. Returns ``None``
         when the newest terminal run completed cleanly (``last_sync`` already covers

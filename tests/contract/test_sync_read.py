@@ -295,3 +295,42 @@ async def test_report_unit_results_late_ack_binds_orphan(harness):
     # The abandoned-unit stash is cleared so a duplicate ack no-ops.
     assert box.unit_abandoned is False
     assert box.pending_unit_roms == []
+
+
+# ── get_session_budget_status ────────────────────────────────────────────
+
+
+async def test_get_session_budget_status_shape_rss_none(harness):
+    """Fail-open shape: the harness's fake renderer RSS is unavailable (None), so
+    the callable still resolves with success + the fixed budget lines (#1383)."""
+    from domain.session_budget import CLIFF_KB, EFFECTIVE_CEILING_KB, POST_RUN_ADVISORY_KB
+
+    result = await harness.plugin.get_session_budget_status()
+    assert result == {
+        "success": True,
+        "rss_kb": None,
+        "warn_kb": POST_RUN_ADVISORY_KB,
+        "ceiling_kb": EFFECTIVE_CEILING_KB,
+        "cliff_kb": CLIFF_KB,
+        "memory_delta_kb": None,
+        "resume_ready": None,
+    }
+
+
+async def test_get_session_budget_status_shape_rss_present(harness):
+    """A readable RSS flows through unchanged alongside the fixed budget lines."""
+    from domain.session_budget import CLIFF_KB, EFFECTIVE_CEILING_KB, POST_RUN_ADVISORY_KB
+
+    harness.plugin._sync_service._orchestrator._renderer_rss.rss_kb = 2_100_000
+
+    result = await harness.plugin.get_session_budget_status()
+    assert result == {
+        "success": True,
+        "rss_kb": 2_100_000,
+        "warn_kb": POST_RUN_ADVISORY_KB,
+        "ceiling_kb": EFFECTIVE_CEILING_KB,
+        "cliff_kb": CLIFF_KB,
+        "memory_delta_kb": None,
+        # 2.1 + 0.3 = 2.4 ≥ 2.2 ceiling → resuming would re-pause.
+        "resume_ready": False,
+    }

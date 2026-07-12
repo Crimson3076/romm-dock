@@ -8,6 +8,8 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_path_exists_reader import FakePathExistsReader
 from fakes.fake_relaunch_options_resolver import FakeRelaunchOptionsResolver
+from fakes.fake_renderer_gc import FakeRendererGc
+from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_sgdb_artwork_cache import FakeSgdbArtworkCache
@@ -70,6 +72,8 @@ def plugin():
             uow_factory=FakeUnitOfWorkFactory(),
             active_core=FakeActiveCoreResolver(default=(None, None)),
             disc_resolver=FakeDiscResolver(),
+            renderer_rss=FakeRendererRss(),
+            renderer_gc=FakeRendererGc(),
         ),
     )
 
@@ -772,6 +776,7 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     "fetch_cover_base64",
     "get_sync_status",
     "get_sync_stats",
+    "get_session_budget_status",
     "get_rom_by_steam_app_id",
     "get_download_queue",
     "get_installed_rom",
@@ -997,6 +1002,8 @@ class TestMainStartupOrdering:
                 save_file_store=MagicMock(),
                 path_probe=MagicMock(),
                 core_info_provider=MagicMock(),
+                renderer_rss=FakeRendererRss(),
+                renderer_gc=FakeRendererGc(),
             ),
             stores=StateBundle(
                 settings={},

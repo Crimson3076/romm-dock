@@ -56,6 +56,43 @@ export interface SyncProgress {
   etaSeconds?: number;
 }
 
+export interface SessionBudgetStatus {
+  success: boolean;
+  /**
+   * Live renderer RSS in KB, or ``null`` when unreadable (no ``steamwebhelper`` /
+   * unreadable ``/proc``). The banners drop the number but keep their text when
+   * this is ``null`` (#1383).
+   */
+  rss_kb: number | null;
+  /**
+   * The advisory floor in KB (~1.8 GB) — strictly above this the value colours
+   * yellow (and the yellow high-heap banner appears). Backend-supplied so the
+   * frontend holds no threshold magic numbers (#1383).
+   */
+  warn_kb: number;
+  /** The effective pause ceiling in KB (~2.2 GB) — a chunk projected past this pauses; value colours red at/above it. */
+  ceiling_kb: number;
+  /** The measured OOM cliff in KB (~2.45 GB) the renderer crashes at. */
+  cliff_kb: number;
+  /**
+   * Signed renderer-RSS growth (KB) of the last run (end − start), measured at
+   * EVERY terminal — completed, paused, cancelled, or interrupted — so the row
+   * reflects that run's consumption, not a prior clean run's. Retained in backend
+   * memory so a QAM remount can show "last run: ±X GB" without a live run. ``null``
+   * when either endpoint was unmeasurable (or after a plugin reload). Rendered
+   * sign-formatted (#1383 / #36).
+   */
+  memory_delta_kb: number | null;
+  /**
+   * Whether resuming a paused run now would apply at least one full chunk without
+   * re-pausing — the gate's own predictive condition against the live reading. Once
+   * a Steam restart drops RSS this flips ``true`` and the paused banner tells the
+   * user memory is free again (and hides the restart button). ``null`` when the
+   * reading is unavailable (undecidable → conservative fail-open). (#1383)
+   */
+  resume_ready: boolean | null;
+}
+
 export interface SyncStats {
   last_sync: string | null;
   /**
@@ -65,7 +102,7 @@ export interface SyncStats {
    * "Never" after thousands of shortcuts were applied. ``null`` (or absent) when
    * the most recent terminal run completed cleanly.
    */
-  last_attempt?: { finished_at: string; status: "cancelled" | "errored" | "interrupted" } | null;
+  last_attempt?: { finished_at: string; status: "cancelled" | "errored" | "interrupted" | "paused" } | null;
   platforms: number;
   collections?: number;
   roms: number;
@@ -105,6 +142,10 @@ export interface SyncPreviewSummary {
   unchanged_count: number;
   remove_count: number;
   disabled_platform_remove_count: number;
+  /** Scope of the run — how many platforms this sync spans (always shown, independent of diffs). */
+  sync_platform_count?: number;
+  /** Scope of the run — how many collections this sync spans. */
+  sync_collection_count?: number;
   collection_diff?: {
     has_changes: boolean;
     added: string[];
@@ -125,6 +166,14 @@ export interface SyncPreview {
   preview_id: string;
   message?: string;
   blocked_by_migration?: boolean;
+  /**
+   * Post-preview session-budget prognosis (#1383): ``true`` when the backend
+   * predicts that applying every planned touch would push Steam's renderer past
+   * its per-session heap budget, so the sync will likely pause partway (and can
+   * always be resumed). Drives the yellow advisory hint on the preview. Absent /
+   * ``false`` when the reading is unavailable or the run fits under the budget.
+   */
+  pause_likely?: boolean;
 }
 
 interface SyncPlanUnit {

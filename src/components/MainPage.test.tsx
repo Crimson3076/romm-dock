@@ -54,6 +54,7 @@ import type {
   SyncStats,
   SyncPreview,
   SyncPreviewSummary,
+  SessionBudgetStatus,
   DownloadItem,
   PluginSettings,
 } from "../types";
@@ -318,6 +319,15 @@ describe("MainPage", () => {
       save_sort: { pending: false },
     });
     vi.mocked(backend.getSyncStats).mockResolvedValue(defaultStats());
+    vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue({
+      success: true,
+      rss_kb: null,
+      warn_kb: 1_800_000,
+      ceiling_kb: 2_200_000,
+      cliff_kb: 2_450_000,
+      memory_delta_kb: null,
+      resume_ready: null,
+    });
     vi.mocked(backend.testConnection).mockResolvedValue({
       success: true,
       message: "",
@@ -1006,6 +1016,466 @@ describe("MainPage", () => {
       // Should render "Games: 1 added" — no "updated" or "removed" tokens.
       const romsLine = descs.find((d) => d.startsWith("Games:"));
       expect(romsLine).toBe("Games: 1 added");
+    });
+  });
+
+  describe("session-budget advisory (#1383)", () => {
+    async function renderPreviewWithPause(pauseLikely: boolean | undefined): Promise<HTMLElement> {
+      const preview: SyncPreview = {
+        success: true,
+        summary: {
+          new_count: 2000,
+          changed_count: 0,
+          unchanged_count: 0,
+          remove_count: 0,
+          disabled_platform_remove_count: 0,
+        },
+        new_names: [],
+        changed_names: [],
+        preview_id: "p-budget",
+      };
+      // Omit pause_likely entirely when undefined (exactOptionalPropertyTypes)
+      // to model an older backend / unavailable reading that never sends the key.
+      if (pauseLikely !== undefined) preview.pause_likely = pauseLikely;
+      vi.mocked(backend.syncPreview).mockResolvedValue(preview);
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      const sync = buttonByExactText(container, "Sync Library");
+      await act(async () => {
+        fireEvent.click(sync!);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      return container;
+    }
+
+    it("shows the BLUE (info) pause advisory when pause_likely is true", async () => {
+      const c = await renderPreviewWithPause(true);
+      const advisory = c.querySelector('[data-testid="budget-advisory"]') as HTMLElement | null;
+      expect(advisory).not.toBeNull();
+      expect(advisory?.textContent).toContain("pause partway");
+      // Recolored from amber to blue — it announces normal, planned behavior (#1383).
+      expect(advisory?.style.color).toBe("#7fbcff");
+    });
+
+    it("hides the advisory when pause_likely is false", async () => {
+      const c = await renderPreviewWithPause(false);
+      expect(c.querySelector('[data-testid="budget-advisory"]')).toBeNull();
+    });
+
+    it("hides the advisory when pause_likely is absent (older backend / unavailable reading)", async () => {
+      const c = await renderPreviewWithPause(undefined);
+      expect(c.querySelector('[data-testid="budget-advisory"]')).toBeNull();
+    });
+  });
+
+  describe("preview scope line (#29)", () => {
+    async function renderPreviewScope(platforms: number, collections: number): Promise<HTMLElement> {
+      vi.mocked(backend.syncPreview).mockResolvedValue({
+        success: true,
+        summary: {
+          new_count: 0,
+          changed_count: 0,
+          unchanged_count: 0,
+          remove_count: 0,
+          disabled_platform_remove_count: 0,
+          sync_platform_count: platforms,
+          sync_collection_count: collections,
+        },
+        new_names: [],
+        changed_names: [],
+        preview_id: "p-scope",
+      });
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      await act(async () => {
+        fireEvent.click(buttonByExactText(container, "Sync Library")!);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      return container;
+    }
+
+    it("shows 'N platforms · M collections' with both counts", async () => {
+      const c = await renderPreviewScope(3, 2);
+      expect(c.querySelector('[data-testid="sync-scope"]')?.textContent).toBe("3 platforms · 2 collections");
+    });
+
+    it("omits the collections part when the run syncs none, and singularizes", async () => {
+      const c = await renderPreviewScope(1, 0);
+      expect(c.querySelector('[data-testid="sync-scope"]')?.textContent).toBe("1 platform");
+    });
+
+    it("omits the platforms part on a collections-only run (LOW-6)", async () => {
+      const c = await renderPreviewScope(0, 3);
+      expect(c.querySelector('[data-testid="sync-scope"]')?.textContent).toBe("3 collections");
+    });
+
+    it("renders always (even with zero diffs)", async () => {
+      const c = await renderPreviewScope(5, 0);
+      // The preview description reads 'Everything is up to date.' yet the scope line still shows.
+      expect(c.querySelector('[data-testid="sync-scope"]')?.textContent).toBe("5 platforms");
+    });
+  });
+
+  describe("persistent session-budget banners (#1383)", () => {
+    async function renderIdle(
+      lastAttemptStatus: string | undefined,
+      rssKb: number | null,
+      resumeReady: boolean | null = null,
+    ): Promise<HTMLElement> {
+      vi.mocked(backend.getSyncStats).mockResolvedValue({
+        ...defaultStats(),
+        roms: 42,
+        last_attempt: lastAttemptStatus
+          ? { finished_at: "2026-07-11T17:48:00", status: lastAttemptStatus as "paused" }
+          : null,
+      });
+      vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue({
+        success: true,
+        rss_kb: rssKb,
+        warn_kb: 1_800_000,
+        ceiling_kb: 2_200_000,
+        cliff_kb: 2_450_000,
+        memory_delta_kb: null,
+        resume_ready: resumeReady,
+      });
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      return container;
+    }
+
+    it("shows the blue paused banner with the live number after a paused run", async () => {
+      const c = await renderIdle("paused", 2_299_000);
+      const banner = c.querySelector('[data-testid="budget-paused-banner"]');
+      expect(banner).not.toBeNull();
+      expect(banner?.textContent).toContain("Steam memory: 2.3 GB");
+    });
+
+    it("degrades the paused banner to text-only when the reading is unavailable", async () => {
+      const c = await renderIdle("paused", null);
+      const banner = c.querySelector('[data-testid="budget-paused-banner"]');
+      expect(banner).not.toBeNull();
+      expect(banner?.textContent).toContain("Resume Sync");
+      expect(banner?.textContent).not.toContain("GB");
+    });
+
+    it("shows the yellow high-heap banner after a completed run with a high live heap", async () => {
+      const c = await renderIdle(undefined, 1_900_000);
+      const banner = c.querySelector('[data-testid="budget-high-heap-banner"]');
+      expect(banner).not.toBeNull();
+      expect(banner?.textContent).toContain("Steam memory is high: 1.9 GB of ~2.4 GB");
+      expect(c.querySelector('[data-testid="budget-paused-banner"]')).toBeNull();
+    });
+
+    it("shows no banner when idle with a low live heap and no paused attempt", async () => {
+      const c = await renderIdle(undefined, 440_000);
+      expect(c.querySelector('[data-testid="budget-paused-banner"]')).toBeNull();
+      expect(c.querySelector('[data-testid="budget-high-heap-banner"]')).toBeNull();
+    });
+
+    it("flips the paused banner to 'memory is free' once resume_ready is true (#38)", async () => {
+      const c = await renderIdle("paused", 500_000, true);
+      const banner = c.querySelector('[data-testid="budget-paused-banner"]');
+      expect(banner?.textContent).toContain("Steam memory is free again (0.5 GB)");
+      expect(banner?.textContent).not.toContain("Restart Steam when convenient");
+    });
+
+    it("flips the last-attempt line + hides the paused banner when a newer terminal supersedes it (#39)", async () => {
+      // A paused run is showing.
+      vi.mocked(backend.getSyncStats).mockResolvedValue({
+        ...defaultStats(),
+        roms: 42,
+        last_attempt: { finished_at: "2026-07-11T14:41:00", status: "paused" },
+      });
+      vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue({
+        success: true,
+        rss_kb: 500_000,
+        warn_kb: 1_800_000,
+        ceiling_kb: 2_200_000,
+        cliff_kb: 2_450_000,
+        memory_delta_kb: null,
+        resume_ready: true,
+      });
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      expect(container.querySelector('[data-testid="budget-paused-banner"]')).not.toBeNull();
+      expect(container.textContent).toContain("(paused)");
+
+      // A newer cancelled attempt supersedes the paused run; the stats refetch on the
+      // terminal event returns it.
+      vi.mocked(backend.getSyncStats).mockResolvedValue({
+        ...defaultStats(),
+        roms: 42,
+        last_attempt: { finished_at: "2026-07-11T14:45:00", status: "cancelled" },
+      });
+      await act(async () => {
+        setSyncProgress({ running: false, stage: "cancelled", message: "Sync cancelled" });
+      });
+      await flushAsync();
+
+      expect(container.querySelector('[data-testid="budget-paused-banner"]')).toBeNull();
+      expect(container.textContent).toContain("(cancelled)");
+      expect(container.textContent).not.toContain("(paused)");
+    });
+
+    it("recovers via the paused-poll stats backstop if the terminal refetch was missed (#39)", async () => {
+      // Belt-and-braces on top of the backend emit-last fix: even if no terminal
+      // event reached this mount, the paused poll re-reads stats and flips once the
+      // newer terminal appears in the data.
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        vi.mocked(backend.getSyncStats).mockResolvedValue({
+          ...defaultStats(),
+          roms: 42,
+          last_attempt: { finished_at: "2026-07-11T14:41:00", status: "paused" },
+        });
+        vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue({
+          success: true,
+          rss_kb: 500_000,
+          warn_kb: 1_800_000,
+          ceiling_kb: 2_200_000,
+          cliff_kb: 2_450_000,
+          memory_delta_kb: 0,
+          resume_ready: true,
+        });
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        await flushAsync();
+        expect(container.querySelector('[data-testid="budget-paused-banner"]')).not.toBeNull();
+
+        // A newer cancelled attempt now appears in the data (no terminal event fired).
+        vi.mocked(backend.getSyncStats).mockResolvedValue({
+          ...defaultStats(),
+          roms: 42,
+          last_attempt: { finished_at: "2026-07-11T14:45:00", status: "cancelled" },
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000); // one paused-poll tick
+        });
+        expect(container.querySelector('[data-testid="budget-paused-banner"]')).toBeNull();
+        expect(container.textContent).toContain("(cancelled)");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("polls while paused and flips the banner when a Steam restart frees memory (#38)", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        vi.mocked(backend.getSyncStats).mockResolvedValue({
+          ...defaultStats(),
+          roms: 42,
+          last_attempt: { finished_at: "2026-07-11T17:48:00", status: "paused" },
+        });
+        // Before the restart: high RSS, resume would re-pause. After (poll tick):
+        // fresh baseline, resume_ready true.
+        vi.mocked(backend.getSessionBudgetStatus)
+          .mockResolvedValueOnce({
+            success: true,
+            rss_kb: 2_199_000,
+            warn_kb: 1_800_000,
+            ceiling_kb: 2_200_000,
+            cliff_kb: 2_450_000,
+            memory_delta_kb: null,
+            resume_ready: false,
+          })
+          .mockResolvedValue({
+            success: true,
+            rss_kb: 500_000,
+            warn_kb: 1_800_000,
+            ceiling_kb: 2_200_000,
+            cliff_kb: 2_450_000,
+            memory_delta_kb: null,
+            resume_ready: true,
+          });
+
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        await flushAsync();
+        const bannerText = () => container.querySelector('[data-testid="budget-paused-banner"]')?.textContent ?? "";
+        expect(bannerText()).toContain("Restart Steam when convenient");
+        expect(buttonByExactText(container, "Restart Steam now")).not.toBeNull();
+
+        // The paused poll runs at 10s — advance one tick → re-fetch → the banner flips.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+        });
+        expect(bannerText()).toContain("Steam memory is free again (0.5 GB)");
+        expect(buttonByExactText(container, "Restart Steam now")).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("STATUS memory row (#32)", () => {
+    async function renderMemoryRow(rssKb: number | null, memoryDeltaKb: number | null): Promise<HTMLElement> {
+      vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue({
+        success: true,
+        rss_kb: rssKb,
+        warn_kb: 1_800_000,
+        ceiling_kb: 2_200_000,
+        cliff_kb: 2_450_000,
+        memory_delta_kb: memoryDeltaKb,
+        resume_ready: null,
+      });
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      return container;
+    }
+
+    it("shows the live memory value and the signed last-run delta", async () => {
+      const c = await renderMemoryRow(440_000, 800_000);
+      const row = c.querySelector('[data-testid="steam-memory"]');
+      expect(row?.textContent).toContain("0.4 GB");
+      // Label is "last run" (not "last sync"), so a paused run reads honestly as
+      // that run's consumption so far (#36).
+      expect(row?.textContent).toContain("last run: +0.8 GB");
+    });
+
+    it("renders a negative delta with a minus sign", async () => {
+      const c = await renderMemoryRow(1_000_000, -300_000);
+      expect(c.querySelector('[data-testid="steam-memory"]')?.textContent).toContain("last run: -0.3 GB");
+    });
+
+    it("omits the delta line when the delta is unmeasurable (null)", async () => {
+      const c = await renderMemoryRow(1_200_000, null);
+      const row = c.querySelector('[data-testid="steam-memory"]');
+      expect(row?.textContent).toContain("1.2 GB");
+      expect(row?.textContent).not.toContain("last run:");
+    });
+
+    it("omits the whole row when the live reading is unavailable (rss_kb null)", async () => {
+      const c = await renderMemoryRow(null, null);
+      expect(c.querySelector('[data-testid="steam-memory"]')).toBeNull();
+    });
+
+    // Traffic-light colouring of the value text, driven by the payload thresholds
+    // (renderMemoryRow supplies warn_kb 1.8 GB, ceiling_kb 2.2 GB). Yellow is
+    // strict (above the floor, matching the yellow banner); red is inclusive
+    // (at the ceiling the gate pauses).
+    const valueColor = (c: HTMLElement) =>
+      (c.querySelector('[data-testid="steam-memory-value"]') as HTMLElement).style.color;
+
+    it("colours the value GREEN below the advisory floor", async () => {
+      const c = await renderMemoryRow(440_000, null);
+      expect(valueColor(c)).toBe("#59bf40");
+    });
+
+    it("colours the value YELLOW strictly above the advisory floor", async () => {
+      const c = await renderMemoryRow(1_800_001, null);
+      expect(valueColor(c)).toBe("#d4a72c");
+    });
+
+    it("colours the value RED at/above the pause ceiling", async () => {
+      const c = await renderMemoryRow(2_200_000, null);
+      expect(valueColor(c)).toBe("#d4343c");
+    });
+
+    it("does not colour the label or the delta sub-line", async () => {
+      const c = await renderMemoryRow(2_200_000, 800_000);
+      // The delta sub-line stays uncoloured (only the value carries the colour).
+      const deltaLine = Array.from(c.querySelectorAll("span")).find((s) => s.textContent.startsWith("last run:"));
+      expect(deltaLine).toBeDefined();
+      expect((deltaLine as HTMLElement).style.color).toBe("");
+    });
+  });
+
+  describe("Steam memory row live poll during a sync (#33)", () => {
+    const budget = (rssKb: number | null): SessionBudgetStatus => ({
+      success: true,
+      rss_kb: rssKb,
+      warn_kb: 1_800_000,
+      ceiling_kb: 2_200_000,
+      cliff_kb: 2_450_000,
+      memory_delta_kb: null,
+      resume_ready: null,
+    });
+    const runningStatus = {
+      running: true,
+      stage: "applying" as const,
+      step: 1,
+      totalSteps: 1,
+      current: 0,
+      total: 10,
+      message: "N64: 0/10",
+    };
+    const memoryRowText = (c: HTMLElement) => c.querySelector('[data-testid="steam-memory"]')?.textContent ?? "";
+
+    it("re-polls the live reading every ~5s while running and updates the row", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        // Mount into a live run (getSyncStatus seeds syncing=true). The mount fetch
+        // reads 0.6 GB; every poll thereafter reads the climbed 1.3 GB.
+        vi.mocked(backend.getSyncStatus).mockResolvedValue(runningStatus);
+        vi.mocked(backend.getSessionBudgetStatus)
+          .mockResolvedValueOnce(budget(600_000))
+          .mockResolvedValue(budget(1_300_000));
+
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        await flushAsync();
+        expect(memoryRowText(container)).toContain("0.6 GB"); // stale mount value
+
+        // One 5s poll tick → re-fetch → the row tracks the climbed reading. Non-vacuous:
+        // the displayed value actually changes, so a dead interval would fail here.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5000);
+        });
+        expect(memoryRowText(container)).toContain("1.3 GB");
+        expect(memoryRowText(container)).not.toContain("0.6 GB");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops polling once the run reaches a terminal stage", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        vi.mocked(backend.getSyncStatus).mockResolvedValue(runningStatus);
+        vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue(budget(1_000_000));
+
+        render(<MainPage onNavigate={vi.fn()} />);
+        await flushAsync();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000); // two poll ticks while running
+        });
+        expect(vi.mocked(backend.getSessionBudgetStatus).mock.calls.length).toBeGreaterThan(1);
+
+        // Terminal frame flips syncing→false: the subscriber does one final refresh
+        // and the poll effect tears its interval down.
+        await act(async () => {
+          setSyncProgress({ running: false, stage: "done", message: "Sync complete" });
+        });
+        await flushAsync();
+        const callsAfterTerminal = vi.mocked(backend.getSessionBudgetStatus).mock.calls.length;
+
+        // Well past several poll intervals: no further polls fire.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(20_000);
+        });
+        expect(vi.mocked(backend.getSessionBudgetStatus).mock.calls).toHaveLength(callsAfterTerminal);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("tears the poll interval down on unmount", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        vi.mocked(backend.getSyncStatus).mockResolvedValue(runningStatus);
+        vi.mocked(backend.getSessionBudgetStatus).mockResolvedValue(budget(1_000_000));
+
+        const { unmount } = render(<MainPage onNavigate={vi.fn()} />);
+        await flushAsync();
+        const before = vi.mocked(backend.getSessionBudgetStatus).mock.calls.length;
+
+        unmount();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15_000);
+        });
+        expect(vi.mocked(backend.getSessionBudgetStatus).mock.calls).toHaveLength(before);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -1861,30 +2331,23 @@ describe("MainPage", () => {
   });
 
   describe("sync button label (resume vs fresh)", () => {
-    it("reads 'Resume Sync' when the newest attempt was interrupted with bound shortcuts on disk", async () => {
-      // roms > 0 = partial progress actually exists to resume.
-      vi.mocked(backend.getSyncStats).mockResolvedValue({
-        ...defaultStats(),
-        roms: 42,
-        last_attempt: { finished_at: "2026-06-01T17:48:00", status: "interrupted" },
-      });
-      const { container } = render(<MainPage onNavigate={vi.fn()} />);
-      await flushAsync();
-      expect(buttonByExactText(container, "Resume Sync")).not.toBeNull();
-      expect(buttonByExactText(container, "Sync Library")).toBeNull();
-    });
-
-    it("reads 'Resume Sync' when the newest attempt was cancelled with bound shortcuts on disk", async () => {
-      vi.mocked(backend.getSyncStats).mockResolvedValue({
-        ...defaultStats(),
-        roms: 42,
-        last_attempt: { finished_at: "2026-06-01T17:48:00", status: "cancelled" },
-      });
-      const { container } = render(<MainPage onNavigate={vi.fn()} />);
-      await flushAsync();
-      expect(buttonByExactText(container, "Resume Sync")).not.toBeNull();
-      expect(buttonByExactText(container, "Sync Library")).toBeNull();
-    });
+    // roms > 0 = partial progress actually exists to resume. Every non-completed,
+    // non-errored terminal status resumes: interrupted, cancelled, and the #1383
+    // session-budget pause.
+    it.each(["interrupted", "cancelled", "paused"] as const)(
+      "reads 'Resume Sync' when the newest attempt was %s with bound shortcuts on disk",
+      async (status) => {
+        vi.mocked(backend.getSyncStats).mockResolvedValue({
+          ...defaultStats(),
+          roms: 42,
+          last_attempt: { finished_at: "2026-06-01T17:48:00", status },
+        });
+        const { container } = render(<MainPage onNavigate={vi.fn()} />);
+        await flushAsync();
+        expect(buttonByExactText(container, "Resume Sync")).not.toBeNull();
+        expect(buttonByExactText(container, "Sync Library")).toBeNull();
+      },
+    );
 
     it("reads 'Sync Library' when an interrupted attempt left ZERO bound shortcuts (all removed — nothing to resume)", async () => {
       // The regression: after an interrupted run the user removed every shortcut
