@@ -47,12 +47,25 @@ SAFETY_MARGIN_KB = 250_000
 # reason about the same line.
 EFFECTIVE_CEILING_KB = CLIFF_KB - SAFETY_MARGIN_KB
 
-# Worst-case permanent RSS cost of one created shortcut, in KB. Measured creates
+# Worst-case PERMANENT RSS cost of one created shortcut, in KB. Measured creates
 # cost 0.7-1.5 MB/item depending on the client boot; the gate uses the top of
-# that range so a dense chunk on a bad boot still stops short of the cliff.
-# Exposed as the default ``per_item_kb`` so PR 2 can raise it with a per-item
-# cover term once API artwork (reclaimable, but transiently resident) returns.
+# that range so a dense chunk on a bad boot still stops short of the cliff. This
+# is the shortcut's own permanent cost; a created shortcut also applies a cover
+# through Steam's artwork API, whose transient cost (``COVER_TRANSIENT_KB``) the
+# caller adds on top — so ``per_item_kb`` defaults to the bare create rate and the
+# orchestrator passes create + cover for a run that applies artwork.
 WORST_CASE_CREATE_KB = 1_500
+
+# Worst-case TRANSIENT RSS cost of applying one cover through Steam's native
+# artwork API (``SetCustomArtworkForApp``), in KB. A cover costs ~1.0 MB of
+# renderer RSS while it is decoded and applied; the cost is fully GC-reclaimable
+# (the gate's boundary GC + GC-before-measure settle it), but it is resident at the
+# transient peak, so the gate prices it into a create's worst-case chunk cost. Only
+# CREATES apply a cover — an updated shortcut keeps its existing grid file — so the
+# caller adds this to ``WORST_CASE_CREATE_KB`` for a created item while an update
+# stays priced at ``UPDATE_TOUCH_KB`` alone. Measured on-device (Steam Deck,
+# RetroDECK) 2026-07-11/12.
+COVER_TRANSIENT_KB = 1_000
 
 # Worst-case RSS cost of one UPDATE touch (a Set* walk over an existing shortcut),
 # in KB. An update walk of ~2300 items measured ≈ 1.4 GB on-device 2026-07-10
@@ -61,13 +74,26 @@ WORST_CASE_CREATE_KB = 1_500
 # they are not projected at all.
 UPDATE_TOUCH_KB = 1_000
 
-# Worst-case RSS cost of applying one FULL apply chunk — 200 fresh creates at the
-# worst-case create rate. 200 is the apply chunk size (``_APPLY_CHUNK_SIZE`` in the
-# sync orchestrator), kept as a literal here so the domain kernel stays service-free.
-# This is the predictive gate's own per-chunk projection for a maxed chunk, reused by
+# Worst-case RSS cost of applying one FULL apply chunk — 200 fresh creates, each
+# priced at the worst-case create rate PLUS its transient cover term. 200 is the
+# apply chunk size (``_APPLY_CHUNK_SIZE`` in the sync orchestrator), kept as a literal
+# here so the domain kernel stays service-free. This is the predictive gate's own
+# per-chunk projection for a maxed chunk of cover-applying creates, reused by
 # ``resume_would_proceed`` to decide whether a paused run could resume and make at
-# least one chunk of forward progress.
-FULL_CHUNK_WORST_KB = 200 * WORST_CASE_CREATE_KB
+# least one chunk of forward progress — so it prices the same cover term the
+# steady-state chunk gate does, or a resume could promise progress the gate then denies.
+FULL_CHUNK_WORST_KB = 200 * (WORST_CASE_CREATE_KB + COVER_TRANSIENT_KB)
+
+# How many full worst-case chunks of headroom ``resume_would_proceed`` demands
+# below the effective ceiling before it announces a paused run as resumable.
+# MUST be > 1: one chunk is exactly the gate's own pause point, so a one-chunk
+# bar sits on the very RSS level every pause lands on and Steam's own small
+# frees flicker the verdict (observed on-device 2026-07-13: the paused banner
+# flipped to "memory is free again" at the pause level and hid the restart
+# button). Two chunks (≈1 GB below the ceiling, ≈1.2 GB bar) is in practice
+# reachable only through a real Steam restart — the state the flip exists to
+# detect.
+RESUME_HEADROOM_CHUNKS = 2
 
 # Post-run advisory floor. A run that ends with RSS above this (≈1.8 GB) has
 # spent most of the session budget; the next large operation is likely to pause
@@ -160,19 +186,20 @@ def post_run_advisory(rss_kb: int) -> bool:
 def resume_would_proceed(rss_kb: int) -> bool:
     """Whether a resume would make sustained progress under the steady-state predictive gate.
 
-    Deliberately stricter than the run's own first-chunk pass bar: it prices a
-    full worst-case chunk against the effective ceiling — the line every LATER
-    chunk is measured against — not the more permissive cliff the first chunk is
-    allowed to spend toward. That conservative ceiling-based bar is the honest one
-    for telling the user "press Resume now": it promises the run keeps moving with
-    the full anti-thrash margin intact, not just the single guaranteed first chunk.
-    So the run proceeds iff the current RSS plus one full chunk's worst-case cost
-    stays *below* the effective ceiling (the gate pauses at ``>=``). After a Steam
-    restart drops RSS to the fresh baseline this returns ``True`` and the UI can
-    tell the user a paused run is resumable again; at a still-high RSS it returns
-    ``False``. ``None`` handling (unreadable RSS → undecidable) stays with the caller.
+    Requires headroom for {RESUME_HEADROOM_CHUNKS} full worst-case chunks below
+    the effective ceiling — deliberately MORE than the single chunk the gate
+    itself requires to proceed. One chunk of headroom would put this bar exactly
+    on the pause point (the gate pauses at ``rss + one chunk >= ceiling``), where
+    Steam's own small frees oscillate the reading across the line: the paused
+    banner then flickers to "memory is free again" and hides the restart button
+    while the heap is still pinned at the pause level and a resume could make at
+    most one chunk of progress. Demanding room for several chunks separates the
+    only state worth announcing — a real Steam restart at the fresh baseline —
+    from hovering at the pause point, and doubles as hysteresis against the
+    flicker. ``None`` handling (unreadable RSS → undecidable) stays with the
+    caller.
     """
-    return rss_kb + FULL_CHUNK_WORST_KB < EFFECTIVE_CEILING_KB
+    return rss_kb + RESUME_HEADROOM_CHUNKS * FULL_CHUNK_WORST_KB < EFFECTIVE_CEILING_KB
 
 
 def session_memory_delta(start_kb: int | None, end_kb: int | None) -> int | None:
