@@ -219,6 +219,25 @@ rsync -a --delete py_modules/ "$DEST/py_modules/"
 cp -f main.py "$DEST/main.py"
 '''
 
+[tasks."dev:ui-scale"]
+description = "Emulate Game Mode's metrics in Big Picture — size the window to the Deck's 1280x800 AND force its display scale (the dev loop otherwise lies about QAM height)"
+raw = true
+# The optional mode arg reaches the script as $usage_mode (mise exposes usage-spec
+# args as usage_<name> env vars).
+usage = '''
+arg "[mode]" help="'deck' (1.5, = Game Mode metrics), a bare factor (2.0-2.4 = 'Larger text', ~1.28 = docked 1080p, ~1.71 = docked 1440p), 'steam' (adopt the UI Scale set in Steam), or 'auto' (restore automatic scaling and exit)" default="deck"
+complete "mode" run="printf 'deck\\nsteam\\nauto\\n'"
+'''
+run = '''
+# Holds until Ctrl-C, then restores BOTH halves as they were BEFORE the run: the
+# scale (auto stays auto; a manual UI Scale is put back as it was, never flipped to
+# auto) and the Big Picture window's geometry + fullscreen state. Steam persists a
+# forced factor to config.vdf, so leaving it forced is not harmless.
+# `exec` so Ctrl-C / SIGTERM reach the script itself (mise is not left in the
+# signal path, which is what makes the restore reliable).
+exec python3 scripts/dev_ui_scale.py "$usage_mode"
+'''
+
 [tasks."dev:bpm-reset"]
 description = "Restart Steam into windowed Big Picture (recovers the Decky UI after leaving and re-entering BPM)"
 raw = true
