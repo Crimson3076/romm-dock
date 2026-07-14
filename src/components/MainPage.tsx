@@ -88,16 +88,14 @@ const CONNECTION_CALLABLE_TIMEOUT = 5000;
 /** Backend never answered after the retry budget — distinct from `false` ("not connected"). */
 type BackendFailed = "backend_failed";
 
-/** U+2212 MINUS SIGN — the removed-count prefix in the compact preview notation. */
-const MINUS_SIGN = "−";
-
-/** Compact signed segments — ``[[count, prefix], …]`` → ``"+N / ~M"``: each
- *  positive count rendered as ``<prefix><count>``, zero counts dropped, joined
- *  with `` / ``. Empty when every count is zero. */
-function signedSegments(pairs: [number, string][]): string {
+/** Counted segments — ``[[count, word], …]`` → ``"353 new / 800 updated"``: every
+ *  segment spells its word out, zero counts dropped, joined with `` / ``. Empty
+ *  when every count is zero. The old ``+``/``~``/``−`` sigils were a legend the
+ *  panel never carried — on-device they read as noise, not as counts. */
+function countedSegments(pairs: [number, string][]): string {
   return pairs
     .filter(([n]) => n > 0)
-    .map(([n, prefix]) => `${prefix}${n}`)
+    .map(([n, word]) => `${n} ${word}`)
     .join(" / ");
 }
 
@@ -189,10 +187,14 @@ function formatClockTime(iso: string): string {
   return `${hh}:${mm}`;
 }
 
-/** The "Last sync" field value. A completed run shows its relative time (plus a
- *  subtle newer cancelled/crashed attempt line); with no completed run ever, a
- *  cancelled/crashed attempt is surfaced so it never reads a bare "Never" after
- *  thousands of games synced (#1367); otherwise "Never". */
+/** The "Last sync" field value: the completed run's relative time on line 1,
+ *  and (when a newer attempt did not complete) the attempt on a second
+ *  right-aligned line — INSIDE the field, so the focus highlight covers both
+ *  lines like the Library row's. Needs ``childrenContainerWidth="max"`` on the
+ *  field: the default children column is too narrow and wrapped the attempt
+ *  line mid-text. With no completed run ever, the cancelled/crashed attempt is
+ *  surfaced as line 1 so it never reads a bare "Never" after thousands of
+ *  games synced (#1367); otherwise "Never". */
 function lastSyncValue(stats: SyncStats): ReactNode {
   if (stats.last_sync) {
     return (
@@ -217,39 +219,60 @@ function lastSyncValue(stats: SyncStats): ReactNode {
 }
 
 /**
- * Compact signed change notation for the preview — e.g.
- * ``"Games +1001 / ~50 / −1200 · Platforms +1 · Collections +2"``. Per category
- * the segments are added (``+N``), updated (``~N``), removed (``−N``, U+2212), in
- * that order, ``/``-separated; a zero segment is omitted and a wholly-unchanged
- * category is dropped. Categories join with `` · ``. Falls back to the unchanged
- * message when nothing differs.
+ * The preview's change categories — e.g.
+ * ``["Games: 353 new / 800 updated / 1200 removed", "Platforms: 2 new", "Collections: 2 new"]``.
+ * Every segment spells out what happens to those games ("updated" = the shortcut
+ * exists and gets rewritten, not recreated); a zero segment is omitted and a
+ * wholly-unchanged category is dropped. Empty when nothing differs.
  */
-function formatPreviewDescription(s: SyncPreviewSummary): string {
+function previewChangeSegments(s: SyncPreviewSummary): string[] {
   const categories: string[] = [];
-  const games = signedSegments([
-    [s.new_count, "+"],
-    [s.changed_count, "~"],
-    [s.remove_count, MINUS_SIGN],
+  const games = countedSegments([
+    [s.new_count, "new"],
+    [s.changed_count, "updated"],
+    [s.remove_count, "removed"],
   ]);
-  if (games) categories.push(`Games ${games}`);
+  if (games) categories.push(`Games: ${games}`);
   const p = s.platform_collection_diff;
   if (p?.has_changes) {
-    const platforms = signedSegments([
-      [p.added_count, "+"],
-      [p.removed_count, MINUS_SIGN],
+    const platforms = countedSegments([
+      [p.added_count, "new"],
+      [p.removed_count, "removed"],
     ]);
-    if (platforms) categories.push(`Platforms ${platforms}`);
+    if (platforms) categories.push(`Platforms: ${platforms}`);
   }
   const d = s.collection_diff;
   if (d?.has_changes) {
-    const collections = signedSegments([
-      [d.added.length, "+"],
-      [d.removed.length, MINUS_SIGN],
+    const collections = countedSegments([
+      [d.added.length, "new"],
+      [d.removed.length, "removed"],
     ]);
-    if (collections) categories.push(`Collections ${collections}`);
+    if (collections) categories.push(`Collections: ${collections}`);
   }
-  return categories.length > 0 ? categories.join(" · ") : "Everything is up to date.";
+  return categories;
 }
+
+/**
+ * The change line — categories joined with `` · ``, each category unbreakable.
+ * A category is a nowrap span, so a line break can only land on a `` · ``
+ * separator: "Platforms: 2 new" never splits across two lines the way plain
+ * text wrapping split it at the narrow QAM width. Falls back to the unchanged
+ * message when nothing differs.
+ */
+const PreviewChanges: FC<{ summary: SyncPreviewSummary }> = ({ summary }) => {
+  const segments = previewChangeSegments(summary);
+  if (segments.length === 0) return <>Everything is up to date.</>;
+  return (
+    <>
+      {segments.map((segment, i) => (
+        <span key={segment}>
+          {i > 0 ? " · " : ""}
+          <span style={{ whiteSpace: "nowrap" }}>{segment}</span>
+        </span>
+      ))}
+    </>
+  );
+};
 
 /**
  * Informational scope line for the preview — "N platforms · M collections" — the
@@ -282,19 +305,19 @@ function formatLibraryLine(stats: SyncStats): string {
 }
 
 /**
- * Expected apply seconds for a preview — the WALK cost, not the raw delta. The
- * apply re-walks every non-skipped item: an un-stamped platform's "unchanged"
- * ROMs still get cheap update touches, not free skips, so pricing only new +
- * changed undershoots badly on a resume (on-device: "~2 min" for 153 added while
- * the apply walked ~3100 items). Pricing all non-new items (changed + unchanged)
- * at the update rate gives an honest upper bound — platforms skipped by their
- * completion stamp make it overshoot, which the "up to ~X"/"~X min" wording
- * covers, and the live countdown corrects downward within seconds of applying.
- * Used for BOTH the preview "Estimated time" row and the handleApply seed, so the
- * number the user approves is the number the run starts with.
+ * Expected apply seconds for a preview — the DELTA cost. The delta-restricted
+ * apply (#1383) touches only new + changed shortcuts; content-unchanged items are
+ * skipped entirely (no Set* walk, no confirm poll), so they cost nothing and are
+ * no longer priced. Creates run at the new-shortcut rate, changed at the lighter
+ * update rate, plus the flat fetch allowance. This is now a tight estimate rather
+ * than an inflated upper bound — the old model priced every unchanged item as an
+ * update because a resume re-walked them, which the skip has eliminated. Used for
+ * BOTH the preview "Estimated time" row and the handleApply seed, so the number
+ * the user approves is the number the run starts with; the live countdown still
+ * corrects it against the measured apply rate.
  */
 function previewApplySeconds(s: SyncPreviewSummary): number {
-  return estimateApplySeconds(s.new_count, s.changed_count + s.unchanged_count);
+  return estimateApplySeconds(s.new_count, s.changed_count);
 }
 
 /** Preview apply-time (seconds) at/above which the hint appends the sleep-pause
@@ -756,9 +779,9 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   const hasFineDetail = !!(syncProgress?.total && syncProgress.message);
 
   // Estimated-time readout for the in-flight run. Prefer the live measured
-  // countdown ("~9 min left") once the estimator has a rate; before that, fall
+  // countdown ("9 min left") once the estimator has a rate; before that, fall
   // back to the static seed carried on the store as an upper bound ("up to
-  // ~X min"). Absent both, the row is omitted (honest silence).
+  // X min"). Absent both, the row is omitted (honest silence).
   const staticEtaSeconds = syncProgress?.etaSeconds;
   let etaText: string | null = null;
   if (liveEtaDisplay !== null) {
@@ -814,48 +837,56 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
       !!(preview.summary.collection_diff?.added.length || preview.summary.collection_diff?.removed.length) ||
       preview.summary.platform_collection_diff?.has_changes;
     // Walk cost, shared with the handleApply seed (previewApplySeconds) so the
-    // approved number equals the run's seed. Delta-only pricing here read "~2 min"
+    // approved number equals the run's seed. Delta-only pricing here read "2 min"
     // for a resume whose apply walked ~3100 items.
     const applySeconds = previewApplySeconds(preview.summary);
     const estimateText = formatDuration(applySeconds);
-    // Scope and estimate share one row: "1 platform · 2 collections · ~12 min".
-    // An older backend that omits the scope counts leaves scopeText empty, so the
-    // row shows the estimate alone.
+    // Coverage and duration each own a line — at the QAM width they wrapped as
+    // one row anyway, and the break landed mid-phrase. An older backend that
+    // omits the scope counts leaves scopeText empty; the duration line then
+    // stands alone.
     const scopeText = formatSyncScope(preview.summary);
-    const scopeLine = scopeText ? `${scopeText} · ${estimateText}` : estimateText;
     // The sleep-pause caveat is only worth the extra line for a genuinely long run.
     const hintText =
-      "Progress is saved every ~200 games — cancelling is safe." +
+      "Progress is saved about every 200 games — cancelling is safe." +
       (applySeconds >= LONG_SYNC_HINT_THRESHOLD_SEC ? " Long syncs pause during sleep; keep the Deck powered." : "");
     syncBody = (
       <>
+        {/* One block: WHAT changes, then what the run covers and how long — the
+            coverage/estimate and the progress-is-saved hint describe the run the
+            Apply button would start, so with an empty delta only "Everything is
+            up to date." + Dismiss stand alone. */}
         <PanelSectionRow>
           <Field
-            label="Preview"
-            description={formatPreviewDescription(preview.summary)}
-            focusable={true}
-            bottomSeparator="none"
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          {/* Full-width description line like Preview above: the scope+estimate
-              text wraps badly when squeezed into a Field's narrow value column. */}
-          <Field
-            label="Scope"
+            label="Changes"
             description={
-              <span data-testid="sync-scope" style={{ fontSize: "12px" }}>
-                {scopeLine}
-              </span>
+              <>
+                <div data-testid="sync-changes">
+                  <PreviewChanges summary={preview.summary} />
+                </div>
+                {hasChanges && scopeText && (
+                  <div data-testid="sync-scope" style={{ marginTop: "4px" }}>
+                    Syncing {scopeText}
+                  </div>
+                )}
+                {hasChanges && (
+                  <div data-testid="sync-estimate" style={{ marginTop: scopeText ? undefined : "4px" }}>
+                    Estimated duration: {estimateText}
+                  </div>
+                )}
+              </>
             }
             focusable={true}
             bottomSeparator="none"
           />
         </PanelSectionRow>
-        <PanelSectionRow>
-          <Focusable>
-            <div style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.6)", padding: "4px 0" }}>{hintText}</div>
-          </Focusable>
-        </PanelSectionRow>
+        {hasChanges && (
+          <PanelSectionRow>
+            <Focusable>
+              <div style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.6)", padding: "4px 0" }}>{hintText}</div>
+            </Focusable>
+          </PanelSectionRow>
+        )}
         {preview.pause_likely ? (
           <PanelSectionRow>
             <Focusable>
@@ -925,9 +956,11 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
               ProgressBarWithInfo is a Steam Field (label column | bar column);
               with no label text the empty column shoves the bar into the right
               half and clips it (#751). The bare ProgressBar is just the bar and
-              spans the full panel width. Focusable so Steam's focus engine can
-              scroll the progress row into view under gamepad navigation. */}
-          <Focusable style={{ width: "100%" }}>
+              spans the full panel width. NOT focusable: the syncing rows sit
+              between the focusable status rows and the Cancel button, so they
+              are always in view — a focus highlight here only fakes
+              interactivity. */}
+          <div style={{ width: "100%" }}>
             <div
               style={{
                 display: "flex",
@@ -952,12 +985,11 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
               indeterminate={coarseFraction === undefined}
               {...(coarseFraction !== undefined ? { nProgress: coarseFraction } : {})}
             />
-          </Focusable>
+          </div>
         </PanelSectionRow>
         {hasFineDetail && (
           <PanelSectionRow>
             <Field
-              focusable={true}
               bottomSeparator="none"
               label={
                 <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
@@ -986,7 +1018,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
         )}
         {etaText !== null && (
           <PanelSectionRow>
-            <Field label="Estimated time" focusable={true} bottomSeparator="none">
+            <Field label="Estimated time" bottomSeparator="none">
               <span data-testid="estimate-time" style={{ fontSize: "12px" }}>
                 {etaText}
               </span>
@@ -1019,6 +1051,8 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
           rssKb={budgetStatus?.rss_kb ?? null}
           resumeReady={budgetStatus?.resume_ready ?? null}
           restartDisabled={loading || connectionUnavailable}
+          runDoneItems={budgetStatus?.run_done_items ?? null}
+          runTotalItems={budgetStatus?.run_total_items ?? null}
         />
         <PanelSectionRow>
           <ButtonItem
@@ -1111,13 +1145,22 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
         {stats && (
           <>
             <PanelSectionRow>
-              <Field label="Last sync" focusable={true} bottomSeparator="none">
+              <Field label="Last sync" focusable={true} bottomSeparator="none" childrenContainerWidth="max">
                 {lastSyncValue(stats)}
               </Field>
             </PanelSectionRow>
             {stats.roms > 0 && (
               <PanelSectionRow>
-                <Field label="Library" description={formatLibraryLine(stats)} focusable={true} bottomSeparator="none" />
+                <Field
+                  label="Library"
+                  description={
+                    <div style={{ width: "100%", textAlign: "right", fontSize: "12px" }}>
+                      {formatLibraryLine(stats)}
+                    </div>
+                  }
+                  focusable={true}
+                  bottomSeparator="none"
+                />
               </PanelSectionRow>
             )}
           </>
@@ -1257,7 +1300,13 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
           )}
           {completedDownloads.length > 0 && (
             <PanelSectionRow>
-              <Field label={`${completedDownloads.length} completed`} focusable={true} bottomSeparator="none" />
+              {/* Self-describing — the downloads block carries no heading, so a
+                  bare "1 completed" floats without context. */}
+              <Field
+                label={`${pluralize(completedDownloads.length, "download")} completed`}
+                focusable={true}
+                bottomSeparator="none"
+              />
             </PanelSectionRow>
           )}
           <PanelSectionRow>
@@ -1265,6 +1314,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
               View All
             </ButtonItem>
           </PanelSectionRow>
+          <BlockSeparator />
         </PanelSection>
       )}
 

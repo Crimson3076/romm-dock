@@ -30,6 +30,7 @@ from domain.session_budget import (
     GC_SKIP_BELOW_KB,
     POST_RUN_ADVISORY_KB,
     WORST_CASE_CREATE_KB,
+    chunk_worst_cost_kb,
     gate_decision,
     post_run_advisory,
     predict_run_crosses,
@@ -540,12 +541,21 @@ class SyncOrchestrator:
         — the banner then drops the number but keeps its guidance text;
         ``memory_delta_kb`` is ``None`` until a clean run has measured both endpoints,
         and ``resume_ready`` is ``None`` when RSS is unreadable (undecidable).
+
+        Also carries the last run's progress — ``run_done_items`` of
+        ``run_total_items`` — so the paused banner can say "X of Y games done". They
+        ride this payload rather than a new callable because the QAM already polls it
+        while a paused banner shows, and they live in the BACKEND because the plugin
+        process survives the Steam restart the banner asks for. Both are ``None`` when
+        no run has reached its plan in this process (a plugin reload wipes the
+        in-memory counters); the banner then omits the sentence.
         """
         rss_kb: int | None = None
         try:
             rss_kb = await self._loop.run_in_executor(None, self._renderer_rss)
         except Exception as e:  # fail-open: a status poll must never raise
             self._logger.debug(f"Session-budget status read failed: {e}")
+        run_total = self._sync_state.run_total_items
         return {
             "success": True,
             "rss_kb": rss_kb,
@@ -554,6 +564,10 @@ class SyncOrchestrator:
             "cliff_kb": CLIFF_KB,
             "memory_delta_kb": self._sync_state.last_run_delta_kb,
             "resume_ready": resume_would_proceed(rss_kb) if rss_kb is not None else None,
+            # A done count without its denominator is unreadable, so the pair is
+            # surfaced together: no known total ⇒ both None.
+            "run_done_items": self._sync_state.run_done_items if run_total is not None else None,
+            "run_total_items": run_total,
         }
 
     # ── Sync termination ─────────────────────────────────────────
@@ -618,6 +632,11 @@ class SyncOrchestrator:
         box.chunks_emitted_this_run = 0
         box.interrupt_reason = None
         box.budget_measure_unavailable_logged = False
+        # Run-scoped progress counters for the paused banner's "X of Y games done"
+        # (#1383). The total is stamped at plan time below; the done count grows with
+        # the skipped + committed work as the run proceeds.
+        box.run_total_items = None
+        box.run_done_items = 0
         # Run-start RSS baseline for the last-run memory delta (#1383). A RAW read
         # (no GC — the settle isn't worth it for an informational number) captured
         # UNCONDITIONALLY at run start, before any chunk is applied, so even a
@@ -658,6 +677,9 @@ class SyncOrchestrator:
             # threaded into finalize so collections key on display names and
             # the offline name cache stays current as of this sync.
             platform_names = {u.slug: u.name for u in work_queue if u.type == "platform" and u.slug}
+            # The run's denominator for the paused banner's "X of Y games done" — the
+            # same planned total the ``sync_plan`` event carries (#1383).
+            box.run_total_items = total_roms_planned
             self._logger.info(f"Per-unit pipeline: {total_units} units planned, {total_roms_planned} ROMs total")
             await self._emit(
                 "sync_plan",
@@ -873,6 +895,7 @@ class SyncOrchestrator:
                     "platform_name": slug_to_name.get(rom.platform_slug, rom.platform_slug),
                     "platform_slug": rom.platform_slug,
                     "sibling_group_key": rom.sibling_group_key,
+                    "applied_launch_options": rom.applied_launch_options,
                 }
             latest = uow.sync_runs.get_latest_completed()
             last_platforms = list(latest.platforms_completed or []) if latest is not None else []
@@ -905,6 +928,7 @@ class SyncOrchestrator:
                     "fs_name": rom.fs_name,
                     "platform_slug": rom.platform_slug,
                     "sibling_group_key": rom.sibling_group_key,
+                    "applied_launch_options": rom.applied_launch_options,
                 }
                 for rom in rows
                 if rom.shortcut_app_id is not None
@@ -1022,6 +1046,11 @@ class SyncOrchestrator:
         # upstream, so ``skipped`` is always False on forced runs.
         if skipped:
             self._logger.info(f"Per-unit apply skipped: {unit.name} ({len(unit_roms)} ROMs unchanged)")
+            # A wholesale-skipped unit's ROMs are already correct in Steam, so they
+            # count toward the run's done total — the resume of a paused run skips
+            # every platform it finished before the pause, and those games ARE done
+            # (#1383).
+            box.run_done_items += len(unit_roms)
             return len(unit_roms)
 
         # Build shortcut data for every fetched ROM. Installed ROMs carry the
@@ -1059,9 +1088,37 @@ class SyncOrchestrator:
             preferred_region=self._settings.get("preferred_region", AUTO_REGION),
         )
 
-        # Download artwork for the ROMs about to get a shortcut and stamp each
-        # emitted entry's cover path in place (a no-op when nothing is emitted).
-        await self._attach_unit_cover_paths(unit, unit_roms, emitted, unit_index=unit_index, total_units=total_units)
+        # Delta-restricted apply (#1383 / #1382-M3): split the collapsed entries
+        # against the recorded applied state and emit ONLY new + changed. An
+        # unchanged entry — identity matches AND its built target launch_options
+        # matches the recorded ``applied_launch_options`` — is already correct on
+        # the shortcut, so it never reaches the frontend (no Set* walk, no confirm
+        # poll). Its ``roms`` row still commits: chunking routes the skipped
+        # groups' rows to chunk 0's leftover (sync_chunking), so DB work is never
+        # dropped and the platform stamp still rides the final chunk. Rebind
+        # entries are force-kept even when classify calls them "unchanged" — they
+        # MUST move their binding onto the surviving representative, and skipping
+        # one would let the vanished sibling's shortcut go stale-removed instead of
+        # rebound. ``new_ids`` prices each chunk create-vs-update for the budget
+        # gate. Covers ride only the delta (covers are creates-only, #1391).
+        new, changed, unchanged_ids, _stale, _disabled = classify_roms(emitted, registry, set())
+        rebind_ids = {e["rom_id"] for e in emitted if BIND_ROM_ID_KEY in e}
+        skip_ids = set(unchanged_ids) - rebind_ids
+        new_ids = {e["rom_id"] for e in new}
+        apply_emitted = [e for e in emitted if e["rom_id"] not in skip_ids]
+        self._logger.info(
+            f"Delta apply: {unit.name} — {len(new)} new + {len(changed)} changed + "
+            f"{len(rebind_ids)} rebind of {len(emitted)} collapsed ({len(skip_ids)} unchanged skipped)"
+        )
+        # A skipped entry is already correct on its Steam shortcut — no Set* walk is
+        # owed — so it counts as done the moment the delta is computed (#1383).
+        box.run_done_items += len(skip_ids)
+
+        # Download artwork for the shortcuts about to be applied and stamp each
+        # delta entry's cover path in place (a no-op when the delta is empty).
+        await self._attach_unit_cover_paths(
+            unit, unit_roms, apply_emitted, unit_index=unit_index, total_units=total_units
+        )
 
         if box.is_cancelling():
             return 0
@@ -1086,21 +1143,23 @@ class SyncOrchestrator:
         if unit.type == "platform" and unit.slug:
             await self._loop.run_in_executor(None, self._clear_platform_stamp_io, unit.slug)
 
-        # Stage the emitted representatives for cover finalise + binding, and the
+        # Stage the DELTA representatives for cover finalise + binding, and the
         # full built set for the ack-independent identity + version persist (the
-        # reporter upserts a row for every sibling, binds only representatives).
-        # Staging stays whole-unit; the apply is chunked below, so a mid-unit CEF
-        # crash forfeits only the in-flight chunk, not every prior chunk.
-        box.pending_sync = {e["rom_id"]: e for e in emitted}
+        # reporter upserts a row for every sibling — skipped ones included — and
+        # binds only the delta's acked representatives). Staging stays whole-unit;
+        # the apply is chunked below, so a mid-unit CEF crash forfeits only the
+        # in-flight chunk, not every prior chunk.
+        box.pending_sync = {e["rom_id"]: e for e in apply_emitted}
         box.pending_all_roms = {sd["rom_id"]: sd for sd in shortcuts_data}
 
         return await self._apply_unit_in_chunks(
             unit,
             unit_index=unit_index,
             total_units=total_units,
-            emitted=emitted,
+            emitted=apply_emitted,
             shortcuts_data=shortcuts_data,
             unit_roms=unit_roms,
+            new_ids=new_ids,
         )
 
     async def _attach_unit_cover_paths(
@@ -1143,16 +1202,22 @@ class SyncOrchestrator:
         emitted: list[dict[str, Any]],
         shortcuts_data: list[dict[str, Any]],
         unit_roms: list[dict[str, Any]],
+        new_ids: set[int],
     ) -> int:
-        """Emit → wait → commit the unit's shortcuts one durable chunk at a time.
+        """Emit → wait → commit the unit's DELTA shortcuts one durable chunk at a time.
 
-        The emitted shortcuts are split into commit chunks processed one at a time
+        ``emitted`` is the delta (new + changed + rebind) the frontend applies;
+        skipped-unchanged entries never reach here but their rows still ride the
+        chunks' ``rom_ids`` (routed to chunk 0's leftover by ``build_unit_chunks``).
+        The delta shortcuts are split into commit chunks processed one at a time
         (emit → wait → commit durably → next), so a mid-unit CEF crash forfeits
         only the in-flight chunk, not every prior chunk. ``chunk.rom_ids`` are the
-        chunk's fetched ROMs (its sibling groups' rows); a keyed lookup into the
-        whole unit's live fetch yields the chunk's commit subset. Returns the
-        running count of shortcuts applied — a cancel or heartbeat timeout returns
-        early with the chunks committed so far.
+        chunk's fetched ROMs (its sibling groups' rows, plus chunk 0's skipped
+        leftover); a keyed lookup into the whole unit's live fetch yields the
+        chunk's commit subset. ``new_ids`` (the classified creates) prices each
+        chunk create-vs-update for the session-budget gate. Returns the running
+        count of shortcuts applied — a cancel or heartbeat timeout returns early
+        with the chunks committed so far.
         """
         box = self._sync_state
         chunks = build_unit_chunks(emitted, shortcuts_data, _APPLY_CHUNK_SIZE)
@@ -1192,8 +1257,16 @@ class SyncOrchestrator:
             #    chunk of cover-applying creates, each priced create + cover) and can
             #    never be projected past it; at/above that it re-pauses with zero
             #    progress and the banner directs the user to restart Steam.
+            # Composition-aware pricing (#1383): now that emitted = new + changed
+            # only, price this chunk's creates at the create+cover rate and its
+            # updates (changed + rebind) at the lighter Set*-walk rate, instead of
+            # pricing every item as a cover-applying create. The frontend decides
+            # create-vs-update itself via its existing-shortcut scan; a small
+            # backend/frontend mismatch only ever overprices (worst-case safe).
+            creates = sum(1 for e in chunk.emitted if e["rom_id"] in new_ids)
+            updates = len(chunk.emitted) - creates
             budget_limit_kb = CLIFF_KB if box.chunks_emitted_this_run == 0 else EFFECTIVE_CEILING_KB
-            await self._maybe_pause_for_budget(box, chunk_items=len(chunk.emitted), limit_kb=budget_limit_kb)
+            await self._maybe_pause_for_budget(box, creates=creates, updates=updates, limit_kb=budget_limit_kb)
             if box.is_cancelling():
                 box.clear_active_unit()
                 return applied_count
@@ -1255,6 +1328,10 @@ class SyncOrchestrator:
             # same UoW.
             await self._reporter.get().commit_unit_results(applied, chunk_rows, platform_stamp=platform_stamp)
             applied_count += len(applied)
+            # Only a COMMITTED chunk's items count as done (#1383): an emitted chunk
+            # whose ack never landed — a cancel or a heartbeat timeout — returns above,
+            # before this line, so the paused banner never over-reports.
+            box.run_done_items += len(applied)
 
         box.clear_active_unit()
         return applied_count
@@ -1319,11 +1396,15 @@ class SyncOrchestrator:
         return rss_kb
 
     async def _maybe_pause_for_budget(
-        self, box: LibrarySyncStateBox, *, chunk_items: int, limit_kb: int = EFFECTIVE_CEILING_KB
+        self, box: LibrarySyncStateBox, *, creates: int, updates: int, limit_kb: int = EFFECTIVE_CEILING_KB
     ) -> None:
         """GC, measure renderer RSS, and pause the run if this chunk would cross ``limit_kb``.
 
-        Fired at a chunk boundary before emitting *chunk_items* more shortcuts.
+        Fired at a chunk boundary before emitting the next chunk's *creates* +
+        *updates* shortcuts. The chunk is priced by composition
+        (:func:`domain.session_budget.chunk_worst_cost_kb`): creates at the
+        create+cover rate, updates (changed / rebind) at the lighter Set*-walk rate
+        — the delta apply no longer prices every item as a cover-applying create.
         :func:`domain.session_budget.gate_decision` decides whether the projected
         cost crosses ``limit_kb`` — the effective ceiling for a later chunk, or the
         cliff itself for the run's first chunk (whose forward-progress guarantee is
@@ -1340,11 +1421,12 @@ class SyncOrchestrator:
             rss_kb = await self._gc_then_measure_rss(box)
             if rss_kb is None:
                 return
-            decision = gate_decision(rss_kb, chunk_items, per_item_kb=_CREATE_WITH_COVER_KB, limit_kb=limit_kb)
+            cost_kb = chunk_worst_cost_kb(creates, updates)
+            decision = gate_decision(rss_kb, cost_kb=cost_kb, limit_kb=limit_kb)
             if decision.should_pause:
                 self._logger.info(
                     f"Session-budget pause at chunk boundary: renderer RSS {rss_kb} KB + "
-                    f"{chunk_items} items projects {decision.projected_kb} KB >= limit "
+                    f"{creates} creates + {updates} updates projects {decision.projected_kb} KB >= limit "
                     f"{decision.threshold_kb} KB"
                 )
                 box.run_paused = True

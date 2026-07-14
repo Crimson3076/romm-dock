@@ -115,13 +115,26 @@ def _seed_collection(
 
 
 def _seed_rom_row(
-    plugin, rom_id, *, app_id, platform_slug, name="Game", fs_name=None, sibling_group_key: str | None = "romm:seed:1"
+    plugin,
+    rom_id,
+    *,
+    app_id,
+    platform_slug,
+    name="Game",
+    fs_name=None,
+    sibling_group_key: str | None = "romm:seed:1",
+    applied_launch_options: str | None = "",
 ):
     """Insert a bound (or unbound when app_id is None) ROM into the shared fake UoW.
 
     ``sibling_group_key`` defaults to a non-null value so the incremental-skip
     path treats the registry as already backfilled (#1295); pass ``None`` to
     seed a pre-migration row that must force a full fetch for backfill.
+
+    ``applied_launch_options`` defaults to ``""`` — the recorded uninstalled
+    placeholder — so an uninstalled bound baseline (built launch_options "")
+    reads as unchanged by the delta-restricted classify (#1383); pass ``None`` to
+    seed a pre-migration-015 row (unknown → always "changed").
     """
     from domain.rom import Rom
 
@@ -136,6 +149,7 @@ def _seed_rom_row(
     )
     with plugin._uow:
         plugin._uow.roms.save(rom)
+        plugin._uow.roms.set_applied_launch_options(rom_id, applied_launch_options)
 
 
 def _seed_install(plugin, rom_id, *, file_path, platform_slug="n64"):
@@ -4348,6 +4362,116 @@ class TestComponentGroupKeyStamping:
         assert keys == {1: "igdb:5:1"}
 
 
+class TestDeltaRestrictedApply:
+    """Delta-restricted apply (#1383): classify in the apply path, emit only new +
+    changed, skip content-unchanged shortcuts while still committing every row."""
+
+    @staticmethod
+    def _apply_setup(plugin, fake_romm_api):
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.loop = asyncio.get_event_loop()
+        _use_fake_romm(plugin, fake_romm_api)
+        plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
+        plugin._sync_service._orchestrator._wait_for_unit_complete = _fake_wait_set_event
+        plugin._sync_service._box.sync_state = SyncState.RUNNING
+        plugin._sync_service._box.current_sync_id = "run-delta"
+
+    @staticmethod
+    def _apply_unit_events():
+        import decky
+
+        return [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_apply_unit"]
+
+    @pytest.mark.asyncio
+    async def test_unchanged_item_skipped_but_row_committed_and_stamped(self, plugin, fake_romm_api):
+        # rom 10 is content-unchanged (identity + recorded applied "" both match the
+        # uninstalled built ""); rom 11 changed its name. Only rom 11 is emitted; both
+        # rows still commit and the platform is stamped.
+        self._apply_setup(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[
+                {"id": 10, "name": "Keep", "fs_name": "keep.z64"},
+                {"id": 11, "name": "New Name", "fs_name": "changed.z64"},
+            ],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        _seed_rom_row(plugin, 10, app_id=1010, platform_slug="n64", name="Keep", fs_name="keep.z64")
+        _seed_rom_row(plugin, 11, app_id=1011, platform_slug="n64", name="Old Name", fs_name="changed.z64")
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        events = self._apply_unit_events()
+        assert len(events) == 1
+        emitted_ids = [s["rom_id"] for s in events[0]["shortcuts"]]
+        assert emitted_ids == [11], "only the changed item is emitted; the unchanged one is skipped"
+        assert events[0]["unit_total"] == 1, "unit_total is the DELTA size, not the whole platform"
+
+        with plugin._uow as uow:
+            # Both rows committed: the changed name is persisted, the skipped row kept
+            # its binding + recorded applied (never re-acked, so save() left it alone).
+            assert uow.roms.get(11).name == "New Name"
+            skipped = uow.roms.get(10)
+            assert skipped.shortcut_app_id == 1010
+            assert skipped.applied_launch_options == ""
+            # The platform stamp rides the final chunk even though most items skipped.
+            assert uow.platform_sync_state.get("n64") is not None
+
+    @pytest.mark.asyncio
+    async def test_empty_delta_platform_still_stamps_and_commits_all_rows(self, plugin, fake_romm_api):
+        # Every item content-unchanged → an empty delta. The pipeline still emits one
+        # empty chunk (unit_total 0), commits every row, and writes the platform stamp.
+        self._apply_setup(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[
+                {"id": 10, "name": "A", "fs_name": "a.z64"},
+                {"id": 11, "name": "B", "fs_name": "b.z64"},
+            ],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        _seed_rom_row(plugin, 10, app_id=1010, platform_slug="n64", name="A", fs_name="a.z64")
+        _seed_rom_row(plugin, 11, app_id=1011, platform_slug="n64", name="B", fs_name="b.z64")
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        events = self._apply_unit_events()
+        assert len(events) == 1, "the empty-delta platform still round-trips exactly one (empty) chunk"
+        assert events[0]["shortcuts"] == []
+        assert events[0]["unit_total"] == 0
+        with plugin._uow as uow:
+            assert uow.roms.get(10).shortcut_app_id == 1010
+            assert uow.roms.get(11).shortcut_app_id == 1011
+            assert uow.platform_sync_state.get("n64") is not None
+
+    @pytest.mark.asyncio
+    async def test_null_recorded_applied_forces_reapply(self, plugin, fake_romm_api):
+        # A bound row whose applied_launch_options is NULL (pre-migration-015 /
+        # never recorded) is unknown → always re-applied, even with matching identity.
+        self._apply_setup(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 10, "name": "A", "fs_name": "a.z64"}]
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        _seed_rom_row(
+            plugin, 10, app_id=1010, platform_slug="n64", name="A", fs_name="a.z64", applied_launch_options=None
+        )
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        events = self._apply_unit_events()
+        assert len(events) == 1
+        assert [s["rom_id"] for s in events[0]["shortcuts"]] == [10], "NULL recorded state forces a re-apply"
+
+
 class TestSessionBudgetGate:
     """The RSS-based session-budget pause at chunk boundaries (#1383)."""
 
@@ -4364,7 +4488,7 @@ class TestSessionBudgetGate:
         plugin._renderer_gc.result = True
         plugin._renderer_rss.rss_kb = 2_100_000  # + 200*2500 = 2.6M ≥ ceiling 2.2M
 
-        await orch._maybe_pause_for_budget(box, chunk_items=200)
+        await orch._maybe_pause_for_budget(box, creates=200, updates=0)
 
         # 2.1M is above the GC-skip floor, so the reading is GC-settled: one GC and
         # two RSS reads (raw sample + post-GC re-read).
@@ -4385,7 +4509,7 @@ class TestSessionBudgetGate:
         plugin._renderer_gc.result = True
         plugin._renderer_rss.rss_kb = 440_000  # fresh baseline — nowhere near the cliff
 
-        await orch._maybe_pause_for_budget(box, chunk_items=200)
+        await orch._maybe_pause_for_budget(box, creates=200, updates=0)
 
         # 440K is below the GC-skip floor: even the worst-case chunk cost can't cross
         # the ceiling, so the raw reading is trusted and the ~5 s GC is skipped.
@@ -4403,7 +4527,7 @@ class TestSessionBudgetGate:
         box.current_sync_id = "run-1"
         plugin._renderer_rss.rss_kb = None  # measurement unavailable
 
-        await orch._maybe_pause_for_budget(box, chunk_items=200)
+        await orch._maybe_pause_for_budget(box, creates=200, updates=0)
 
         # Fail-open: no pause, and the "RSS unavailable" note is armed once-per-run.
         assert box.run_interrupted is False
@@ -4424,7 +4548,7 @@ class TestSessionBudgetGate:
         plugin._renderer_gc.result = True
         plugin._renderer_rss.rss_kb = CLIFF_KB - 200 * (WORST_CASE_CREATE_KB + COVER_TRANSIENT_KB) - 1  # 1_949_999
 
-        await orch._maybe_pause_for_budget(box, chunk_items=200, limit_kb=CLIFF_KB)
+        await orch._maybe_pause_for_budget(box, creates=200, updates=0, limit_kb=CLIFF_KB)
 
         assert box.run_paused is False
         assert box.is_cancelling() is False
@@ -4445,11 +4569,53 @@ class TestSessionBudgetGate:
         plugin._renderer_gc.result = True
         plugin._renderer_rss.rss_kb = CLIFF_KB - 200 * (WORST_CASE_CREATE_KB + COVER_TRANSIENT_KB)  # 1_950_000
 
-        await orch._maybe_pause_for_budget(box, chunk_items=200, limit_kb=CLIFF_KB)
+        await orch._maybe_pause_for_budget(box, creates=200, updates=0, limit_kb=CLIFF_KB)
 
         assert box.run_paused is True
         assert box.interrupt_reason == _SYNC_PAUSED_BUDGET
         assert box.is_cancelling() is True
+
+    @pytest.mark.asyncio
+    async def test_composition_pricing_mixed_chunk_cheaper_than_all_creates(self, plugin):
+        # Composition pricing (#1383): a chunk of 100 creates + 100 updates costs
+        # 100*2500 + 100*1000 = 350_000 KB and proceeds at this RSS, while the SAME
+        # 200-item count priced as all creates (500_000 KB) would pause — proof the
+        # gate prices updates lighter than creates, not every item as a create.
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-mix"
+        plugin._renderer_gc.result = True
+        # 1_800_000 + 350_000 = 2_150_000 < 2_200_000 ceiling; + 500_000 = 2_300_000 ≥ it.
+        plugin._renderer_rss.rss_kb = 1_800_000
+
+        await orch._maybe_pause_for_budget(box, creates=100, updates=100)
+        assert box.run_paused is False
+        assert box.is_cancelling() is False
+
+        await orch._maybe_pause_for_budget(box, creates=200, updates=0)
+        assert box.run_paused is True
+        assert box.is_cancelling() is True
+
+    @pytest.mark.asyncio
+    async def test_pause_log_line_states_creates_and_updates_composition(self, plugin, caplog):
+        # The pause log line must name the composition so an operator can read why
+        # the gate fired without recomputing the arithmetic.
+        import logging
+
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-log"
+        plugin._renderer_gc.result = True
+        # 1_900_000 + (120*2500 + 80*1000 = 380_000) = 2_280_000 ≥ 2_200_000 → pause.
+        plugin._renderer_rss.rss_kb = 1_900_000
+
+        with caplog.at_level(logging.INFO):
+            await orch._maybe_pause_for_budget(box, creates=120, updates=80)
+
+        assert box.run_paused is True
+        assert "120 creates + 80 updates" in caplog.text
 
     # ── _gc_then_measure_rss (GC-skip below the floor, LOW-3) ────
 
@@ -4898,6 +5064,10 @@ class TestSessionBudgetGate:
             # 1.1 + 2*0.5 = 2.1 < 2.2 ceiling → below the two-chunk headroom bar,
             # a paused run could resume now.
             "resume_ready": True,
+            # No run has reached its plan in this process → the progress pair is
+            # unknown, and a done count without its denominator is never surfaced.
+            "run_done_items": None,
+            "run_total_items": None,
         }
 
     @pytest.mark.asyncio
@@ -4939,3 +5109,208 @@ class TestSessionBudgetGate:
 
         assert result["rss_kb"] == 1_234_000
         assert result["memory_delta_kb"] == 800_000
+
+
+class TestRunProgressCounters:
+    """The run-scoped ``X of Y games done`` counters behind the paused banner (#1383).
+
+    They live in the backend because the plugin process survives the Steam restart the
+    paused banner asks for — only the frontend reloads — and they ride the existing
+    ``get_session_budget_status`` payload the QAM already polls while paused.
+    """
+
+    @staticmethod
+    def _arm(plugin, fake_romm_api, *, run_id="run-progress"):
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.loop = asyncio.get_event_loop()
+        _use_fake_romm(plugin, fake_romm_api)
+        plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
+        plugin._sync_service._box.sync_state = SyncState.RUNNING
+        plugin._sync_service._box.current_sync_id = run_id
+
+    @staticmethod
+    def _acks(plugin, *maps):
+        """Drive ``_wait_for_unit_complete`` to ack *maps* in order (one per chunk)."""
+        pending = list(maps)
+
+        async def fake_wait(_unit, event):
+            event.set()
+            return pending.pop(0) if pending else {}
+
+        plugin._sync_service._orchestrator._wait_for_unit_complete = fake_wait
+
+    @pytest.mark.asyncio
+    async def test_committed_chunks_count_toward_done(self, plugin, fake_romm_api, monkeypatch):
+        from services.library import sync_orchestrator
+
+        # Two brand-new ROMs, one shortcut per chunk → two chunks, both acked and
+        # committed. The plan's ROM total is the denominator.
+        self._arm(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 10, "name": "Alpha"}, {"id": 11, "name": "Beta"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        monkeypatch.setattr(sync_orchestrator, "_APPLY_CHUNK_SIZE", 1)
+        self._acks(plugin, {"10": 1010}, {"11": 1011})
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        box = plugin._sync_service._box
+        assert box.run_total_items == 2
+        assert box.run_done_items == 2
+
+    @pytest.mark.asyncio
+    async def test_emitted_but_uncommitted_chunk_does_not_count(self, plugin, fake_romm_api, monkeypatch):
+        from services.library import sync_orchestrator
+
+        # The first chunk is emitted, then the user cancels mid-wait: the wait gives
+        # up (None), the chunk never commits, and its item must NOT be reported done.
+        self._arm(plugin, fake_romm_api, run_id="run-cancel")
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 10, "name": "Alpha"}, {"id": 11, "name": "Beta"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        monkeypatch.setattr(sync_orchestrator, "_APPLY_CHUNK_SIZE", 1)
+        box = plugin._sync_service._box
+
+        async def cancel_mid_wait(_unit, _event) -> dict[str, int] | None:
+            # A None ack is the wait's "gave up" signal (user cancel / heartbeat timeout).
+            box.request_cancel()
+            return None
+
+        plugin._sync_service._orchestrator._wait_for_unit_complete = cancel_mid_wait
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        assert box.run_total_items == 2
+        assert box.run_done_items == 0, "an emitted chunk whose ack never landed is not done"
+
+    @pytest.mark.asyncio
+    async def test_paused_run_counts_only_the_committed_chunk(self, plugin, fake_romm_api, monkeypatch):
+        from services.library import sync_orchestrator
+
+        # The session-budget gate pauses at the second chunk's boundary — before its
+        # emit — so exactly one chunk committed. This is the banner's own scenario.
+        self._arm(plugin, fake_romm_api, run_id="run-paused")
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 10, "name": "Alpha"}, {"id": 11, "name": "Beta"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        monkeypatch.setattr(sync_orchestrator, "_APPLY_CHUNK_SIZE", 1)
+        self._acks(plugin, {"10": 1010}, {"11": 1011})
+        plugin._renderer_gc.result = True
+        plugin._renderer_rss.rss_kb = 2_199_000  # first chunk passes (vs cliff), second pauses
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        with plugin._uow as uow:
+            assert uow.sync_runs.get("run-paused").status == "paused"
+        box = plugin._sync_service._box
+        assert box.run_total_items == 2
+        assert box.run_done_items == 1
+
+    @pytest.mark.asyncio
+    async def test_delta_skipped_items_count_as_done(self, plugin, fake_romm_api):
+        # rom 10 is content-unchanged (skipped by the delta-restricted apply — its
+        # shortcut is already correct), rom 11 changed and is applied. Both are done.
+        self._arm(plugin, fake_romm_api, run_id="run-delta-progress")
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[
+                {"id": 10, "name": "Keep", "fs_name": "keep.z64"},
+                {"id": 11, "name": "New Name", "fs_name": "changed.z64"},
+            ],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        _seed_rom_row(plugin, 10, app_id=1010, platform_slug="n64", name="Keep", fs_name="keep.z64")
+        _seed_rom_row(plugin, 11, app_id=1011, platform_slug="n64", name="Old Name", fs_name="changed.z64")
+        self._acks(plugin, {"11": 1011})
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        box = plugin._sync_service._box
+        assert box.run_total_items == 2
+        assert box.run_done_items == 2, "1 skipped-unchanged + 1 acked in the single chunk"
+
+    @pytest.mark.asyncio
+    async def test_wholesale_skipped_unit_counts_its_roms(self, plugin, fake_romm_api):
+        # A platform the incremental gate skips entirely (its stamp matches the
+        # server) never reaches the apply — but its games ARE done. This is what a
+        # resume sees for every platform it finished before the pause, so without
+        # this the resumed run's banner would under-report badly.
+        self._arm(plugin, fake_romm_api, run_id="run-skip")
+        _seed_platform_stamp(plugin, "n64", at="2025-01-01T00:00:00Z", rom_count=1)
+        _seed_rom_row(plugin, 10, app_id=1010, platform_slug="n64", name="A", fs_name="a.z64")
+        fake_romm_api.platforms = [{"id": 1, "name": "N64", "slug": "n64", "rom_count": 1}]
+        plugin.settings["enabled_platforms"] = {"1": True}
+        self._acks(plugin)
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        box = plugin._sync_service._box
+        assert box.run_total_items == 1
+        assert box.run_done_items == 1
+
+    @pytest.mark.asyncio
+    async def test_counters_reset_at_run_start(self, plugin, fake_romm_api):
+        # A stale run's counters must never leak into the next run's banner.
+        self._arm(plugin, fake_romm_api, run_id="run-reset")
+        _seed_platform(fake_romm_api, platform_id=1, name="N64", slug="n64", roms=[{"id": 10, "name": "Alpha"}])
+        plugin.settings["enabled_platforms"] = {"1": True}
+        self._acks(plugin, {"10": 1010})
+        box = plugin._sync_service._box
+        box.run_done_items = 5000
+        box.run_total_items = 9999
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+
+        assert box.run_total_items == 1
+        assert box.run_done_items == 1
+
+    @pytest.mark.asyncio
+    async def test_status_callable_surfaces_the_run_progress(self, plugin, fake_romm_api):
+        # The pair rides the existing session-budget payload the QAM already polls.
+        self._arm(plugin, fake_romm_api, run_id="run-status")
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 10, "name": "Alpha"}, {"id": 11, "name": "Beta"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+        self._acks(plugin, {"10": 1010, "11": 1011})
+
+        await plugin._sync_service._orchestrator._do_sync_per_unit()
+        result = await plugin.get_session_budget_status()
+
+        assert result["run_done_items"] == 2
+        assert result["run_total_items"] == 2
+
+    @pytest.mark.asyncio
+    async def test_status_callable_reports_unknown_before_any_run(self, plugin):
+        # A fresh backend process (or a plugin reload) has no counters: the pair is
+        # None, and the banner drops the sentence rather than showing zeros.
+        plugin.loop = asyncio.get_event_loop()
+
+        result = await plugin.get_session_budget_status()
+
+        assert result["run_done_items"] is None
+        assert result["run_total_items"] is None
