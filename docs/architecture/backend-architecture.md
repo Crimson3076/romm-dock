@@ -566,6 +566,27 @@ bar in proportion to its real work. It falls back to the old equal-per-unit inde
 (QAM opened mid-run before any `sync_plan`, an older backend) or the plan can't apportion (unit-count mismatch, all-zero
 weights).
 
+The **within-unit fill is itself split into three monotonic sub-slices** (#1407, `withinUnitFraction` in
+`src/utils/syncProgress.ts`): fetch (`FETCH_SHARE` 15%) → covers (`COVERS_SHARE` 25%) → apply (`APPLY_SHARE` 60%). A
+unit is worked in that order — paginate the ROM list, download/refresh cover art, then create the shortcuts — and each
+phase fills its own slice by its own `current/total`, with a later phase's floor sitting at the sum of the earlier
+phases' shares. So the bar advances continuously through a unit's fetch and cover phases instead of resting frozen at
+the unit floor until `applying`, and it never jumps backwards at a phase boundary even though each phase restarts
+`current/total` from zero (each phase's frames land in a strictly-higher band than the phase before). The phase is
+tagged on the `sync_progress` payload's additive `subStage` field (camelCase, matching the sibling `totalSteps` /
+`runId` keys — the `emit_progress` Python kwarg is `sub_stage`, the emitted key is `subStage`): the fetcher's per-page
+frames carry `subStage: "fetch"`, the artwork cover-refresh **and** download frames carry `subStage: "covers"` (both
+share the covers slice), and the frontend-driven apply frames are keyed on the `applying` stage alone — so a merged
+apply frame still carrying a stale `subStage` is unaffected. Within the covers slice the fill is _not_ strictly
+monotonic: the covers phase runs two sequential passes — the cover-cache refresh first, then the download for the apply
+set — each counting `current/total` from zero, so a mixed unit (changed covers to refresh **and** new covers to
+download) can dip backwards **within** the covers band at the refresh→download handover, bounded to the covers share of
+that unit's slice. The fetch→covers→apply phase handovers themselves stay monotonic (the common cases don't dip either:
+a first full sync refreshes nothing, and a steady incremental sync with no cover changes runs neither pass). A frame
+with no sub-stage (the per-unit fetch anchor, or a pre-#1407 backend) rests at the unit floor, the old behaviour.
+`emit_progress` writes `subStage` into both the emitted event and the persisted `get_sync_status` snapshot, so it rides
+the QAM-remount re-seed path too.
+
 The whole thing is an approximation by design — though a narrow one since the plan went skip-aware: seed weights and the
 applying frames usually both count post-collapse shortcuts now, the raw pre-collapse `rom_count` survives only as the
 fallback where the backend doesn't know better, and a unit the plan mis-predicted re-corrects on its first
