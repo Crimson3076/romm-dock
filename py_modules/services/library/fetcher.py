@@ -496,11 +496,19 @@ class LibraryFetcher:
         the server count, bound rows exist, no group-key backfill pending) and
         derive the persisted post-collapse shortcut count
         (``collapsed_shortcut_count`` over the rows' sibling-group keys +
-        bound flags; ``None`` when the platform has no persisted rows). The gate's
+        bound flags). The collapsed count is emitted ONLY for slugs that carry
+        a ``PlatformSyncState`` completion stamp (#1412) — the same gate as
+        ``_read_collapsed_counts``: the stamp exists iff the local mirror is
+        complete, so without it a never-synced platform's PARTIAL rows
+        (cross-platform collection siblings, ADR-0021) would mis-weight the ETA
+        below the true work. ``None`` (no stamp, or no persisted rows) rides the
+        payload absent, so the frontend weights the unit at its raw ``rom_count``
+        (``predicted_skip ? 0 : collapsed_count ?? rom_count``). The gate's
         server-delta check (``list_roms_updated_after``) is deliberately NOT
         replayed — no network at plan time. A Force Full Sync clears every
-        stamp before the run, so its plan predicts no skips without a special
-        case. One short read UoW for the whole plan.
+        stamp before the run, so its plan predicts no skips AND drops every
+        collapsed count (the forced re-apply is priced at the full ``rom_count``)
+        without a special case. One short read UoW for the whole plan.
 
         Estimate-ONLY (ADR-0023): the result rides the ``sync_plan`` payload
         and must never feed the actual skip decision —
@@ -524,20 +532,29 @@ class LibraryFetcher:
                     collapsed_shortcut_count(
                         (rom.sibling_group_key, rom.shortcut_app_id is not None) for rom in all_rows
                     )
-                    if all_rows
+                    if stamp is not None and all_rows
                     else None
                 )
                 estimates[unit.slug] = (predicted, collapsed)
         return estimates
 
     def _read_collapsed_counts(self) -> dict[str, int]:
-        """Persisted post-collapse shortcut count per platform slug (#1382).
+        """Persisted post-collapse shortcut count per platform slug, gated on the
+        platform's completion stamp (#1382 / #1412).
 
         Groups every persisted ``roms`` row by ``platform_slug`` and collapses
         each platform's sibling-group keys + bound flags
-        (``collapsed_shortcut_count``). Slugs with no persisted rows are
-        absent, so the caller leaves the field off and the frontend falls
-        back to the raw server count. One short read UoW.
+        (``collapsed_shortcut_count``), but emits a count ONLY for slugs that
+        currently carry a ``PlatformSyncState`` completion stamp (ADR-0023). The
+        stamp exists iff the platform's local mirror is complete, which is
+        exactly the condition under which a post-collapse count is meaningful:
+        a never-synced platform legitimately holds PARTIAL rows — cross-platform
+        collection siblings persist per ADR-0021 (e.g. favorited games leave
+        their platform's rows behind without the platform ever being fetched) —
+        so an ungated count would shadow the true server total (#1412). A slug
+        with no stamp (or no persisted rows) is absent, so the caller leaves the
+        field off and the frontend falls back to the raw server count. The stamp
+        lookup shares the one short read UoW.
         """
         rows_by_slug: dict[str, list[tuple[str | None, bool]]] = {}
         with self._uow_factory() as uow:
@@ -545,7 +562,8 @@ class LibraryFetcher:
                 rows_by_slug.setdefault(rom.platform_slug, []).append(
                     (rom.sibling_group_key, rom.shortcut_app_id is not None)
                 )
-        return {slug: collapsed_shortcut_count(rows) for slug, rows in rows_by_slug.items()}
+            stamped = {slug for slug in rows_by_slug if uow.platform_sync_state.get(slug) is not None}
+        return {slug: collapsed_shortcut_count(rows) for slug, rows in rows_by_slug.items() if slug in stamped}
 
     def _read_incremental_baseline(
         self, platform_slug: str
