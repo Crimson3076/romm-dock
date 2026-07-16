@@ -1,7 +1,14 @@
 import { useState, useEffect, useRef, FC, Fragment } from "react";
 import { PanelSection, PanelSectionRow, ButtonItem, Field, ProgressBar } from "@decky/ui";
-import { getDownloadQueue, cancelDownload, pauseDownload, resumeDownload } from "../api/backend";
-import { getDownloadState, setDownloads } from "../utils/downloadStore";
+import { toaster } from "@decky/api";
+import {
+  getDownloadQueue,
+  cancelDownload,
+  pauseDownload,
+  resumeDownload,
+  clearCompletedDownloads,
+} from "../api/backend";
+import { getDownloadState, setDownloads, removeTerminalDownloads } from "../utils/downloadStore";
 import { formatBytes } from "../utils/formatters";
 import { scrollToTop } from "../utils/scrollHelpers";
 import { detach } from "../utils/detach";
@@ -21,27 +28,8 @@ function formatFinishedDescription(item: DownloadItem): string {
   return "Cancelled";
 }
 
-// Un-clear rom_ids that have new active downloads (re-download case). Pure
-// transform over (current, prev), so it lives at module scope rather than
-// inside the poll effect — module functions don't count toward the component's
-// function-nesting depth and are exempt from the effect's dependency array.
-const unclearRestarted =
-  (current: DownloadItem[]) =>
-  (prev: Set<number>): Set<number> => {
-    const restarted = current.filter(
-      (d) =>
-        (d.status === "downloading" || d.status === "queued" || d.status === "paused" || d.status === "extracting") &&
-        prev.has(d.rom_id),
-    );
-    if (restarted.length === 0) return prev;
-    const next = new Set(prev);
-    for (const d of restarted) next.delete(d.rom_id);
-    return next;
-  };
-
 export const DownloadQueue: FC<DownloadQueueProps> = ({ onBack }) => {
   const [downloads, setLocalDownloads] = useState<DownloadItem[]>([]); // NOSONAR(typescript:S6754) — setter intentionally renamed (local wrapper around global download state).
-  const [cleared, setCleared] = useState<Set<number>>(new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -56,9 +44,7 @@ export const DownloadQueue: FC<DownloadQueueProps> = ({ onBack }) => {
     };
 
     const pollTick = () => {
-      const current = getDownloadState();
-      setCleared(unclearRestarted(current));
-      setLocalDownloads([...current]);
+      setLocalDownloads([...getDownloadState()]);
     };
 
     const startPolling = () => {
@@ -81,10 +67,17 @@ export const DownloadQueue: FC<DownloadQueueProps> = ({ onBack }) => {
   }, []);
 
   const handleCancel = async (romId: number) => {
+    // A successful cancel (running OR paused) drops the row via the backend's
+    // terminal cancelled frame → store listener. A cancel that could not act
+    // (the entry vanished between render and click) returns the failure shape —
+    // surface it so the click is never a silent no-op (#149 downloads-round).
     try {
-      await cancelDownload(romId);
+      const result = await cancelDownload(romId);
+      if (!result.success) {
+        toaster.toast({ title: "RomM Sync", body: result.message || "Could not cancel the download" });
+      }
     } catch {
-      // ignore
+      toaster.toast({ title: "RomM Sync", body: "Could not cancel the download" });
     }
   };
 
@@ -104,28 +97,30 @@ export const DownloadQueue: FC<DownloadQueueProps> = ({ onBack }) => {
     }
   };
 
-  const handleClearCompleted = () => {
-    const finishedIds = downloads
-      .filter((d) => d.status === "completed" || d.status === "failed" || d.status === "cancelled")
-      .map((d) => d.rom_id);
-    setCleared((prev) => {
-      const next = new Set(prev);
-      finishedIds.forEach((id) => next.add(id));
-      return next;
-    });
+  const handleClearCompleted = async () => {
+    try {
+      await clearCompletedDownloads();
+    } catch {
+      // Clear failed (bridge/backend error) — leave the finished rows in place
+      // so the list stays honest rather than hiding entries the backend kept.
+      return;
+    }
+    // The backend evicted the terminal entries; drop them from the store too so
+    // the poll and any remount reflect the cleared queue immediately (#149).
+    removeTerminalDownloads();
+    setLocalDownloads([...getDownloadState()]);
   };
 
-  const visible = downloads.filter((d) => !cleared.has(d.rom_id));
   // Paused and extracting downloads stay in the active section — they're not
   // finished. Paused holds the partial transfer for resume; extracting is the
   // post-transfer ZIP unpack (not cancellable, no pause/resume offered).
-  const active = visible.filter(
+  const active = downloads.filter(
     (d) => d.status === "queued" || d.status === "downloading" || d.status === "paused" || d.status === "extracting",
   );
-  const finished = visible.filter((d) => d.status === "completed" || d.status === "failed" || d.status === "cancelled");
-  const hasFinished = downloads.some(
-    (d) => !cleared.has(d.rom_id) && (d.status === "completed" || d.status === "failed" || d.status === "cancelled"),
+  const finished = downloads.filter(
+    (d) => d.status === "completed" || d.status === "failed" || d.status === "cancelled",
   );
+  const hasFinished = finished.length > 0;
 
   return (
     <>
@@ -143,7 +138,7 @@ export const DownloadQueue: FC<DownloadQueueProps> = ({ onBack }) => {
       </PanelSection>
 
       <PanelSection title="Downloads">
-        {visible.length === 0 ? (
+        {downloads.length === 0 ? (
           <PanelSectionRow>
             <Field label="No downloads" />
           </PanelSectionRow>
@@ -239,7 +234,12 @@ export const DownloadQueue: FC<DownloadQueueProps> = ({ onBack }) => {
 
             {hasFinished && (
               <PanelSectionRow>
-                <ButtonItem layout="below" onClick={handleClearCompleted}>
+                <ButtonItem
+                  layout="below"
+                  onClick={() => {
+                    detach(handleClearCompleted());
+                  }}
+                >
                   Clear Completed
                 </ButtonItem>
               </PanelSectionRow>
