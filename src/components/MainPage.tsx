@@ -6,7 +6,6 @@ import {
   Field,
   Focusable,
   ProgressBar,
-  ProgressBarWithInfo,
   ToggleField,
   Spinner,
   DialogButton,
@@ -31,7 +30,6 @@ import {
   getRetroDeckStatus,
   logError,
 } from "../api/backend";
-import { formatBytes } from "../utils/formatters";
 import { pluralize } from "../utils/pluralize";
 import { estimateApplySeconds, formatDuration } from "../utils/syncEstimate";
 import {
@@ -61,6 +59,7 @@ import { setVersionError } from "../utils/connectionState";
 import { retroDeckBanner, type RetroDeckBanner } from "../utils/retrodeckHealth";
 import { VersionErrorCard, useVersionError } from "./VersionErrorCard";
 import { WarningCard } from "./WarningCard";
+import { DownloadProgressRow } from "./DownloadProgressRow";
 import { MigrationBlockedPage } from "./MigrationBlockedPage";
 import { SettingsResetBanner } from "./SettingsResetBanner";
 import { PlaytimeScopeBanner } from "./PlaytimeScopeBanner";
@@ -1426,18 +1425,12 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
       {hasDownloads && (
         <PanelSection>
           {activeDownloads.slice(0, 2).map((item) => (
-            <PanelSectionRow key={item.rom_id}>
-              <ProgressBarWithInfo
-                {...(item.total_bytes > 0 ? { nProgress: (item.bytes_downloaded / item.total_bytes) * 100 } : {})}
-                indeterminate={item.total_bytes === 0}
-                sOperationText={item.rom_name}
-                sTimeRemaining={
-                  item.total_bytes > 0
-                    ? `${formatBytes(item.bytes_downloaded)} / ${formatBytes(item.total_bytes)}`
-                    : formatBytes(item.bytes_downloaded)
-                }
-              />
-            </PanelSectionRow>
+            <DownloadProgressRow
+              key={item.rom_id}
+              caption={item.rom_name}
+              bytesDownloaded={item.bytes_downloaded}
+              totalBytes={item.total_bytes}
+            />
           ))}
           {activeDownloads.length > 2 && (
             <PanelSectionRow>
