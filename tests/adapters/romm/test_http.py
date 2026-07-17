@@ -2020,3 +2020,102 @@ class TestDownloadResume:
 
         req = mock_open.call_args[0][0]
         assert req.get_header("Range") is None
+
+
+class TestDownloadExternal:
+    """``download_external`` — the bearer-free fetch for the url_cover fallback (#1450)."""
+
+    def _adapter_with_token(self):
+        import logging
+
+        settings = {
+            "romm_url": "http://romm.local",
+            "romm_api_token": "rmm_secret",
+            "romm_api_token_origin": "http://romm.local",
+        }
+        return RommHttpAdapter(settings, "/fake/plugin_dir", logging.getLogger("test"), "decky-romm-sync/9.9.9")
+
+    def test_omits_authorization_even_with_stored_token(self, tmp_path):
+        """The host-bound RomM bearer must NEVER reach the external url_cover host."""
+        adapter = self._adapter_with_token()
+        dest = str(tmp_path / "cover.png")
+        data = b"cdn art"
+        resp = _make_resp(200, {"Content-Length": str(len(data))}, data)
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            adapter.download_external("https://cdn.example.com/x.png", dest)
+
+        req = mock_open.call_args[0][0]
+        assert req.get_header("Authorization") is None
+        assert req.get_header("User-agent") == "decky-romm-sync/9.9.9"
+        with open(dest, "rb") as f:
+            assert f.read() == data
+
+    def test_uses_absolute_url_verbatim_not_romm_prefixed(self, tmp_path):
+        """The url is absolute — it must NOT be prefixed with romm_url."""
+        adapter = self._adapter_with_token()
+        dest = str(tmp_path / "cover.png")
+        resp = _make_resp(200, {"Content-Length": "1"}, b"x")
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            adapter.download_external("https://cdn.example.com/x.png", dest)
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "https://cdn.example.com/x.png"
+
+    def test_encodes_spaces_in_url(self, tmp_path):
+        """RomM cover URLs carry raw spaces — encoded before the request."""
+        adapter = self._adapter_with_token()
+        dest = str(tmp_path / "cover.png")
+        resp = _make_resp(200, {"Content-Length": "1"}, b"x")
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            adapter.download_external("https://cdn.example.com/a b.png", dest)
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "https://cdn.example.com/a%20b.png"
+
+    def test_404_raises_not_found_without_retry(self, tmp_path):
+        adapter = self._adapter_with_token()
+        dest = str(tmp_path / "cover.png")
+        exc = urllib.error.HTTPError("https://cdn.example.com/x.png", 404, "Not Found", http.client.HTTPMessage(), None)
+
+        with (
+            patch("urllib.request.urlopen", side_effect=exc) as mock_open,
+            pytest.raises(RommNotFoundError),
+        ):
+            adapter.download_external("https://cdn.example.com/x.png", dest)
+
+        # A definitive 404 is not retryable — a single attempt.
+        assert mock_open.call_count == 1
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "FILE:///etc/passwd",
+            "ftp://internal.host/secret",
+            "data:text/html,<script>x</script>",
+            "gopher://127.0.0.1:70/",
+            "//cdn.example.com/x.png",  # scheme-relative — no scheme
+            "/relative/path.png",  # not absolute
+        ],
+    )
+    def test_rejects_non_http_scheme_without_requesting(self, tmp_path, url):
+        """A server-supplied non-http(s) url_cover must never reach urlopen (#1450).
+
+        The RomM ``url_cover`` is untrusted input; a ``file:///etc/passwd`` (or
+        any other scheme) is refused with the adapter's normal error type before
+        any request, and nothing is written to disk.
+        """
+        adapter = self._adapter_with_token()
+        dest = tmp_path / "cover.png"
+
+        with (
+            patch("urllib.request.urlopen") as mock_open,
+            pytest.raises(RommApiError),
+        ):
+            adapter.download_external(url, str(dest))
+
+        mock_open.assert_not_called()
+        assert not dest.exists()

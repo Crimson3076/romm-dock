@@ -526,6 +526,62 @@ class RommHttpAdapter:
 
         return self.with_retry(_do_download)
 
+    # Schemes an external ``url_cover`` fetch may use. A server-supplied
+    # ``url_cover`` is untrusted input, so anything else (``file:``, ``ftp:``,
+    # ``data:``, scheme-relative, …) is refused before any request — a
+    # ``file:///etc/passwd`` must never reach ``urlopen`` (#1450). Post-DNS
+    # private/link-local IP blocking and per-redirect-hop revalidation are the
+    # broader bounded-SSRF hardening tracked in #1182 (they also cover the
+    # pre-existing RomM download paths); stdlib's ``HTTPRedirectHandler`` already
+    # refuses redirects to non-http(s) schemes, so this allowlist closes the
+    # ``file:`` primitive on its own.
+    _EXTERNAL_URL_SCHEMES = ("http", "https")
+
+    def download_external(self, url: str, dest: str) -> None:
+        """Download from an ARBITRARY absolute *url* — ``User-Agent`` only, never the bearer.
+
+        For a ROM's ``url_cover`` (an external metadata-provider CDN such as
+        SteamGridDB / IGDB) used as the fallback when the RomM-local cover asset
+        404s (#1450): the host-bound RomM bearer must NEVER reach a third-party
+        origin, so only the plugin ``User-Agent`` is attached — no
+        ``Authorization`` header is ever built here (the CDN behind Cloudflare
+        Bot Fight Mode also 403s the default ``Python-urllib`` UA). The *url*
+        scheme is validated against :attr:`_EXTERNAL_URL_SCHEMES` first and a
+        non-http(s) scheme is rejected with a :class:`RommApiError` before any
+        request. Spaces in *url* are URL-encoded (RomM cover URLs carry them
+        raw). Single-shot streaming — no ``Range``/resume, covers are small;
+        transient errors retry through :meth:`with_retry` like every other
+        download, a 404 raises ``RommNotFoundError`` without retry.
+        """
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+        if scheme not in self._EXTERNAL_URL_SCHEMES:
+            raise RommApiError(f"Refusing url_cover with non-http(s) scheme {scheme!r}", url=url, method="GET")
+        encoded_url = urllib.parse.quote(url, safe="/:?=&@")
+        dest_path = Path(dest)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _do_download():
+            req = urllib.request.Request(encoded_url, method="GET")
+            req.add_header("User-Agent", self._user_agent)
+            try:
+                with urllib.request.urlopen(req, context=self.ssl_context(), timeout=self._CONNECT_TIMEOUT) as resp:
+                    raw_sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+                    if raw_sock is not None:
+                        raw_sock.settimeout(self._READ_TIMEOUT)
+                    total, downloaded = self._stream_to_file(
+                        resp,
+                        dest_path,
+                        block_size=self._DOWNLOAD_BLOCK_SIZE,
+                        url=encoded_url,
+                    )
+                self._validate_download(total, downloaded)
+            except RommApiError:
+                raise
+            except Exception as exc:
+                raise self.translate_http_error(exc, encoded_url, "GET") from exc
+
+        return self.with_retry(_do_download)
+
     def _resume_branch(self, resp, status: int, existing_size: int) -> tuple[str, int, int]:
         """Decide ``(open_mode, seed_bytes, total)`` from the live response.
 
