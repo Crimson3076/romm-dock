@@ -26,7 +26,8 @@ import {
   getWhitelistSettings,
   updateWhitelistSettings,
 } from "../api/backend";
-import { removeShortcut, getAllNonSteamShortcutAppIds, getLiveRomMShortcutAppIds } from "../utils/steamShortcuts";
+import { getAllNonSteamShortcutAppIds, getLiveRomMShortcutAppIds } from "../utils/steamShortcuts";
+import { removeShortcutsPaced } from "../utils/shortcutRemoval";
 import { LoadingRow } from "./LoadingRow";
 import { batchConfirmLaunchOptions } from "../utils/launchOptionsReconcile";
 import { getSyncProgress, onSyncProgressChange } from "../utils/syncProgress";
@@ -199,9 +200,7 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
         setActionStatus(result.message ?? "Failed to remove shortcuts");
         return;
       }
-      for (const appId of result.app_ids ?? []) {
-        removeShortcut(appId);
-      }
+      await removeShortcutsPaced(result.app_ids ?? []);
       if (result.rom_ids?.length) {
         await reportRemovalResults(result.rom_ids);
       }
@@ -277,11 +276,9 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
         // Steam (exe = bin/rom-launcher) that were never committed — no binding,
         // so the backend never returns them. The live exe-ownership scan sees
         // them; remove the UNION so no orphan is left behind (#1381).
-        const removed = new Set<number>();
-        for (const appId of result.app_ids ?? []) {
-          removeShortcut(appId);
-          removed.add(appId);
-        }
+        const backendAppIds = result.app_ids ?? [];
+        await removeShortcutsPaced(backendAppIds);
+        const removed = new Set<number>(backendAppIds);
         const liveAppIds = await getLiveRomMShortcutAppIds();
         if (liveAppIds === null) {
           // The scan could not run (Steam's shortcut store was unreadable) —
@@ -290,10 +287,8 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
         } else {
           const orphans = liveAppIds.filter((appId) => !removed.has(appId));
           logInfo(`Remove-all: ${orphans.length} live-scanned RomM shortcut(s) were not in the backend list.`);
-          for (const appId of orphans) {
-            removeShortcut(appId);
-            removed.add(appId);
-          }
+          await removeShortcutsPaced(orphans);
+          for (const appId of orphans) removed.add(appId);
         }
         removedCount = removed.size;
         // rom_ids are backend DB rows — orphans have none, so report only the
@@ -697,14 +692,15 @@ const RetroDeckSection: FC<RetroDeckSectionProps> = ({
       setConfirmRetrodeck(true);
       return;
     }
-    const toRemove = nonSteamApps.filter((a) => !whitelistedIds.has(a.appId));
-    setStatus(`Removing ${toRemove.length} non-steam games...`);
-    for (const app of toRemove) {
-      SteamClient.Apps.RemoveShortcut(app.appId);
-    }
-    setStatus(`Removed ${toRemove.length} non-steam game${toRemove.length === 1 ? "" : "s"}`);
+    // Disarm the confirm BEFORE the awaited paced removal (mirrors
+    // handleRemoveAllRomm) — the removal now yields for seconds on a large library,
+    // so a stray tap while it runs must not re-enter and start a second concurrent run.
     setConfirmRemoveAll(false);
     setConfirmRetrodeck(false);
+    const toRemove = nonSteamApps.filter((a) => !whitelistedIds.has(a.appId));
+    setStatus(`Removing ${toRemove.length} non-steam games...`);
+    await removeShortcutsPaced(toRemove.map((a) => a.appId));
+    setStatus(`Removed ${toRemove.length} non-steam game${toRemove.length === 1 ? "" : "s"}`);
     refreshPlatforms().catch((e) => logError(`Failed to refresh platforms: ${e}`));
     await recountAfterStoreSettles(toRemove.length, loadNonSteamApps);
   };
