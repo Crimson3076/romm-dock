@@ -161,6 +161,8 @@ jobs:
       - name: Check dependency locks satisfy their source constraints
         run: python scripts/check_lock_sync.py
 
+      - name: Check local markdown links resolve (file + anchor)
+        run: python scripts/check_markdown_links.py
       # The compiled gavel core ships in the plugin zip and has no source in
       # this repo — a silently swapped binary must fail CI. Verify the vendored
       # .so against its checksum (bumped only by a deliberate native/README.md
