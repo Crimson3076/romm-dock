@@ -1696,6 +1696,43 @@ describe("SystemPage", () => {
   });
 
   // ------------------------------------------------------------------
+  // N4. Platform separators (#1534) — a divider precedes every platform block:
+  // between the System intro and the first platform, and between each adjacent
+  // pair; none trails the last platform. So N platforms → N dividers. No divider
+  // sits between the rows of a single platform. The intra-row
+  // `bottomSeparator="none"` props are invisible through the @decky/ui mock (it
+  // ignores the prop), so only the between-block rule is asserted here; the "no
+  // lines within a platform" look is confirmed on-device.
+  // ------------------------------------------------------------------
+  describe("platform separators", () => {
+    it("renders one separator between the System block and the single platform", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [makeBiosPlatform({ platform_slug: "snes" })],
+      });
+      const { container } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      // One platform → one divider (System → platform); none trails it.
+      expect(container.querySelectorAll('[data-testid="platform-separator"]')).toHaveLength(1);
+    });
+
+    it("renders one separator before each platform block (System→first plus each adjacent pair, N total)", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [
+          makeBiosPlatform({ platform_slug: "snes" }),
+          makeBiosPlatform({ platform_slug: "ps1" }),
+          makeBiosPlatform({ platform_slug: "n64" }),
+        ],
+      });
+      const { container } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      // Three platforms → three dividers (System→snes, snes→ps1, ps1→n64); none trails the last.
+      expect(container.querySelectorAll('[data-testid="platform-separator"]')).toHaveLength(3);
+    });
+  });
+
+  // ------------------------------------------------------------------
   // O. Back button
   // ------------------------------------------------------------------
   describe("back button", () => {

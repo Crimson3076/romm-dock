@@ -68,6 +68,23 @@ function hashIndicator(hv: boolean | null): string {
   return " —";
 }
 
+/**
+ * Thin horizontal rule dividing adjacent platform blocks. Rows within one
+ * platform carry `bottomSeparator="none"`, so this is the only divider — one
+ * line between neighbouring platforms, none between the rows of a platform.
+ */
+const PlatformSeparator: FC = () => (
+  <PanelSectionRow>
+    {/* marginTop offsets the built-in top lead of the following PanelSection
+        title (the block below the rule) so the line sits centred in the gap
+        rather than hugging the block above it. */}
+    <div
+      data-testid="platform-separator"
+      style={{ height: "1px", marginTop: "14px", backgroundColor: "rgba(255, 255, 255, 0.12)" }}
+    />
+  </PanelSectionRow>
+);
+
 interface SystemPageProps {
   onBack: () => void;
 }
@@ -250,7 +267,8 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
   // when it has at least one ROM bound to a Steam shortcut (has_games).
   const syncedPlatforms = biosPlatforms.filter((p) => p.has_games);
 
-  const renderBiosPlatform = (platform: FirmwarePlatformExt) => {
+  const renderBiosPlatform = (platform: FirmwarePlatformExt, index: number) => {
+    const isLastPlatform = index === syncedPlatforms.length - 1;
     const unknownFiles = platform.files.filter((f) => f.classification === "unknown");
     // Display counts come from the backend aggregates (computed from the same
     // core-aware files); fall back to local derivation only if a payload omits
@@ -302,14 +320,14 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
             game-detail menu (#1210). */}
         {hasMultipleCores && (
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={(e: Event) => showSystemCoreMenu(platform, e)}>
+            <ButtonItem layout="below" bottomSeparator="none" onClick={(e: Event) => showSystemCoreMenu(platform, e)}>
               {`Emulator Core: ${platform.active_core_label ?? "Default"}`}
             </ButtonItem>
           </PanelSectionRow>
         )}
         {platform.active_core_label && !hasMultipleCores && (
           <PanelSectionRow>
-            <Field label="Emulator Core" description={platform.active_core_label} />
+            <Field label="Emulator Core" description={platform.active_core_label} bottomSeparator="none" />
           </PanelSectionRow>
         )}
         <PanelSectionRow>
@@ -334,11 +352,13 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
               )
             }
             description={summaryDescription}
+            bottomSeparator="none"
           />
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
             layout="below"
+            bottomSeparator="none"
             onClick={() =>
               setExpanded((prev) => ({
                 ...prev,
@@ -385,6 +405,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
                         ? `${file.file_name}${hashIndicator(file.hash_valid)}`
                         : `${file.file_name} — Missing`
                     }
+                    bottomSeparator="none"
                   />
                 </PanelSectionRow>
               );
@@ -394,6 +415,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
                 <Field
                   label={`${unknownFiles.length} file(s) not recognized`}
                   description="Report at github.com/danielcopper/decky-romm-sync/issues if needed."
+                  bottomSeparator="none"
                 />
               </PanelSectionRow>
             )}
@@ -403,6 +425,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
           <PanelSectionRow>
             <ButtonItem
               layout="below"
+              bottomSeparator="none"
               onClick={() => {
                 detach(handleDownloadRequired(platform.platform_slug));
               }}
@@ -416,6 +439,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
           <PanelSectionRow>
             <ButtonItem
               layout="below"
+              bottomSeparator="none"
               onClick={() => {
                 detach(handleDownloadAll(platform.platform_slug));
               }}
@@ -431,6 +455,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
           <PanelSectionRow>
             <ButtonItem
               layout="below"
+              bottomSeparator="none"
               onClick={() => confirmDeleteBios(platform.platform_slug)}
               disabled={isDownloading}
             >
@@ -438,6 +463,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
             </ButtonItem>
           </PanelSectionRow>
         )}
+        {!isLastPlatform && <PlatformSeparator />}
       </PanelSection>
     );
   };
@@ -502,6 +528,10 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
             <Field label={biosStatus} />
           </PanelSectionRow>
         )}
+        {/* Close the System intro block off from the first platform with the same
+            divider that sits between platforms — so a line precedes every platform
+            block, none trails the last. Only when platforms actually follow. */}
+        {syncedPlatforms.length > 0 && <PlatformSeparator />}
       </PanelSection>
 
       {syncedPlatforms.map(renderBiosPlatform)}
