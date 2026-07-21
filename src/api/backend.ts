@@ -9,6 +9,7 @@ import type {
   PlatformSyncSetting,
   CollectionSyncSetting,
   CollectionKind,
+  CollectionOwnerScope,
   RegistryPlatform,
   FirmwareStatus,
   FirmwareDownloadResult,
@@ -161,12 +162,18 @@ export const saveCollectionSync = callable<[string, CollectionKind, boolean], { 
   "save_collection_sync",
 );
 export const setAllCollectionsSync = callable<
-  [boolean, "my" | "smart" | "franchise" | null],
+  [boolean, "user" | "smart" | "franchise" | null],
   { success: boolean; message?: string }
 >("set_all_collections_sync");
 export const saveCollectionPlatformGroups = callable<[boolean], { success: boolean }>(
   "save_collection_platform_groups",
 );
+// Owner-scope for the Collections tab (#1532). "all" (default) or "own" (only
+// the signed-in user's own collections). Read via getSettings().collection_owner_scope.
+export const setCollectionOwnerScope = callable<
+  [CollectionOwnerScope],
+  { success: boolean; reason?: string; message?: string }
+>("set_collection_owner_scope");
 export const getRegistryPlatforms = callable<[], { platforms: RegistryPlatform[] }>("get_registry_platforms");
 export const removePlatformShortcuts = callable<
   [string],

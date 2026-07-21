@@ -8,25 +8,32 @@ import {
   saveCollectionSync,
   setAllCollectionsSync,
   saveCollectionPlatformGroups,
+  setCollectionOwnerScope,
   getSettings,
 } from "../api/backend";
-import type { PlatformSyncSetting, CollectionSyncSetting, CollectionKind, CollectionScope } from "../types";
+import type {
+  PlatformSyncSetting,
+  CollectionSyncSetting,
+  CollectionKind,
+  CollectionScope,
+  CollectionOwnerScope,
+} from "../types";
 import { scrollToTop } from "../utils/scrollHelpers";
 import { detach } from "../utils/detach";
 import { LoadingRow } from "./LoadingRow";
 
-type CollectionSubTab = "my" | "smart" | "franchise";
+type CollectionSubTab = "user" | "smart" | "franchise";
 
-const SUB_TAB_ORDER: readonly CollectionSubTab[] = ["my", "smart", "franchise"];
+const SUB_TAB_ORDER: readonly CollectionSubTab[] = ["user", "smart", "franchise"];
 
 const SUB_TAB_LABELS: Record<CollectionSubTab, string> = {
-  my: "My",
+  user: "My",
   smart: "Smart",
   franchise: "Franchise",
 };
 
 const SUB_TAB_HEADERS: Record<CollectionSubTab, string> = {
-  my: "MY COLLECTIONS",
+  user: "MY COLLECTIONS",
   smart: "SMART COLLECTIONS",
   franchise: "FRANCHISE",
 };
@@ -42,13 +49,26 @@ function filterCollectionsBySubTab(
   includeFavoritesInMy = false,
 ): CollectionSyncSetting[] {
   switch (subTab) {
-    case "my":
+    case "user":
       return collections.filter((c) => c.kind === "user" && (includeFavoritesInMy || !c.is_favorite));
     case "smart":
       return collections.filter((c) => c.kind === "smart");
     case "franchise":
       return collections.filter((c) => c.kind === "franchise");
   }
+}
+
+// Owner-scope filter (#1532): under "Own", hide collections owned by another
+// user so foreign ones can't be toggled on while the scope excludes them from
+// the sync. An absent `is_own` (older backend, or unknown own identity) is
+// treated as own, so "Own" never hides a collection it can't classify —
+// matching the backend's degrade-to-"All" fallback.
+function filterCollectionsByOwnerScope(
+  collections: CollectionSyncSetting[],
+  ownerScope: CollectionOwnerScope,
+): CollectionSyncSetting[] {
+  if (ownerScope === "all") return collections;
+  return collections.filter((c) => c.is_own !== false);
 }
 
 function favoritesDescription(romCount: number): string {
@@ -74,7 +94,8 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
   const [collectionsError, setCollectionsError] = useState(false);
   const collectionsLoaded = useRef(false);
   const [platformGroups, setPlatformGroups] = useState(false);
-  const [activeSubTab, setActiveSubTab] = useState<CollectionSubTab>("my");
+  const [ownerScope, setOwnerScope] = useState<CollectionOwnerScope>("all");
+  const [activeSubTab, setActiveSubTab] = useState<CollectionSubTab>("user");
 
   // The favorites collection (a user collection with is_favorite=true) is
   // promoted to a top-level toggle. RomM's schema theoretically allows more
@@ -108,7 +129,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
   }, []);
 
   // Load collections data lazily on first switch to collections tab.
-  // Sub-tab is reset to "my" in the tab-click handler (not here);
+  // Sub-tab is reset to "user" in the tab-click handler (not here);
   // that's an event-driven concern, not state synchronisation.
   useEffect(() => {
     if (activeTab === "collections" && !collectionsLoaded.current) {
@@ -121,6 +142,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
             setCollectionsError(true);
           }
           setPlatformGroups(!!settingsResult.collection_create_platform_groups);
+          setOwnerScope(settingsResult.collection_owner_scope === "own" ? "own" : "all");
         })
         .catch(() => setCollectionsError(true))
         .finally(() => setCollectionsLoading(false));
@@ -130,7 +152,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
   // Reset the collections sub-tab on every entry into the Collections tab
   // so the user lands on a predictable view (no persistence).
   const handleCollectionsTabClick = () => {
-    setActiveSubTab("my");
+    setActiveSubTab("user");
     setActiveTab("collections");
   };
 
@@ -176,6 +198,17 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
       await setAllCollectionsSync(enabled, scope);
     } catch {
       setCollections(previous);
+    }
+  };
+
+  const handleOwnerScopeChange = async (scope: CollectionOwnerScope) => {
+    if (scope === ownerScope) return;
+    const previous = ownerScope;
+    setOwnerScope(scope);
+    try {
+      await setCollectionOwnerScope(scope);
+    } catch {
+      setOwnerScope(previous);
     }
   };
 
@@ -265,7 +298,10 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
     // When the favorites toggle isn't rendered (zero or multi-favorites case),
     // include any favorites in the "My" sub-tab so they stay reachable.
     const includeFavoritesInMy = favoritesCollection === null;
-    const visible = filterCollectionsBySubTab(collections, activeSubTab, includeFavoritesInMy);
+    const kindFiltered = filterCollectionsBySubTab(collections, activeSubTab, includeFavoritesInMy);
+    // Owner-scope filter runs OVER the kind sub-tab filter — under "Own" a
+    // foreign collection is hidden from every kind tab (#1532).
+    const visible = filterCollectionsByOwnerScope(kindFiltered, ownerScope);
     const activeLabel = SUB_TAB_LABELS[activeSubTab];
     const sectionTitle = `${SUB_TAB_HEADERS[activeSubTab]} (${visible.length})`;
 
@@ -303,6 +339,39 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
               />
             </PanelSectionRow>
           )}
+        </PanelSection>
+        <PanelSection>
+          <PanelSectionRow>
+            <Field
+              label="Show collections"
+              description={
+                ownerScope === "own"
+                  ? "Only your own collections (franchise collections always sync)."
+                  : "Every collection on the server, including other users' public ones."
+              }
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <Focusable flow-children="horizontal" style={{ display: "flex", gap: "8px" }}>
+              {(["all", "own"] as CollectionOwnerScope[]).map((scope) => (
+                <DialogButton
+                  key={scope}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: "8px 0",
+                    opacity: ownerScope === scope ? 1 : 0.5,
+                    borderBottom: ownerScope === scope ? "2px solid #1a9fff" : "2px solid transparent",
+                  }}
+                  onClick={() => {
+                    detach(handleOwnerScopeChange(scope));
+                  }}
+                >
+                  {scope === "own" ? "Own" : "All"}
+                </DialogButton>
+              ))}
+            </Focusable>
+          </PanelSectionRow>
         </PanelSection>
         <Focusable flow-children="horizontal" style={{ display: "flex", gap: "4px", padding: "0 16px 12px" }}>
           {SUB_TAB_ORDER.map((sub) => (
