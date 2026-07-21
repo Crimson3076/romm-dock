@@ -10,6 +10,7 @@ persisted on the ``Rom`` aggregate and surfaced read-only in the play-section
 from __future__ import annotations
 
 from domain.rom import Rom
+from domain.version_metadata import VersionMetadata
 
 
 def _seed_versioned_rom(harness, **overrides):
@@ -24,12 +25,15 @@ def _seed_versioned_rom(harness, **overrides):
                 fs_name="ct.sfc",
                 shortcut_app_id=app_id,
                 synced_at="2026-01-01T00:00:00Z",
-                sibling_group_key="igdb:3404:57",
-                regions=overrides.get("regions", ("USA", "Europe")),
-                languages=overrides.get("languages", ("En", "Fr")),
-                revision=overrides.get("revision", "1"),
-                tags=overrides.get("tags", ("Demo",)),
-                is_main_sibling=overrides.get("is_main_sibling", True),
+                version=VersionMetadata(
+                    sibling_group_key="igdb:3404:57",
+                    regions=overrides.get("regions", ("USA", "Europe")),
+                    languages=overrides.get("languages", ("En", "Fr")),
+                    revision=overrides.get("revision", "1"),
+                    tags=overrides.get("tags", ("Demo",)),
+                    is_main_sibling=overrides.get("is_main_sibling", True),
+                ),
+                fs_size_bytes=overrides.get("fs_size_bytes", 3_145_728),
             )
         )
     return app_id
@@ -65,6 +69,27 @@ async def test_cached_game_detail_empty_version_metadata_is_empty_shapes(harness
     assert result["revision"] == ""
     assert result["tags"] == []
     assert result["is_main_sibling"] is False
+
+
+async def test_cached_game_detail_carries_fs_size_bytes(harness):
+    """The payload pins the server-reported ROM size as an int (#1395)."""
+    app_id = _seed_versioned_rom(harness, fs_size_bytes=3_145_728)
+
+    result = await harness.plugin.get_cached_game_detail(app_id)
+
+    assert result["found"] is True
+    assert result["fs_size_bytes"] == 3_145_728
+
+
+async def test_cached_game_detail_null_fs_size_bytes_rides_as_none(harness):
+    """A ROM whose size is unknown (NULL) ships the key as ``None`` so the
+    frontend hides it without probing for undefined."""
+    app_id = _seed_versioned_rom(harness, fs_size_bytes=None)
+
+    result = await harness.plugin.get_cached_game_detail(app_id)
+
+    assert result["found"] is True
+    assert result["fs_size_bytes"] is None
 
 
 async def test_cached_game_detail_unknown_app_id_is_not_found(harness):
