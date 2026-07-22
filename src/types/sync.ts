@@ -19,9 +19,9 @@ export interface PlatformSyncSetting {
   sync_enabled: boolean;
 }
 
-export type CollectionKind = "user" | "smart" | "virtual";
+export type CollectionKind = "standard" | "smart" | "virtual";
 
-export type CollectionScope = "user" | "smart" | "virtual";
+export type CollectionScope = "standard" | "smart" | "virtual";
 
 /**
  * The RomM virtual-collection type carried on a `kind === "virtual"` collection.
@@ -47,7 +47,7 @@ export interface CollectionSyncSetting {
   is_favorite: boolean;
   /**
    * The virtual-collection type — present only when `kind === "virtual"`, used
-   * to label the row ("Franchise" / "IGDB Collection"). Absent on user/smart
+   * to label the row ("Franchise" / "IGDB Collection"). Absent on standard/smart
    * collections and on older backends.
    */
   virtual_type?: VirtualCollectionType;
@@ -258,7 +258,7 @@ export interface SyncPlanUnit {
   name: string;
   slug: string;
   rom_count: number;
-  /** Only present when ``type === "collection"``. Discriminates user/smart/virtual. */
+  /** Only present when ``type === "collection"``. Discriminates standard/smart/virtual. */
   collection_kind?: CollectionKind;
   /**
    * Plan-time prediction of the wholesale incremental skip (#1382) —

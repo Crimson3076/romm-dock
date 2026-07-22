@@ -35,18 +35,18 @@ import { detach } from "../utils/detach";
 import { fuzzyMatch } from "../utils/fuzzyMatch";
 import { LoadingRow } from "./LoadingRow";
 
-type CollectionSubTab = "user" | "smart" | "virtual";
+type CollectionSubTab = "standard" | "smart" | "virtual";
 
-const SUB_TAB_ORDER: readonly CollectionSubTab[] = ["user", "smart", "virtual"];
+const SUB_TAB_ORDER: readonly CollectionSubTab[] = ["standard", "smart", "virtual"];
 
 const SUB_TAB_LABELS: Record<CollectionSubTab, string> = {
-  user: "My",
+  standard: "Standard",
   smart: "Smart",
   virtual: "Virtual",
 };
 
 const SUB_TAB_HEADERS: Record<CollectionSubTab, string> = {
-  user: "MY COLLECTIONS",
+  standard: "STANDARD COLLECTIONS",
   smart: "SMART COLLECTIONS",
   virtual: "VIRTUAL",
 };
@@ -80,7 +80,7 @@ const VIRTUAL_TYPE_FILTER_LABELS: Record<VirtualTypeFilter, string> = {
 };
 
 // A virtual row shows its type ("Franchise" / "IGDB Collection") before the ROM
-// count; user/smart rows (and a virtual row missing its type on an older
+// count; standard/smart rows (and a virtual row missing its type on an older
 // backend) show the plain count.
 function collectionRowDescription(c: CollectionSyncSetting): string {
   if (c.kind === "virtual" && c.virtual_type) {
@@ -92,16 +92,16 @@ function collectionRowDescription(c: CollectionSyncSetting): string {
 function filterCollectionsBySubTab(
   collections: CollectionSyncSetting[],
   subTab: CollectionSubTab,
-  // When the favorites toggle isn't shown (zero or >1 favorites), the "My"
+  // When the favorites toggle isn't shown (zero or >1 favorites), the "Standard"
   // sub-tab includes favorites too so they remain reachable. Defaults to
   // false because the optimistic-update callsite in handleSetAllCollections
-  // doesn't care — it only ever inspects the favorites-excluded "My" set,
+  // doesn't care — it only ever inspects the favorites-excluded "Standard" set,
   // and the favorites toggle owns favorites mutations independently.
   includeFavoritesInMy = false,
 ): CollectionSyncSetting[] {
   switch (subTab) {
-    case "user":
-      return collections.filter((c) => c.kind === "user" && (includeFavoritesInMy || !c.is_favorite));
+    case "standard":
+      return collections.filter((c) => c.kind === "standard" && (includeFavoritesInMy || !c.is_favorite));
     case "smart":
       return collections.filter((c) => c.kind === "smart");
     case "virtual":
@@ -145,7 +145,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
   const [collectionsError, setCollectionsError] = useState(false);
   const collectionsLoaded = useRef(false);
   const [ownerScope, setOwnerScope] = useState<CollectionOwnerScope>("all");
-  const [activeSubTab, setActiveSubTab] = useState<CollectionSubTab>("user");
+  const [activeSubTab, setActiveSubTab] = useState<CollectionSubTab>("standard");
   // Search + per-type filter narrow the active sub-tab's list. Both reset when
   // the sub-tab changes so each sub-tab is entered unfiltered.
   const [search, setSearch] = useState("");
@@ -163,17 +163,17 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
     scrollElementToTop(searchFieldRef.current);
   };
 
-  // The favorites collection (a user collection with is_favorite=true) is
+  // The favorites collection (a standard collection with is_favorite=true) is
   // promoted to a top-level toggle. RomM's schema theoretically allows more
-  // than one — if that ever happens, drop the toggle and let the "My" sub-tab
+  // than one — if that ever happens, drop the toggle and let the "Standard" sub-tab
   // surface them all, since a single toggle can't represent the set.
   const favoritesCollection = useMemo(() => {
-    const favs = collections.filter((c) => c.kind === "user" && c.is_favorite);
+    const favs = collections.filter((c) => c.kind === "standard" && c.is_favorite);
     if (favs.length === 0) return null;
     if (favs.length > 1) {
       console.warn(
         `decky-romm-sync: expected at most one favorites collection, got ${favs.length}. ` +
-          `Falling back to listing them in the My sub-tab.`,
+          `Falling back to listing them in the Standard sub-tab.`,
       );
       return null;
     }
@@ -195,7 +195,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
   }, []);
 
   // Load collections data lazily on first switch to collections tab.
-  // Sub-tab is reset to "user" in the tab-click handler (not here);
+  // Sub-tab is reset to "standard" in the tab-click handler (not here);
   // that's an event-driven concern, not state synchronisation.
   //
   // The two fetches are DECOUPLED so the slow one never blocks the fast one:
@@ -232,7 +232,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
   // entry into the Collections tab so the user lands on a predictable view (no
   // persistence).
   const handleCollectionsTabClick = () => {
-    setActiveSubTab("user");
+    setActiveSubTab("standard");
     setSearch("");
     setVirtualTypeFilter("all");
     setActiveTab("collections");
@@ -407,19 +407,18 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
 
   // --- Collections tab content ---
   const renderCollectionsContent = () => {
-    // The control shell (owner-scope, sub-tabs, search, per-type filter,
-    // Enable/Disable All) renders IMMEDIATELY — the slow getCollections fetch
-    // only gates the list AREA, not the controls (#1539). `hasCollections`
-    // gates everything that needs the loaded set: the favorites toggle, the
-    // header count, and the Enable/Disable All buttons (which must not act on
-    // an unloaded/empty set).
+    // The control shell (favorites, scope, the kind-selector row, search,
+    // per-type filter, Enable/Disable All) renders IMMEDIATELY — the slow
+    // getCollections fetch only gates the list AREA, not the controls (#1539).
+    // `hasCollections` gates the per-kind button counts (so they never flash
+    // "(0)"), the header count, and the Enable/Disable All buttons.
     const hasCollections = collections.length > 0;
 
     // When the favorites toggle isn't rendered (zero or multi-favorites case),
-    // include any favorites in the "My" sub-tab so they stay reachable.
+    // include any favorites in the "Standard" sub-tab so they stay reachable.
     const includeFavoritesInMy = favoritesCollection === null;
     const kindFiltered = filterCollectionsBySubTab(collections, activeSubTab, includeFavoritesInMy);
-    // Owner-scope filter runs OVER the kind sub-tab filter — under "Own" a
+    // Owner-scope filter runs OVER the kind sub-tab filter — under "Mine" a
     // foreign collection is hidden from every kind tab (#1532).
     const scopeFiltered = filterCollectionsByOwnerScope(kindFiltered, ownerScope);
     // Per-type filter (Virtual sub-tab only) narrows by virtual_type.
@@ -436,7 +435,7 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
     const overflow = matched.length - rendered.length;
     // Whole-kind = nothing filtered (no search, "All" owner-scope, and for
     // Virtual no per-type filter). Only then does Enable/Disable All use the
-    // whole-kind callable — under "Own" the owner-scoped `matched` set is a
+    // whole-kind callable — under "Mine" the owner-scoped `matched` set is a
     // bounded subset, so it goes through the batch path instead of letting
     // set_all_collections_sync stamp foreign collections.
     const isWholeKind = search === "" && ownerScope === "all" && !(showTypeFilter && virtualTypeFilter !== "all");
@@ -454,8 +453,8 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
         {/* The favorites toggle ALWAYS renders so it never pops in late. It's
             interactive only when exactly one favorites collection exists;
             otherwise (still loading, zero favorites, or the multi-favorites
-            fallback that lists them in the "My" sub-tab) it sits disabled and
-            grayed rather than disappearing. */}
+            fallback that lists them in the "Standard" sub-tab) it sits disabled
+            and grayed rather than disappearing. */}
         <PanelSection>
           <PanelSectionRow>
             <ToggleField
@@ -472,14 +471,18 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
         </PanelSection>
         <PanelSection>
           <PanelSectionRow>
-            <Field
-              label="Show collections"
-              description={
-                ownerScope === "own"
-                  ? "Only your own collections (virtual collections have no owner, so they always appear)."
-                  : "Every collection on the server, including other users' public ones."
-              }
-            />
+            {/* Pull the label up toward the section separator above it — the
+                default gap reads too large under the favorites toggle (#1539). */}
+            <div style={{ marginTop: "-8px" }}>
+              <Field
+                label="Show collections"
+                description={
+                  ownerScope === "own"
+                    ? "Only your own collections (virtual collections have no owner, so they always appear)."
+                    : "Every collection on the server, including other users' public ones."
+                }
+              />
+            </div>
           </PanelSectionRow>
           <PanelSectionRow>
             <Focusable flow-children="horizontal" style={{ display: "flex", gap: "8px" }}>
@@ -497,20 +500,27 @@ export const LibraryPage: FC<LibraryPageProps> = ({ onBack }) => {
                     detach(handleOwnerScopeChange(scope));
                   }}
                 >
-                  {scope === "own" ? "Own" : "All"}
+                  {scope === "own" ? "Mine" : "All"}
                 </DialogButton>
               ))}
             </Focusable>
           </PanelSectionRow>
         </PanelSection>
-        <Focusable flow-children="horizontal" style={{ display: "flex", gap: "4px", padding: "0 16px 12px" }}>
+        {/* Kind selector — a plain Standard/Smart/Virtual button row, styled
+            exactly like the scope (Mine/All) buttons. NOT the native Tabs: its
+            L1/R1 bumper glyphs eat width and truncate labels in the narrow QAM
+            (#1539). The per-kind count lives once in the section header below
+            rather than on every button, so the buttons stay compact.
+            handleSubTabChange keeps the reset-on-switch semantics (search /
+            per-type filter reset). */}
+        <Focusable flow-children="horizontal" style={{ display: "flex", gap: "8px", padding: "0 16px 12px" }}>
           {SUB_TAB_ORDER.map((sub) => (
             <DialogButton
               key={sub}
               style={{
                 flex: 1,
                 minWidth: 0,
-                padding: "10px 0",
+                padding: "8px 0",
                 opacity: activeSubTab === sub ? 1 : 0.5,
                 borderBottom: activeSubTab === sub ? "2px solid #1a9fff" : "2px solid transparent",
               }}
