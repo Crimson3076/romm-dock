@@ -4,7 +4,7 @@
  * fallback to the standard sync-conflict modal).
  */
 
-import { useState, createElement, FC } from "react";
+import { useState, useEffect, createElement, FC } from "react";
 import { DialogButton } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { debugLog, savesListFileVersions, savesRollbackToVersion } from "../../api/backend";
@@ -13,6 +13,7 @@ import { showSyncConflictModal } from "../SyncConflictModal";
 import { scrollFocusedToCenter } from "../../utils/scrollHelpers";
 import { formatBytes, formatTimestamp } from "../../utils/formatters";
 import { formatAttributionSegment, formatRelativeTime, pickLastSyncer } from "./helpers";
+import { renderCopyToSlotButton, type CopyToSlotHandler } from "./CopyToSlotButton";
 import { detach } from "../../utils/detach";
 
 interface VersionHistoryPanelProps {
@@ -21,9 +22,18 @@ interface VersionHistoryPanelProps {
   filename: string;
   isOffline: boolean;
   onRestored: () => void;
+  /** Opens the copy-to-slot picker for a version row's save id (source = this slot). */
+  onCopy?: CopyToSlotHandler;
 }
 
-export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({ romId, slot, filename, isOffline, onRestored }) => {
+export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({
+  romId,
+  slot,
+  filename,
+  isOffline,
+  onRestored,
+  onCopy,
+}) => {
   const [expanded, setExpanded] = useState(false);
   const [versions, setVersions] = useState<SaveVersionEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -61,6 +71,27 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({ romId, slot,
       await loadVersions();
     }
   };
+
+  // Self-refresh when this ROM's saves change. A copy into this slot (or a sync
+  // / external rollback) adds or removes a version, but the list is cached on
+  // first expand — without this it stays stale in-session until the game page is
+  // re-entered. The signal is a DOM CustomEvent (`globalThis.dispatchEvent`),
+  // NOT an @decky/api emit, so we listen on `globalThis`. Invalidate on any
+  // change for this ROM; reload immediately when the panel is open, otherwise the
+  // next expand lazy-loads the fresh list. `expanded` is a dep so the handler
+  // always sees the live open/closed state (re-subscribing on toggle is cheap).
+  useEffect(() => {
+    const onDataChanged = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.rom_id !== romId) return;
+      setVersions(null);
+      setLoadError(null);
+      if (expanded && !isOffline) detach(loadVersions());
+    };
+    globalThis.addEventListener("romm_data_changed", onDataChanged);
+    return () => globalThis.removeEventListener("romm_data_changed", onDataChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadVersions is stable per (romId, slot, filename); romId/isOffline/expanded are the real deps
+  }, [romId, isOffline, expanded]);
 
   const handleRestore = async (version: SaveVersionEntry) => {
     setRestoring(version.id);
@@ -197,25 +228,33 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({ romId, slot,
           v.file_name,
         ),
       ),
-      // Restore button (fixed right, disabled when offline)
+      // Action column (fixed right): Restore + optional Copy-to-slot.
       createElement(
-        DialogButton,
-        {
-          style: {
-            padding: "2px 8px",
-            minWidth: "auto",
-            fontSize: "11px",
-            width: "auto",
-            flexShrink: 0,
+        "div",
+        { style: { display: "flex", flexDirection: "column" as const, gap: "4px", flexShrink: 0 } },
+        // Restore button (disabled when offline)
+        createElement(
+          DialogButton,
+          {
+            key: "restore",
+            style: {
+              padding: "2px 8px",
+              minWidth: "auto",
+              fontSize: "11px",
+              width: "auto",
+              flexShrink: 0,
+            },
+            noFocusRing: false,
+            onFocus: scrollFocusedToCenter,
+            disabled: isThisRestoring || restoring !== null || isOffline,
+            onClick: () => {
+              detach(handleRestore(v));
+            },
           },
-          noFocusRing: false,
-          onFocus: scrollFocusedToCenter,
-          disabled: isThisRestoring || restoring !== null || isOffline,
-          onClick: () => {
-            detach(handleRestore(v));
-          },
-        },
-        isThisRestoring ? "Restoring..." : "Restore",
+          isThisRestoring ? "Restoring..." : "Restore",
+        ),
+        // Copy-to-slot button (source = this slot); disabled offline via the shared helper.
+        onCopy ? renderCopyToSlotButton(`copy-ver-${v.id}`, v.id, { onCopy, sourceSlot: slot, isOffline }) : null,
       ),
     );
   };
