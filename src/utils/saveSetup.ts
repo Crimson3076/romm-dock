@@ -5,21 +5,30 @@
  * (`CustomPlayButton.ensureTrackingConfigured`). Anything that lives here can
  * be unit-tested without rendering the component or stubbing React.
  *
- * The "server_unreachable" branch exists because `recommended_action` carries
- * the explicit failure mode from the backend (see `get_save_setup_info`); the
- * call site MUST NOT treat an empty `server_slots` array as authoritative on
- * that path or it risks clobbering real server saves on first sync.
+ * The "server_unreachable" and "not_found" branches exist because
+ * `recommended_action` carries the explicit failure mode from the backend (see
+ * `get_save_setup_info`); the call site MUST NOT treat an empty `server_slots`
+ * array as authoritative on either path or it risks clobbering real server
+ * saves on first sync. They hold identically and differ only in copy.
  */
 
 import type { SaveSetupInfo } from "../types";
 
 export type SaveSetupOutcome =
-  { kind: "server_unreachable" } | { kind: "auto_confirm"; slot: string } | { kind: "needs_user_choice" };
+  | { kind: "server_unreachable" }
+  | { kind: "not_found" }
+  | { kind: "auto_confirm"; slot: string }
+  | { kind: "needs_user_choice" };
 
 /** Resolve a SaveSetupInfo into the action its callers should take. */
 export function resolveSaveSetupOutcome(info: SaveSetupInfo): SaveSetupOutcome {
   if (info.recommended_action === "server_unreachable") {
     return { kind: "server_unreachable" };
+  }
+  // Same hold: an empty `server_slots` is no more authoritative on a 404 than
+  // on an outage, so this must NOT fall through to auto-confirm (#1570).
+  if (info.recommended_action === "not_found") {
+    return { kind: "not_found" };
   }
   // Either the backend marked the response as "auto_confirm_default", or the
   // server is reachable but reports no saves on either side — both are safe
@@ -43,6 +52,15 @@ export const SERVER_UNREACHABLE_WIZARD_MESSAGE =
 
 export const SERVER_UNREACHABLE_TOAST_BODY =
   "Cannot configure save slot — RomM server is not reachable. Open the Saves tab to retry.";
+
+/** Copy for the `not_found` branch. Deliberately does NOT say the game has no
+ *  saves: the 404 can come from this device's registration (a RomM database
+ *  reset drops it), so that would swap one lie for a more specific one. */
+export const NOT_FOUND_WIZARD_MESSAGE =
+  "RomM couldn't find the save data for this setup — setup paused. The game or this device may no longer be on the server.";
+
+export const NOT_FOUND_TOAST_BODY =
+  "Cannot configure save slot — RomM couldn't find the save data for this setup. Open the Saves tab.";
 
 const NEEDS_USER_CHOICE_TOAST_BODY = "Configure save sync in the Saves tab first";
 
@@ -82,6 +100,13 @@ export async function applyLaunchGateSetupOutcome(
 ): Promise<"proceed" | "abort"> {
   if (outcome.kind === "server_unreachable") {
     deps.toast(SERVER_UNREACHABLE_TOAST_BODY);
+    deps.dispatchSavesTab();
+    return "abort";
+  }
+  // Same abort, honest cause — a 404 must not let the launch proceed with save
+  // tracking unconfigured.
+  if (outcome.kind === "not_found") {
+    deps.toast(NOT_FOUND_TOAST_BODY);
     deps.dispatchSavesTab();
     return "abort";
   }
@@ -143,6 +168,10 @@ export async function applyWizardInitialSetupResult(result: SaveSetupInfo, deps:
     deps.setError(SERVER_UNREACHABLE_WIZARD_MESSAGE);
     return;
   }
+  if (result.recommended_action === "not_found") {
+    deps.setError(NOT_FOUND_WIZARD_MESSAGE);
+    return;
+  }
   if (result.recommended_action === "auto_confirm_default") {
     deps.setConfirming(true);
     try {
@@ -188,6 +217,11 @@ export interface WizardRetryDeps {
 export function applyWizardRetrySetupResult(result: SaveSetupInfo, deps: WizardRetryDeps): void {
   if (result.recommended_action === "server_unreachable") {
     deps.setError(SERVER_UNREACHABLE_WIZARD_MESSAGE);
+    deps.setLoading(false);
+    return;
+  }
+  if (result.recommended_action === "not_found") {
+    deps.setError(NOT_FOUND_WIZARD_MESSAGE);
     deps.setLoading(false);
     return;
   }

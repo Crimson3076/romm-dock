@@ -730,14 +730,25 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 15000)),
       ]);
 
-      // A connectivity blip during the status read leaves every file "unknown"
-      // and an empty server list; treating that as "resolved" would drop the
-      // user back to Play believing the conflict was cleared. Surface it and
-      // stay in conflict, exactly like the network-throw catch below (#1276).
+      // A failed status read leaves every file "unknown" and an empty server
+      // list; treating that as "resolved" would drop the user back to Play
+      // believing the conflict was cleared. Surface it and stay in conflict,
+      // exactly like the network-throw catch below (#1276).
       if (result.server_query_failed) {
-        reportServerReachable(false);
+        // Only an explicit unreachable verdict is a connectivity signal — for
+        // the store AND the copy. Off the bare flag both blamed the connection
+        // for a ROM the server merely no longer has (#1570).
+        const unreachable = result.server_query_reason === "server_unreachable";
+        if (unreachable) {
+          reportServerReachable(false);
+        }
         detach(debugLog(`CustomPlayButton: resolve conflict — server query failed for rom ${romId}`));
-        toaster.toast({ title: "RomM Sync", body: "Couldn't reach server to resolve conflict" });
+        toaster.toast({
+          title: "RomM Sync",
+          body: unreachable
+            ? "Couldn't reach server to resolve conflict"
+            : "RomM couldn't find this game's save data — conflict left unresolved",
+        });
         setState("conflict");
         return;
       }

@@ -147,6 +147,22 @@ describe("VersionHistoryPanel", () => {
     expect(getByText("Retry")).toBeInTheDocument();
   });
 
+  it("shows the entity-gone body, NOT the connection prompt, on a definitive 404", async () => {
+    vi.mocked(backend.savesListFileVersions).mockResolvedValue({
+      status: "not_found",
+      message: "HTTP 404: Not Found",
+    });
+    const { getByText, container } = render(<VersionHistoryPanel {...defaultProps()} />);
+    fireEvent.click(getByText("Previous Versions"));
+    await flushAsync();
+    expect(container.textContent).toContain("RomM couldn't find this game's save data.");
+    // The server answered, so the copy must not blame the connection — and it
+    // must not claim the saves are gone either: the 404 can be the device
+    // registration rather than the ROM (#1570).
+    expect(container.textContent).not.toMatch(/couldn't reach|unreachable|not reachable|offline/i);
+    expect(container.textContent).not.toMatch(/no saves|has no save|without saves/i);
+  });
+
   it("Retry button retriggers loadVersions", async () => {
     vi.mocked(backend.savesListFileVersions)
       .mockResolvedValueOnce({ status: "server_unreachable", message: "boom" })
@@ -366,6 +382,25 @@ describe("VersionHistoryPanel", () => {
       expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
         expect.objectContaining({ body: "Couldn't reach RomM. Check your connection and try again." }),
       );
+    });
+
+    it("status 'not_found' toasts the entity-gone message, not the connection prompt", async () => {
+      vi.mocked(backend.savesRollbackToVersion).mockResolvedValue({
+        status: "not_found",
+        message: "HTTP 404: Not Found",
+      });
+      const { getByText, onRestored } = await expand();
+      fireEvent.click(getByText("Restore"));
+      await flushAsync();
+      await flushAsync();
+      const toastCalls = vi.mocked(toaster.toast).mock.calls;
+      const body = toastCalls[toastCalls.length - 1]?.[0].body ?? "";
+      expect(body).toBe("RomM couldn't find this game's save data — nothing was restored.");
+      // Same rule as the wizard copy: no reachability claim, no claim that the
+      // game's saves are gone (the 404 can be the device id) — see #1570.
+      expect(body).not.toMatch(/couldn't reach|unreachable|not reachable|offline/i);
+      expect(body).not.toMatch(/no saves|has no save|without saves/i);
+      expect(onRestored).not.toHaveBeenCalled();
     });
 
     it("status 'unsupported' toasts the version requirement", async () => {

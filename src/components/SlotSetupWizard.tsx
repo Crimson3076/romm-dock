@@ -516,8 +516,10 @@ function useSaveSetupInfo(romId: number, onComplete: () => void) {
         if (cancelled) return;
         // Feed the shared store (#1345): a server_unreachable result is a
         // definitive offline signal; any other resolved result proves the
-        // server answered. A throw is a bridge/unknown error, not a verdict —
-        // the catch leaves the store untouched.
+        // server answered — including a `not_found`, which still holds the
+        // wizard but leaves the reconnect gate disarmed (#1570). A throw is a
+        // bridge/unknown error, not a verdict — the catch leaves the store
+        // untouched.
         const reachable = result.recommended_action !== "server_unreachable";
         reportServerReachable(reachable);
         offlineHeldRef.current = !reachable;

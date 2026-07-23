@@ -82,7 +82,7 @@ vi.mock("../components/SyncConflictModal", () => ({
 }));
 
 import { getCachedGameDetail } from "../utils/cachedGameDetailStore";
-import { setRommConnectionState, reportServerReachable } from "../utils/connectionState";
+import { setRommConnectionState, reportServerReachable, getRommConnectionState } from "../utils/connectionState";
 import { setLaunchOptionsConfirmed } from "../utils/steamShortcuts";
 import { markLaunchSkipped, consumeLaunchSkip } from "../utils/launchGate";
 import { getMigrationState } from "../utils/migrationStore";
@@ -1245,7 +1245,9 @@ describe("CustomPlayButton — resolve conflict reads the known conflict (#1276)
   });
 
   it("server_query_failed keeps the button in conflict and toasts (does NOT silently proceed)", async () => {
-    vi.mocked(backend.getSaveStatus).mockResolvedValue(saveStatus({ server_query_failed: true, conflicts: [] }));
+    vi.mocked(backend.getSaveStatus).mockResolvedValue(
+      saveStatus({ server_query_failed: true, server_query_reason: "server_unreachable", conflicts: [] }),
+    );
     const dataChanged = vi.fn();
     globalThis.addEventListener("romm_data_changed", dataChanged);
 
@@ -1263,6 +1265,47 @@ describe("CustomPlayButton — resolve conflict reads the known conflict (#1276)
     await utils.findByText("Resolve Conflict");
 
     globalThis.removeEventListener("romm_data_changed", dataChanged);
+  });
+
+  it("server_query_failed with an unreachable reason DOES drive the store offline", async () => {
+    setRommConnectionState("connected");
+    vi.mocked(backend.getSaveStatus).mockResolvedValue(
+      saveStatus({ server_query_failed: true, server_query_reason: "server_unreachable", conflicts: [] }),
+    );
+
+    const utils = await renderInConflict();
+    await clickResolve(utils);
+
+    // Post-catch state: the global store actually flipped, and the copy still
+    // names the connection — that IS the cause on this branch.
+    expect(getRommConnectionState()).toBe("offline");
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining("Couldn't reach server") }),
+    );
+    await utils.findByText("Resolve Conflict");
+  });
+
+  it("server_query_failed with a not_found reason leaves the store ALONE and does not blame the connection", async () => {
+    setRommConnectionState("connected");
+    vi.mocked(backend.getSaveStatus).mockResolvedValue(
+      saveStatus({ server_query_failed: true, server_query_reason: "not_found", conflicts: [] }),
+    );
+
+    const utils = await renderInConflict();
+    await clickResolve(utils);
+
+    // The #1570 defect: a definitive 404 is the server ANSWERING, so feeding
+    // the global store off the bare flag blacked out the whole UI. The toast
+    // must not assert reachability either, nor claim the saves are gone — the
+    // 404 can be the device registration rather than the ROM.
+    expect(getRommConnectionState()).toBe("connected");
+    const toastCalls = vi.mocked(toaster.toast).mock.calls;
+    const body = toastCalls[toastCalls.length - 1]?.[0].body ?? "";
+    expect(body).not.toMatch(/couldn't reach|unreachable|not reachable|offline/i);
+    expect(body).not.toMatch(/no saves|has no save|without saves/i);
+    // Still refuses to claim the conflict was resolved.
+    expect(vi.mocked(handleConflicts)).not.toHaveBeenCalled();
+    await utils.findByText("Resolve Conflict");
   });
 
   it("a thrown getSaveStatus keeps the button in conflict and toasts", async () => {

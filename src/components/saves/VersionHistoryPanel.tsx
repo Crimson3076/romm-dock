@@ -50,6 +50,11 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({
         // siblings are components, not prior versions (#908). The panel is
         // hidden for multi-file slots anyway; this is the defensive backstop.
         setVersions(result.versions);
+      } else if (result.status === "not_found") {
+        // The server answered — blaming the connection here would be a lie (#1570).
+        detach(debugLog(`VersionHistoryPanel: server has no such entry for ${filename}: ${result.message}`));
+        setVersions(null);
+        setLoadError("RomM couldn't find this game's save data.");
       } else {
         detach(debugLog(`VersionHistoryPanel: server unreachable for ${filename}: ${result.message}`));
         setVersions(null);
@@ -148,7 +153,10 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({
         // we just couldn't reach the server to confirm. Prompt for retry
         // instead of telling the user the version is gone.
         toaster.toast({ title: "RomM Sync", body: "Couldn't reach RomM. Check your connection and try again." });
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive final branch of the 8-member RollbackStatus union; an explicit check (vs. plain `else`) keeps the per-status symmetry and leaves any future-added status unhandled instead of silently routing it to the "unsupported" toast
+      } else if (result.status === "not_found") {
+        // Mirror of the branch above: RomM answered, so a retry cannot help.
+        toaster.toast({ title: "RomM Sync", body: "RomM couldn't find this game's save data — nothing was restored." });
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive final branch of the 9-member RollbackStatus union; an explicit check (vs. plain `else`) keeps the per-status symmetry and leaves any future-added status unhandled instead of silently routing it to the "unsupported" toast
       } else if (result.status === "unsupported") {
         toaster.toast({ title: "RomM Sync", body: "Version history requires RomM 4.7+" });
       }
