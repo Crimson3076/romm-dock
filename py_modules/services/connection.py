@@ -50,8 +50,8 @@ _NO_SERVER_URL_MESSAGE = "No server URL configured"
 _INVALID_URL_MESSAGE = "Enter a valid http(s):// server URL"
 
 _FORBIDDEN_TOKEN_MESSAGE = (
-    "Your RomM account cannot create API tokens — ask your admin to grant "
-    "token permissions or use an account with a higher role."
+    "RomM rejected the sign-in. Check your username and password — if they are correct, your account may not be "
+    "allowed to create API tokens (ask your admin or use an account with a higher role)."
 )
 
 # Pasted-token validation (``establish_user_token``): a 401 means the token
@@ -61,6 +61,9 @@ _FORBIDDEN_TOKEN_MESSAGE = (
 _USER_TOKEN_INVALID_MESSAGE = "The API token is invalid or has been revoked. Create a new token in RomM and try again."
 _USER_TOKEN_SCOPE_MESSAGE = (
     "The API token is missing required permissions (scopes). Grant the scopes listed in the plugin docs and try again."
+)
+_USER_TOKEN_REJECTED_MESSAGE = (
+    "RomM rejected this token. Check you pasted it correctly and that it has the required scopes (see the plugin docs)."
 )
 
 # Pairing-code sign-in (``establish_paired_token``). The 60s single-use pairing
@@ -276,8 +279,10 @@ class ConnectionService:
             minted = await self._loop.run_in_executor(None, self._mint, username, password)
         except RommForbiddenError:
             # 403 on token mint: same AUTH_FAILED slug as a 401, but a distinct
-            # message — the account lacks token-creation permission (or a
-            # Cloudflare bot-fight 403 at the edge), not wrong credentials.
+            # message. RomM answers 403 indistinguishably for wrong credentials
+            # AND for an account that lacks token-creation permission (and a
+            # Cloudflare bot-fight 403 lands here too), so the message names both
+            # causes rather than asserting only the permission one.
             self._restore_auth_state(snapshot)
             return {"success": False, "reason": ErrorCode.AUTH_FAILED.value, "message": _FORBIDDEN_TOKEN_MESSAGE}
         except Exception as e:
@@ -366,6 +371,18 @@ class ConnectionService:
         except Exception as e:
             self._restore_auth_state(snapshot)
             self._romm_api.set_version(None)
+            # RomM answers the token-carrying probe with a 500 (a malformed token)
+            # or a 403 (a token-shaped but invalid/revoked one) instead of a clean
+            # 401, so a bad pasted token otherwise surfaces as a generic server
+            # error. The auth state is restored now (old token, or none), so a
+            # reachability probe that succeeds proves the server is up and the
+            # pasted token — not the server — is at fault.
+            if (await self.probe_reachability()).get("online"):
+                return {
+                    "success": False,
+                    "reason": ErrorCode.AUTH_FAILED.value,
+                    "message": _USER_TOKEN_REJECTED_MESSAGE,
+                }
             return error_response(e)
 
         version_error = self._version_gate_error(version)

@@ -9,24 +9,36 @@
  * single-use, so it is entered in the clear across eight single-character boxes
  * (an OTP-style input grouped 4 – 4 around a hyphen, auto-advancing as you type)
  * — typability matters more than obscuring a value that expires almost
- * immediately. On submit the parent's matching handler runs —
- * `connect_with_credentials` (exchanges the credentials for a scoped token and
- * discards the password), `connect_with_token` (validates and stores the pasted
- * token), or `connect_with_pairing_code` (exchanges the code for a token). This
- * modal owns only the in-flight field values and the selected mode; token
- * minting/validation, status, and persistence live in the parent (SettingsPage).
+ * immediately. Sign in is gated until the selected mode's fields are complete,
+ * and the sign-in attempt runs to completion inside the modal: on success the
+ * parent's matching handler resolved truthy and the modal closes; on failure the
+ * modal stays open and shows the returned message so the user can correct and
+ * retry. The parent's handlers — `connect_with_credentials` (exchanges the
+ * credentials for a scoped token and discards the password), `connect_with_token`
+ * (validates and stores the pasted token), or `connect_with_pairing_code`
+ * (exchanges the code for a token) — own token minting/validation, status, and
+ * persistence; this modal owns only the in-flight field values, the selected
+ * mode, and the in-flight/error UI state.
  */
 
 import { FC, Fragment, useState, useRef, ChangeEvent, KeyboardEvent } from "react";
-import { ConfirmModal, TextField, DropdownItem, Focusable } from "@decky/ui";
+import { TextField, DropdownItem, Focusable } from "@decky/ui";
+import { ValidatingModalShell } from "./ValidatingModalShell";
 
 type SignInMode = "credentials" | "token" | "pairing";
 
+/** The subset of the backend connect result the modal needs to decide whether
+ * to close (success) or surface an error and stay open (failure). */
+export interface SignInResult {
+  success: boolean;
+  message: string;
+}
+
 interface ConnectModalProps {
   closeModal?: () => void;
-  onConnect: (username: string, password: string) => void;
-  onConnectToken: (token: string) => void;
-  onConnectPairing: (code: string) => void;
+  onConnect: (username: string, password: string) => Promise<SignInResult>;
+  onConnectToken: (token: string) => Promise<SignInResult>;
+  onConnectPairing: (code: string) => Promise<SignInResult>;
 }
 
 // The pairing code is eight characters, shown as eight single-character boxes
@@ -34,6 +46,8 @@ interface ConnectModalProps {
 const CODE_LENGTH = 8;
 const CODE_GROUP = 4;
 const CODE_INDICES = Array.from({ length: CODE_LENGTH }, (_unused, i) => i);
+
+const GENERIC_SIGN_IN_ERROR = "Sign-in failed. Check your connection and try again.";
 
 const helperTextStyle = { fontSize: "12px", marginBottom: "12px", color: "rgba(255,255,255,0.6)" } as const;
 const codeLabelStyle = {
@@ -44,7 +58,7 @@ const codeLabelStyle = {
 } as const;
 // A single non-wrapping row: eight fixed-size boxes plus the hyphen must always
 // stay on one line (8·36 (boxes) + 8·6 (gaps between the 9 flex children) + ~8
-// (hyphen) ≈ 344px, comfortably inside the ConfirmModal's content width), so each
+// (hyphen) ≈ 344px, comfortably inside the modal body's 360px min width), so each
 // box is a fixed size and never shrinks or grows as characters are typed.
 const codeRowStyle = {
   display: "flex",
@@ -102,12 +116,16 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
   const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
   const [code, setCode] = useState<string[]>(() => new Array<string>(CODE_LENGTH).fill(""));
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // The @decky/ui TextField is a plain FC with no ref to its underlying input,
-  // so focus is moved via the wrapping row (querySelectorAll('input')[i] — the
+  // so focus is moved via a wrapping element (querySelectorAll('input')[i] — the
   // same DOM pattern the QAM uses for buttons) rather than a forwarded ref. The
-  // eight inputs sit in DOM order inside the row, so index maps to box.
+  // pairing row holds the eight code inputs in DOM order; the credentials row
+  // holds [username, password] so Enter on username can advance to password.
   const codeRowRef = useRef<HTMLDivElement>(null);
+  const credentialsRowRef = useRef<HTMLDivElement>(null);
 
   const boxInputAt = (index: number): HTMLInputElement | null =>
     codeRowRef.current?.querySelectorAll("input")[index] ?? null;
@@ -147,7 +165,47 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
     }
   };
 
+  // Whether the selected mode's required fields are complete enough to submit.
+  // The password is checked untrimmed (a leading/trailing space can be a real
+  // character); everything else is trimmed so whitespace-only never enables it.
+  const computeCanSubmit = (): boolean => {
+    if (mode === "credentials") return username.trim() !== "" && password !== "";
+    if (mode === "token") return token.trim() !== "";
+    return code.every((c) => c !== "");
+  };
+  const canSubmit = computeCanSubmit();
+
+  // Run the selected mode's sign-in to completion. Success closes the modal;
+  // failure keeps it open and shows the returned message so the user can retry.
+  const submit = async () => {
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      let result: SignInResult;
+      if (mode === "token") {
+        result = await onConnectToken(token);
+      } else if (mode === "pairing") {
+        // Backend normalizes, so the bare eight characters in order are enough.
+        result = await onConnectPairing(code.join(""));
+      } else {
+        result = await onConnect(username, password);
+      }
+      if (result.success) {
+        closeModal?.();
+      } else {
+        setError(result.message);
+      }
+    } catch {
+      setError(GENERIC_SIGN_IN_ERROR);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleBoxChange = (index: number) => (e: ChangeEvent<HTMLInputElement>) => {
+    // Any edit clears a stale error so it doesn't linger past a correction.
+    setError(null);
     const incoming = normalizePairingCode(e.target.value);
     if (incoming.length <= 1) {
       // A single character (or a deletion, which leaves the box empty). Advancing
@@ -171,44 +229,75 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
       focusBoxAtEnd(index - 1);
       return;
     }
-    // Enter (the on-screen keyboard's "Eingabe" key) confirms once every box is
-    // filled — same submit as the OK button, plus the manual close ConfirmModal's
-    // OK button would do. An incomplete code is a no-op.
-    if (e.key === "Enter" && code.every((c) => c !== "")) {
-      submit();
-      closeModal?.();
-    }
-  };
-
-  const submit = () => {
-    if (mode === "token") {
-      onConnectToken(token);
-    } else if (mode === "pairing") {
-      // Backend normalizes, so the bare eight characters in order are enough.
-      onConnectPairing(code.join(""));
-    } else {
-      onConnect(username, password);
-    }
-  };
-
-  // Enter (the on-screen keyboard's "Eingabe" key) on a single-value field
-  // confirms, same as the OK button. ConfirmModal auto-closes on its OK button
-  // but not on this manual path, so close here too. The pairing-code boxes are
-  // the exception — handleBoxKeyDown gates their Enter on a complete code.
-  const handleFieldKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
-      submit();
-      closeModal?.();
+      // Consume the event so Steam's ModalRoot cannot fire its own default
+      // confirm/close — regardless of whether the code is complete enough to
+      // submit (an incomplete field must be an inert no-op, not a close).
+      e.preventDefault();
+      e.stopPropagation();
+      // Enter (the on-screen keyboard's "Eingabe" key) confirms once every box
+      // is filled — an incomplete code is a no-op. submit() owns closing on
+      // success, so this path must not close the modal itself.
+      if (code.every((c) => c !== "")) void submit();
     }
+  };
+
+  // Enter on the username field advances to the password field rather than
+  // submitting — the first field of a two-field form should never fire the
+  // action. If the password input can't be found, it's a no-op (never a submit).
+  const handleUsernameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    // Consume the event so Steam's ModalRoot cannot fire its own default
+    // confirm/close before focus advances to the password field.
+    e.preventDefault();
+    e.stopPropagation();
+    credentialsRowRef.current?.querySelectorAll("input")[1]?.focus();
+  };
+
+  // Enter on a completing field (password / token) submits, but only when the
+  // mode's fields are complete — otherwise it's a no-op.
+  const handleCompletingKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    // Consume the event so Steam's ModalRoot cannot fire its own default
+    // confirm/close on an incomplete field — regardless of whether we submit.
+    // (On the Deck, R2/OSK-Enter on the empty token field otherwise closed the
+    // modal even though this handler correctly no-ops when canSubmit is false.)
+    e.preventDefault();
+    e.stopPropagation();
+    if (canSubmit) void submit();
+  };
+
+  const handleModeChange = (option: { data: string }) => {
+    setMode(option.data as SignInMode);
+    setError(null);
+  };
+
+  const handleUsernameChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setUsername(e.target.value);
+    setError(null);
+  };
+
+  const handlePasswordChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setPassword(e.target.value);
+    setError(null);
+  };
+
+  const handleTokenChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setToken(e.target.value);
+    setError(null);
   };
 
   return (
-    <ConfirmModal
+    <ValidatingModalShell
       {...(closeModal === undefined ? {} : { closeModal })}
-      onOK={submit}
-      strTitle="Sign in to RomM"
-      strOKButtonText="Sign in"
-      bDisableBackgroundDismiss={true}
+      title="Sign in to RomM"
+      error={error}
+      errorTestId="signin-error"
+      submitLabel={submitting ? "Signing in…" : "Sign in"}
+      submitDisabled={!canSubmit || submitting}
+      onSubmit={() => {
+        void submit();
+      }}
     >
       <DropdownItem
         label="Sign-in method"
@@ -218,7 +307,7 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
           { data: "credentials", label: "Username & password" },
         ]}
         selectedOption={mode}
-        onChange={(option) => setMode(option.data as SignInMode)}
+        onChange={handleModeChange}
       />
       {mode === "token" && (
         <>
@@ -227,14 +316,23 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
             listed in the plugin docs so downloads, saves, and device sync work. The plugin never deletes a pasted
             token; you manage it in RomM.
           </div>
-          <TextField
-            focusOnMount={true}
-            label="API Token"
-            value={token}
-            bIsPassword
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setToken(e.target.value)}
-            onKeyDown={handleFieldKeyDown}
-          />
+          {/* The token field is the only input in this mode and, unwrapped, is a
+                direct child of the modal body. On the Deck, R2/OSK-Enter on the
+                empty field closes the ModalRoot even though handleCompletingKeyDown
+                no-ops (canSubmit false). The pairing boxes' <Focusable> wrapper is
+                the one structure proven not to close on an incomplete field, so the
+                token field is wrapped the same way. flow-children is irrelevant for
+                a single field, so it is omitted. */}
+          <Focusable>
+            <TextField
+              focusOnMount={true}
+              label="API Token"
+              value={token}
+              bIsPassword
+              onChange={handleTokenChange}
+              onKeyDown={handleCompletingKeyDown}
+            />
+          </Focusable>
         </>
       )}
       {mode === "pairing" && (
@@ -245,8 +343,8 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
           </div>
           <div style={codeLabelStyle}>Pairing code</div>
           {/* Focusable + flow-children="horizontal" tells Steam's gamepad nav to
-              step between the boxes left/right (the analog stick/d-pad), not
-              up/down — a plain div defaults to vertical traversal. */}
+                step between the boxes left/right (the analog stick/d-pad), not
+                up/down — a plain div defaults to vertical traversal. */}
           <Focusable flow-children="horizontal" ref={codeRowRef} style={codeRowStyle} data-testid="pairing-code-row">
             {CODE_INDICES.map((i) => (
               <Fragment key={i}>
@@ -271,22 +369,26 @@ export const ConnectModal: FC<ConnectModalProps> = ({ closeModal, onConnect, onC
             Enter your RomM username and password once. The plugin exchanges them for an API token and never stores your
             password.
           </div>
-          <TextField
-            focusOnMount={true}
-            label="Username"
-            value={username}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
-            onKeyDown={handleFieldKeyDown}
-          />
-          <TextField
-            label="Password"
-            value={password}
-            bIsPassword
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
-            onKeyDown={handleFieldKeyDown}
-          />
+          {/* A plain wrapping div carries the ref used to advance Enter from the
+                username field to the password field (querySelectorAll('input')[1]). */}
+          <div ref={credentialsRowRef} data-testid="credentials-row">
+            <TextField
+              focusOnMount={true}
+              label="Username"
+              value={username}
+              onChange={handleUsernameChange}
+              onKeyDown={handleUsernameKeyDown}
+            />
+            <TextField
+              label="Password"
+              value={password}
+              bIsPassword
+              onChange={handlePasswordChange}
+              onKeyDown={handleCompletingKeyDown}
+            />
+          </div>
         </>
       )}
-    </ConfirmModal>
+    </ValidatingModalShell>
   );
 };
