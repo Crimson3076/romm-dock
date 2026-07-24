@@ -104,11 +104,13 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
         const result = await getVersionList(appId);
         // get_version_list touches the server for the sibling view (#1345): an
         // explicit server_query_failed means offline; a multi-version list that
-        // loaded without failure proves the server is reachable. A single/unbound
-        // group carries no reachability signal.
+        // loaded without failure proves the server is reachable. A bound-id 404
+        // is an entity verdict, not a connection signal, so it feeds neither
+        // direction into the global store. A single/unbound group carries no
+        // reachability signal.
         if (result.server_query_failed) {
           reportServerReachable(false);
-        } else if (result.multi_version) {
+        } else if (result.multi_version && !result.bound_vanished) {
           reportServerReachable(true);
         }
         memberIdsRef.current = new Set((result.versions ?? []).map((v) => v.rom_id));
@@ -276,7 +278,7 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
   // guard once the fresh list lands — so the trigger never re-enables against a
   // stale list.
   const handleSwitch = async (target: VersionInfo): Promise<void> => {
-    if (target.active) return;
+    if (target.active || target.vanished) return;
     // A non-switchable row is a RomM sibling that lives in a different local group
     // (#1359) — its row is rendered disabled, and this guard makes a click a no-op
     // (defense-in-depth), so switch_version's rejection can never reach a toast.
@@ -354,6 +356,20 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
     return <FaCompactDisc size={20} color={NEUTRAL_GREY} style={{ flexShrink: 0 }} />;
   };
 
+  const rowAvailabilityHint = (v: VersionInfo): ReactNode => {
+    let text: string;
+    if (v.vanished) {
+      text = "No longer available on RomM";
+    } else if (!v.switchable) {
+      text = "conflicting metadata match in RomM";
+    } else {
+      return null;
+    }
+    return (
+      <span style={{ marginLeft: "8px", fontSize: "11px", fontStyle: "italic", color: NEUTRAL_GREY }}>{text}</span>
+    );
+  };
+
   const openMenu = (e: MouseEvent): void => {
     // Blocked while a switch is in flight — the list is stale until the reload
     // lands, so opening it now would let a click act against the wrong versions.
@@ -361,17 +377,16 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
     showContextMenu(
       <Menu label="Version">
         {versions.map((v) => (
-          <MenuItem key={v.rom_id} disabled={!v.switchable} onClick={() => detach(handleSwitch(v))}>
+          <MenuItem key={v.rom_id} disabled={v.vanished || !v.switchable} onClick={() => detach(handleSwitch(v))}>
             <span
               style={{
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "10px",
                 color: v.active ? ACTIVE_ACCENT : undefined,
-                // A non-switchable row (its RomM metadata match conflicts with this
-                // game's) is dimmed — still visible so the user sees the version
-                // exists but can't be switched to until the match is fixed (#1368).
-                opacity: v.switchable ? undefined : 0.55,
+                // Unavailable/conflicting rows stay visible as retained context,
+                // but are dimmed and disabled until RomM offers a usable target.
+                opacity: v.vanished || !v.switchable ? 0.55 : undefined,
               }}
             >
               {rowCover(v)}
@@ -379,11 +394,7 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
               {v.is_default ? <Badge text="Default" tone="accent" /> : null}
               {v.installed ? <Badge text="Downloaded" tone="good" /> : null}
               {v.switchable && !v.synced ? <Badge text="not synced" tone="muted" /> : null}
-              {v.switchable ? null : (
-                <span style={{ marginLeft: "8px", fontSize: "11px", fontStyle: "italic", color: NEUTRAL_GREY }}>
-                  conflicting metadata match in RomM
-                </span>
-              )}
+              {rowAvailabilityHint(v)}
               {v.active ? <span style={{ marginLeft: "6px", fontWeight: 700 }}>✓</span> : null}
             </span>
           </MenuItem>
