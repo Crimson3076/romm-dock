@@ -1404,7 +1404,9 @@ class TestFinalizePerUnitRun:
         _seed_rom(uow, 2, app_id=None, platform_slug="snes", name="B (unbound)")
 
         await plugin._sync_service._reporter.finalize_per_unit_run(
-            pending_collection_memberships={("standard", "7"): CollectionMembership(name="Faves", rom_ids=[1, 2])},
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="Faves", rom_ids=[1, 2], kind="standard")
+            },
             pending_platform_rom_ids={1},
             platform_names={"n64": "Nintendo 64"},
         )
@@ -1428,7 +1430,9 @@ class TestFinalizePerUnitRun:
 
         await plugin._sync_service._reporter.finalize_per_unit_run(
             # the UNBOUND sibling is collected
-            pending_collection_memberships={("standard", "7"): CollectionMembership(name="Faves", rom_ids=[2])},
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="Faves", rom_ids=[2], kind="standard")
+            },
             pending_platform_rom_ids={1},
             platform_names={"n64": "Nintendo 64"},
         )
@@ -1450,7 +1454,9 @@ class TestFinalizePerUnitRun:
 
         await plugin._sync_service._reporter.finalize_per_unit_run(
             # BOTH siblings collected
-            pending_collection_memberships={("standard", "7"): CollectionMembership(name="Faves", rom_ids=[1, 2])},
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="Faves", rom_ids=[1, 2], kind="standard")
+            },
             pending_platform_rom_ids={1},
             platform_names={"n64": "Nintendo 64"},
         )
@@ -1476,8 +1482,8 @@ class TestFinalizePerUnitRun:
 
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={
-                ("standard", "7"): CollectionMembership(name="X", rom_ids=[1]),
-                ("smart", "9"): CollectionMembership(name="X", rom_ids=[2]),
+                ("standard", "7"): CollectionMembership(name="X", rom_ids=[1], kind="standard"),
+                ("smart", "9"): CollectionMembership(name="X", rom_ids=[2], kind="smart"),
             },
             pending_platform_rom_ids={1, 2},
             platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
@@ -1499,8 +1505,8 @@ class TestFinalizePerUnitRun:
 
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={
-                ("standard", "7"): CollectionMembership(name="X", rom_ids=[1, 2]),
-                ("smart", "9"): CollectionMembership(name="X", rom_ids=[1]),
+                ("standard", "7"): CollectionMembership(name="X", rom_ids=[1, 2], kind="standard"),
+                ("smart", "9"): CollectionMembership(name="X", rom_ids=[1], kind="smart"),
             },
             pending_platform_rom_ids={1, 2},
             platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
@@ -1527,8 +1533,8 @@ class TestFinalizePerUnitRun:
 
         await plugin._sync_service._reporter.finalize_per_unit_run(
             pending_collection_memberships={
-                ("standard", "7"): CollectionMembership(name="Alpha", rom_ids=[1]),
-                ("smart", "9"): CollectionMembership(name="Beta", rom_ids=[2]),
+                ("standard", "7"): CollectionMembership(name="Alpha", rom_ids=[1], kind="standard"),
+                ("smart", "9"): CollectionMembership(name="Beta", rom_ids=[2], kind="smart"),
             },
             pending_platform_rom_ids={1, 2},
             platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
@@ -1536,6 +1542,261 @@ class TestFinalizePerUnitRun:
 
         payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
         assert payload["romm_collection_app_ids"] == {"Alpha": [1001], "Beta": [1002]}
+
+    @pytest.mark.asyncio
+    async def test_by_label_keys_a_single_collection_with_its_fine_label(self, plugin):
+        """``by_label`` mode appends the fine type label to the reporter key.
+
+        The key becomes ``"<name> (<Label>)"`` so the frontend builds
+        ``RomM: [<name> (Label)]``. Default ``merge`` would key by the bare name.
+        """
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "by_label"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("virtual", "vc-1"): CollectionMembership(
+                    name="coll-a", rom_ids=[1], kind="virtual", virtual_type="franchise"
+                )
+            },
+            pending_platform_rom_ids={1},
+            platform_names={"n64": "Nintendo 64"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        assert payload["romm_collection_app_ids"] == {"coll-a (Franchise)": [1001]}
+
+    @pytest.mark.asyncio
+    async def test_by_label_keeps_same_name_different_label_separate(self, plugin):
+        """A standard and a virtual collection sharing a name stay SEPARATE under by_label.
+
+        The load-bearing behavior: same name + different type → two distinct Steam
+        collections, not a union (which is what ``merge`` does).
+        """
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "by_label"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="snes", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="shared-name", rom_ids=[1], kind="standard"),
+                ("virtual", "vc-9"): CollectionMembership(
+                    name="shared-name", rom_ids=[2], kind="virtual", virtual_type="collection"
+                ),
+            },
+            pending_platform_rom_ids={1, 2},
+            platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        assert payload["romm_collection_app_ids"] == {
+            "shared-name (Standard)": [1001],
+            "shared-name (IGDB Collection)": [1002],
+        }
+
+    @pytest.mark.asyncio
+    async def test_by_label_franchise_vs_igdb_collection_same_name_two_keys(self, plugin):
+        """Two virtual collections of the same name but different virtual_type split apart."""
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "by_label"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="snes", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("virtual", "vc-f"): CollectionMembership(
+                    name="shared-name", rom_ids=[1], kind="virtual", virtual_type="franchise"
+                ),
+                ("virtual", "vc-c"): CollectionMembership(
+                    name="shared-name", rom_ids=[2], kind="virtual", virtual_type="collection"
+                ),
+            },
+            pending_platform_rom_ids={1, 2},
+            platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        assert payload["romm_collection_app_ids"] == {
+            "shared-name (Franchise)": [1001],
+            "shared-name (IGDB Collection)": [1002],
+        }
+
+    @pytest.mark.asyncio
+    async def test_by_label_same_name_same_label_still_unions(self, plugin):
+        """Two collections of the SAME name AND same label still UNION under by_label.
+
+        Same-name-within-one-label is accepted as merged (two standard "Faves"),
+        so the key ``"Faves (Standard)"`` unions both member sets.
+        """
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "by_label"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="snes", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="Faves", rom_ids=[1], kind="standard"),
+                ("standard", "8"): CollectionMembership(name="Faves", rom_ids=[2], kind="standard"),
+            },
+            pending_platform_rom_ids={1, 2},
+            platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        assert payload["romm_collection_app_ids"] == {"Faves (Standard)": [1001, 1002]}
+
+    @pytest.mark.asyncio
+    async def test_merge_mode_unions_same_name_across_kinds(self, plugin):
+        """Default ``merge`` still unions the same-named standard + virtual pair by bare name.
+
+        The complement to ``test_by_label_keeps_same_name_different_label_separate``:
+        with the default mode the exact same input collapses onto one bare-name key.
+        """
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "merge"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="snes", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="shared-name", rom_ids=[1], kind="standard"),
+                ("virtual", "vc-9"): CollectionMembership(
+                    name="shared-name", rom_ids=[2], kind="virtual", virtual_type="collection"
+                ),
+            },
+            pending_platform_rom_ids={1, 2},
+            platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        assert payload["romm_collection_app_ids"] == {"shared-name": [1001, 1002]}
+
+    @pytest.mark.asyncio
+    async def test_merge_unions_case_differing_names(self, plugin):
+        """Two names differing ONLY by case union into ONE key under merge (#1569).
+
+        The data-loss guard: Steam collapses "7 up" and "7 Up" onto one
+        case-insensitive collection, so the reporter must emit a single key with
+        BOTH member sets — otherwise the second Steam create overwrites the first
+        and its games are lost. First-seen casing wins for display.
+        """
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "merge"
+        uow = plugin._uow
+        # collection A ("7 up") → 2 apps; collection B ("7 Up") → 5 apps.
+        for rid, aid in [(1, 1001), (2, 1002), (3, 1003), (4, 1004), (5, 1005), (6, 1006), (7, 1007)]:
+            _seed_rom(uow, rid, app_id=aid, platform_slug="n64", name=f"g{rid}")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="7 up", rom_ids=[1, 2], kind="standard"),
+                ("virtual", "vc-1"): CollectionMembership(
+                    name="7 Up", rom_ids=[3, 4, 5, 6, 7], kind="virtual", virtual_type="franchise"
+                ),
+            },
+            pending_platform_rom_ids=set(range(1, 8)),
+            platform_names={"n64": "Nintendo 64"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        # ONE key (first-seen casing "7 up"), 2 + 5 = 7 apps unioned, neither set dropped.
+        assert payload["romm_collection_app_ids"] == {"7 up": [1001, 1002, 1003, 1004, 1005, 1006, 1007]}
+
+    @pytest.mark.asyncio
+    async def test_by_label_merges_same_type_case_variants(self, plugin):
+        """Under by_label, same-TYPE case variants merge (labels match → folded keys match)."""
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "by_label"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="snes", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="abc", rom_ids=[1], kind="standard"),
+                ("standard", "8"): CollectionMembership(name="ABC", rom_ids=[2], kind="standard"),
+            },
+            pending_platform_rom_ids={1, 2},
+            platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        # One key ("abc (Standard)", first-seen casing), both apps unioned.
+        assert payload["romm_collection_app_ids"] == {"abc (Standard)": [1001, 1002]}
+
+    @pytest.mark.asyncio
+    async def test_by_label_keeps_different_type_case_variants_separate(self, plugin):
+        """Under by_label, DIFFERENT-type case variants stay separate (labels differ)."""
+        import decky
+
+        decky.emit.reset_mock()
+        plugin.settings["collection_naming_mode"] = "by_label"
+        uow = plugin._uow
+        _seed_rom(uow, 1, app_id=1001, platform_slug="n64", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="snes", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={
+                ("standard", "7"): CollectionMembership(name="abc", rom_ids=[1], kind="standard"),
+                ("virtual", "vc-9"): CollectionMembership(
+                    name="ABC", rom_ids=[2], kind="virtual", virtual_type="collection"
+                ),
+            },
+            pending_platform_rom_ids={1, 2},
+            platform_names={"n64": "Nintendo 64", "snes": "Super Nintendo"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        assert payload["romm_collection_app_ids"] == {
+            "abc (Standard)": [1001],
+            "ABC (IGDB Collection)": [1002],
+        }
+
+    @pytest.mark.asyncio
+    async def test_platform_names_union_case_insensitively(self, plugin):
+        """Two platform display names differing only by case union into one bucket (#1569)."""
+        import decky
+
+        decky.emit.reset_mock()
+        uow = plugin._uow
+        # Two distinct slugs whose live display names collide only by case.
+        _seed_rom(uow, 1, app_id=1001, platform_slug="a", name="A")
+        _seed_rom(uow, 2, app_id=1002, platform_slug="b", name="B")
+
+        await plugin._sync_service._reporter.finalize_per_unit_run(
+            pending_collection_memberships={},
+            pending_platform_rom_ids={1, 2},
+            platform_names={"a": "Retro", "b": "retro"},
+        )
+
+        payload = next(c for c in decky.emit.call_args_list if c[0][0] == "sync_collections")[0][1]
+        platform_map = payload["platform_app_ids"]
+        # ONE bucket, both appIds present, keyed by a case-variant of "retro".
+        assert len(platform_map) == 1
+        (display, app_ids) = next(iter(platform_map.items()))
+        assert display.casefold() == "retro"
+        assert set(app_ids) == {1001, 1002}
 
     @pytest.mark.asyncio
     async def test_emit_sync_complete_terminal(self, plugin):

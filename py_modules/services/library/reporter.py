@@ -22,6 +22,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from domain.collection_label import collection_label
 from domain.platform_names import decode_platform_names
 from domain.rom import Rom
 from domain.rom_metadata_mapping import build_rom_metadata
@@ -136,9 +137,11 @@ class SyncReporter:
         favouriting / collecting ANY version of a game puts the game's single
         shortcut into the Steam collection. Per-collection appIds are
         de-duplicated — several siblings of one group collapse onto the one
-        shortcut — and same-named collections UNION into the one by-name Steam
-        collection (#1503). The platform loop still excludes rows whose
-        ``shortcut_app_id`` is ``None``.
+        shortcut — and collections sharing a resolved key UNION into the one Steam
+        collection (the key is name-only under ``merge`` (#1503) or name + fine
+        type label under ``by_label`` (#1539); see
+        :meth:`_resolve_collection_memberships`). The platform loop still excludes
+        rows whose ``shortcut_app_id`` is ``None``.
         """
         platform_app_ids, group_bound_app_id = self._scan_bound_rows(uow, pending_platform_rom_ids, platform_names)
         romm_collection_app_ids = self._resolve_collection_memberships(
@@ -156,17 +159,29 @@ class SyncReporter:
 
         When a group carries several bound rows (grandfathered duplicates) the
         smallest rom_id's binding wins, deterministically.
+
+        Platform display names are grouped **case-insensitively** (keyed by
+        ``display.casefold()``, first-seen original casing kept for display): Steam
+        collapses collection names by a case-insensitive identity, so two display
+        names differing only in case must land in one Steam collection or the
+        second create overwrites the first. Two distinct slugs colliding this way
+        is rare, but the union keeps it lossless and matches the collection-map
+        rule (:meth:`_resolve_collection_memberships`).
         """
         create_groups = self._settings.get("collection_create_platform_groups", False)
-        platform_app_ids: dict[str, list[int]] = {}
+        display_by_fold: dict[str, str] = {}
+        platform_app_ids_by_fold: dict[str, list[int]] = {}
         group_bound: dict[str, tuple[int, int]] = {}
         for rom in uow.roms.iter_all():
             if rom.shortcut_app_id is None:
                 continue
             if should_include_in_platform_collection(rom.rom_id, pending_platform_rom_ids, create_groups):
                 display = platform_names.get(rom.platform_slug, rom.platform_slug)
-                platform_app_ids.setdefault(display, []).append(rom.shortcut_app_id)
+                fold = display.casefold()
+                display_by_fold.setdefault(fold, display)
+                platform_app_ids_by_fold.setdefault(fold, []).append(rom.shortcut_app_id)
             self._note_group_binding(group_bound, rom)
+        platform_app_ids = {display_by_fold[fold]: app_ids for fold, app_ids in platform_app_ids_by_fold.items()}
         return platform_app_ids, {key: app_id for key, (_rid, app_id) in group_bound.items()}
 
     @staticmethod
@@ -185,30 +200,65 @@ class SyncReporter:
         pending_collection_memberships: dict[tuple[str, str], CollectionMembership],
         group_bound_app_id: dict[str, int],
     ) -> dict[str, list[int]]:
-        """Resolve each collection's member rom_ids to de-duplicated appIds, UNION by name.
+        """Resolve each collection's member rom_ids to de-duplicated appIds, UNION by key.
 
         A bound member uses its own binding; an unbound member falls back to its
         sibling group's bound appId (ADR-0021). Steam's collection namespace is
-        by-name, so same-named RomM collections (permitted across kinds/users,
-        #1503) merge into one entry: their resolved appIds are UNIONed,
-        order-preserving and de-duplicated ACROSS collections (each collection's
-        own resolution already dedups within). The accumulator is keyed by a
-        collision-free identity, so a same-named pair never overwrote either
-        member set upstream. Names that resolve to no appId are omitted; the
-        common single-collection case unions a set of one and is byte-for-byte
-        identical to the pre-#1503 output.
+        by-name, so collections that share the resolved key merge into one entry:
+        their resolved appIds are UNIONed, order-preserving and de-duplicated
+        ACROSS collections (each collection's own resolution already dedups
+        within). Names that resolve to no appId are omitted.
+
+        The key is the Steam-collection name-part built from the
+        ``collection_naming_mode`` setting (:meth:`_collection_key`): under
+        ``merge`` (default) it is the bare display name, so same-named
+        collections of any kind union into one ``RomM: [<name>]`` collection
+        (#1503) — byte-for-byte the pre-mode output. Under ``by_label`` the fine
+        type label is appended (``"<name> (Franchise)"``) so collections that
+        share a name but differ in type land in separate Steam collections; two
+        collections of the SAME name AND label still union. Injecting the label
+        here (not in the frontend) keeps the create-name and the reconcile
+        ``activeNames`` derived from this one key.
+
+        Grouping is **case-insensitive** (keyed by ``key.casefold()``, first-seen
+        original casing kept for display): Steam collapses collection names by a
+        case-insensitive identity, so two keys differing only in case ("7 up" vs
+        "7 Up") must union or the second Steam create overwrites the first and its
+        games are lost (#1569). Under ``by_label`` this merges same-type case
+        variants (label matches) while different-type variants stay separate (the
+        label differs, so the folded keys differ).
         """
-        romm_collection_app_ids: dict[str, list[int]] = {}
-        seen_by_name: dict[str, set[int]] = {}
+        naming_mode = self._settings.get("collection_naming_mode", "merge")
+        display_key_by_fold: dict[str, str] = {}
+        app_ids_by_fold: dict[str, list[int]] = {}
+        seen_by_fold: dict[str, set[int]] = {}
         for membership in pending_collection_memberships.values():
-            app_ids = romm_collection_app_ids.setdefault(membership.name, [])
-            seen = seen_by_name.setdefault(membership.name, set())
+            key = self._collection_key(membership, naming_mode)
+            fold = key.casefold()
+            display_key_by_fold.setdefault(fold, key)
+            app_ids = app_ids_by_fold.setdefault(fold, [])
+            seen = seen_by_fold.setdefault(fold, set())
             for rid in membership.rom_ids:
                 app_id = self._member_app_id(uow, rid, group_bound_app_id)
                 if app_id is not None and app_id not in seen:
                     seen.add(app_id)
                     app_ids.append(app_id)
-        return {name: app_ids for name, app_ids in romm_collection_app_ids.items() if app_ids}
+        return {display_key_by_fold[fold]: app_ids for fold, app_ids in app_ids_by_fold.items() if app_ids}
+
+    @staticmethod
+    def _collection_key(membership: CollectionMembership, naming_mode: str) -> str:
+        """The Steam-collection name-part for a membership under *naming_mode*.
+
+        ``merge`` (default / unknown) → the bare display name. ``by_label`` →
+        ``"<name> (<FineLabel>)"`` where the label comes from
+        :func:`domain.collection_label.collection_label`, so distinct collection
+        types that share a name stay separate. The label is bracket-free, so the
+        frontend's ``RomM: [<key>]`` name-parse (``/^RomM: \\[([^\\]]+)\\]/``)
+        stays intact.
+        """
+        if naming_mode == "by_label":
+            return f"{membership.name} ({collection_label(membership.kind, membership.virtual_type)})"
+        return membership.name
 
     @staticmethod
     def _member_app_id(uow: UnitOfWork, rid: int, group_bound_app_id: dict[str, int]) -> int | None:

@@ -279,6 +279,50 @@ wipe the entire library organization. The additive create/update path stays unga
 still get their collections; only the destructive deletion is skipped on cancel. Steam collections are not backed up, so
 the safe behavior on a partial/cancelled run is to delete nothing.
 
+### Collection naming mode — `merge` vs `by_label` (#1539)
+
+The `romm_collection_app_ids` wire payload is `name → appIds` **only** — kind/virtual_type are collapsed away before the
+frontend sees them, and the frontend simply wraps each key as `RomM: [<key>] (<hostname>)`. So the Steam-collection name
+is decided **entirely by the reporter's dict key**, computed backend-side in
+`SyncReporter._resolve_collection_memberships` (`services/library/reporter.py`) from the `collection_naming_mode`
+setting:
+
+- **`merge`** (default) — the key is the bare collection display name. Same-named RomM collections of any kind union
+  into one `RomM: [<name>]` Steam collection (RomM permits same-named collections across kinds/users, #1503).
+- **`by_label`** (opt-in) — the key is `"<name> (<FineLabel>)"`, where the fine label comes from the pure
+  `domain/collection_label.py` kernel: `Standard` / `Smart` for those kinds, and the virtual sub-type label (`Franchise`
+  / `IGDB Collection`) for `kind == "virtual"`. So a franchise and an IGDB collection that share a name become
+  `RomM: [<name> (Franchise)]` and `RomM: [<name> (IGDB Collection)]` — separate Steam collections. Two collections that
+  share **both** name and label still union.
+
+The label strings **must** match the frontend collection-type vocabulary (`SUB_TAB_LABELS` / `VIRTUAL_TYPE_LABELS` in
+`src/components/LibraryPage.tsx`) so the type a user sees on the Collections page is the type baked into the Steam name.
+The reporter needs the kind/virtual_type at its union key, so `WorkUnit.virtual_type` and `CollectionMembership.kind` +
+`CollectionMembership.virtual_type` thread that identity through the fetcher → orchestrator → reporter.
+
+**Label-format constraint:** the reconcile parses the collection name with `/^RomM: \[([^\]]+)\]/` (`src/index.tsx`), so
+a label must contain **no** `]` character — it sits inside the single existing bracket pair. Parens (`(Franchise)`) are
+safe; a bracket would truncate the parsed name and orphan the collection. Every produced label is bracket-free (asserted
+in `tests/domain/test_collection_label.py`).
+
+**No Force Full Sync on a mode flip.** Because the create-name and the reconcile's `activeNames` both derive from the
+same `romm_collection_app_ids` keys, flipping the mode is applied by the ordinary **complete-set reconcile** on the next
+normal sync: the reporter re-emits the complete set of enabled collections under the new keys, `onSyncComplete` creates
+the new-named collections and deletes any old-named collection absent from the new complete set. No skip-state
+invalidation is involved (same mechanism owner-scope reshaping uses).
+
+**Name identity is case-insensitive (#1569).** Steam collapses collection names by a **case-insensitive** identity — two
+collections whose display names differ only in case (`RomM: [7 up]` vs `RomM: [7 Up]`) are the same Steam collection, so
+creating the second silently overwrites the first and loses its games. To match, collection **and** platform name
+identity is treated case-insensitively **everywhere** the plugin compares names: the reporter groups both
+`romm_collection_app_ids` and `platform_app_ids` by a case-folded key (`str.casefold()`), keeping the first-seen
+original casing for display (which exact casing wins is irrelevant — Steam uppercases collection names anyway); the
+frontend create/find (`createOrUpdateCollections` / `createOrUpdateRomMCollections`), the cleanup matchers
+(`clearPlatformCollection` / `clearAllRomMCollections`), and the `onSyncComplete` stale-delete comparisons all match by
+`toLowerCase()`. This is always safe precisely because Steam's identity is case-insensitive: two collections differing
+only by case can never coexist, so there is never an ambiguous match to disambiguate. The DB is unaffected —
+`collection_sync_state` is keyed by `(collection_id, collection_kind)`, never by name — so there is no migration.
+
 ## App IDs and Artwork
 
 `SteamClient.Apps.AddShortcut()` returns the real `appId`, so the plugin does **not** compute shortcut app IDs itself —
