@@ -715,6 +715,280 @@ describe("VersionPicker — switching", () => {
   });
 });
 
+describe("VersionPicker — switch target liveness (#1570)", () => {
+  const vanishedFailure = {
+    success: false as const,
+    reason: "version_vanished" as const,
+    message: "This version is no longer available on RomM.",
+  };
+
+  beforeEach(() => {
+    captured.menu = null;
+    vi.mocked(backend.getVersionList).mockReset();
+    vi.mocked(backend.switchVersion).mockReset();
+    vi.mocked(backend.fetchCoverBase64).mockReset().mockResolvedValue({ base64: null });
+    vi.mocked(invalidateCachedGameDetail).mockReset();
+    vi.mocked(setLaunchOptionsConfirmed).mockReset().mockResolvedValue(true);
+    vi.mocked(toaster.toast).mockReset();
+    setRommConnectionState("checking");
+  });
+
+  afterEach(() => setRommConnectionState("checking"));
+
+  it("refuses the initial click, preserves detail, emits no success effects, and converges from a direct reload", async () => {
+    const refreshed = multiVersionList({
+      versions: (multiVersionList().versions ?? []).map((v) =>
+        v.rom_id === 2 ? { ...v, vanished: true, is_default: false } : v,
+      ),
+    });
+    vi.mocked(backend.getVersionList).mockResolvedValueOnce(multiVersionList()).mockResolvedValueOnce(refreshed);
+    vi.mocked(backend.switchVersion).mockResolvedValue(vanishedFailure);
+    const setArt = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("SteamClient", { Apps: { SetCustomArtworkForApp: setArt } });
+
+    const { r, menu } = await renderAndOpen();
+    vi.mocked(backend.fetchCoverBase64).mockClear();
+    const dispatched = await captureDataChanged(() => clickRow(menu.container, "Game (Japan)"));
+
+    expect(toaster.toast).toHaveBeenCalledWith({
+      title: "RomM Sync",
+      body: "Could not switch version",
+      subtext: vanishedFailure.message,
+    });
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledTimes(2));
+    expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+    expect(backend.fetchCoverBase64).not.toHaveBeenCalled();
+    expect(setArt).not.toHaveBeenCalled();
+    expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+    expect(dispatched.some((e) => e.detail?.type === "version_switched")).toBe(false);
+
+    captured.menu = null;
+    await act(async () => {
+      fireEvent.click(r.getByTestId("version-btn"));
+      await Promise.resolve();
+    });
+    const refreshedMenu = render(<>{captured.menu}</>);
+    const target = within(refreshedMenu.container)
+      .getAllByRole("menuitem")
+      .find((item) => item.textContent.includes("Game (Japan)"));
+    expect(target?.getAttribute("aria-disabled")).toBe("true");
+    expect(target?.textContent).toContain("No longer available on RomM");
+  });
+
+  it("leaves connection state alone for version_vanished itself", async () => {
+    vi.mocked(backend.getVersionList)
+      .mockResolvedValueOnce(multiVersionList())
+      .mockResolvedValueOnce(multiVersionList({ bound_vanished: true }));
+    vi.mocked(backend.switchVersion).mockResolvedValue(vanishedFailure);
+
+    const { menu } = await renderAndOpen();
+    setRommConnectionState("checking");
+    await clickRow(menu.container, "Game (Japan)");
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledTimes(2));
+
+    expect(getRommConnectionState()).toBe("checking");
+  });
+
+  it("reports only an explicit server_unreachable initial refusal as offline", async () => {
+    vi.mocked(backend.getVersionList).mockResolvedValue(multiVersionList());
+    vi.mocked(backend.switchVersion).mockResolvedValue({
+      success: false,
+      reason: "server_unreachable",
+      message: "Server unreachable",
+    });
+
+    const { menu } = await renderAndOpen();
+    setRommConnectionState("checking");
+    await clickRow(menu.container, "Game (Japan)");
+
+    expect(getRommConnectionState()).toBe("offline");
+    expect(backend.getVersionList).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not force a successful fail-open switch to connected", async () => {
+    vi.mocked(backend.getVersionList)
+      .mockResolvedValueOnce(multiVersionList())
+      .mockResolvedValueOnce(multiVersionList({ bound_vanished: true }));
+    vi.mocked(backend.switchVersion).mockResolvedValue({
+      success: true,
+      rom_id: 2,
+      target_installed: false,
+      launch_options: "",
+      app_id: APP_ID,
+    });
+
+    const { menu } = await renderAndOpen();
+    setRommConnectionState("checking");
+    await clickRow(menu.container, "Game (Japan)");
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledTimes(2));
+
+    expect(getRommConnectionState()).toBe("checking");
+  });
+
+  it("ignores a late refusal reload after a newer successful-switch reload settles", async () => {
+    let resolveRefusalReload!: (value: VersionList) => void;
+    const refusalReload = new Promise<VersionList>((resolve) => {
+      resolveRefusalReload = resolve;
+    });
+    const switchedList = multiVersionList({
+      server_query_failed: true,
+      versions: (multiVersionList().versions ?? []).map((v) => ({ ...v, active: v.rom_id === 3 })),
+    });
+    vi.mocked(backend.getVersionList)
+      .mockResolvedValueOnce(multiVersionList())
+      .mockReturnValueOnce(refusalReload)
+      .mockResolvedValueOnce(switchedList);
+    vi.mocked(backend.switchVersion).mockResolvedValueOnce(vanishedFailure).mockResolvedValueOnce({
+      success: true,
+      rom_id: 3,
+      target_installed: false,
+      launch_options: "",
+      app_id: APP_ID,
+    });
+
+    const { r, menu } = await renderAndOpen();
+    setRommConnectionState("checking");
+    await clickRow(menu.container, "Game (Japan)");
+    expect(backend.getVersionList).toHaveBeenCalledTimes(2);
+
+    captured.menu = null;
+    await act(async () => {
+      fireEvent.click(r.getByTestId("version-btn"));
+      await Promise.resolve();
+    });
+    const nextMenu = render(<>{captured.menu}</>);
+    await clickRow(nextMenu.container, "Game (Europe)");
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(r.container.querySelector(".romm-throbber")).toBeNull());
+    expect(getRommConnectionState()).toBe("offline");
+
+    await act(async () => {
+      resolveRefusalReload(multiVersionList());
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+    expect(getRommConnectionState()).toBe("offline");
+
+    vi.mocked(backend.switchVersion).mockClear().mockResolvedValue({
+      success: false,
+      reason: "bound_elsewhere",
+      message: "test stop",
+    });
+    captured.menu = null;
+    await act(async () => {
+      fireEvent.click(r.getByTestId("version-btn"));
+      await Promise.resolve();
+    });
+    const settledMenu = render(<>{captured.menu}</>);
+    await clickRow(settledMenu.container, "Game (USA)");
+
+    // If the late refusal snapshot had overwritten the newer list, USA would be
+    // marked active and handleSwitch would swallow this switch-back click.
+    expect(backend.switchVersion).toHaveBeenCalledWith(APP_ID, 1, false);
+  });
+
+  it("ignores a refusal reload completion from an obsolete appId lifetime", async () => {
+    const nextAppId = APP_ID + 1;
+    let resolveOldReload!: (value: VersionList) => void;
+    const oldReload = new Promise<VersionList>((resolve) => {
+      resolveOldReload = resolve;
+    });
+    const nextAppList = multiVersionList({
+      server_query_failed: true,
+      versions: (multiVersionList().versions ?? []).map((v) => ({ ...v, active: v.rom_id === 3 })),
+    });
+    vi.mocked(backend.getVersionList)
+      .mockResolvedValueOnce(multiVersionList())
+      .mockReturnValueOnce(oldReload)
+      .mockResolvedValueOnce(nextAppList);
+    vi.mocked(backend.switchVersion).mockResolvedValue(vanishedFailure);
+
+    const { r, menu } = await renderAndOpen();
+    await clickRow(menu.container, "Game (Japan)");
+    expect(backend.getVersionList).toHaveBeenCalledTimes(2);
+    setRommConnectionState("checking");
+
+    r.rerender(<VersionPicker appId={nextAppId} />);
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenNthCalledWith(3, nextAppId));
+    await waitFor(() => expect(getRommConnectionState()).toBe("offline"));
+
+    await act(async () => {
+      resolveOldReload(multiVersionList());
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+    expect(getRommConnectionState()).toBe("offline");
+
+    vi.mocked(backend.switchVersion).mockClear().mockResolvedValue({
+      success: false,
+      reason: "bound_elsewhere",
+      message: "test stop",
+    });
+    captured.menu = null;
+    await act(async () => {
+      fireEvent.click(r.getByTestId("version-btn"));
+      await Promise.resolve();
+    });
+    const nextAppMenu = render(<>{captured.menu}</>);
+    await clickRow(nextAppMenu.container, "Game (USA)");
+
+    expect(backend.switchVersion).toHaveBeenCalledWith(nextAppId, 1, false);
+  });
+
+  it("ignores a refusal reload completion after unmount", async () => {
+    let resolveReload!: (value: VersionList) => void;
+    const reload = new Promise<VersionList>((resolve) => {
+      resolveReload = resolve;
+    });
+    vi.mocked(backend.getVersionList).mockResolvedValueOnce(multiVersionList()).mockReturnValueOnce(reload);
+    vi.mocked(backend.switchVersion).mockResolvedValue(vanishedFailure);
+
+    const { r, menu } = await renderAndOpen();
+    await clickRow(menu.container, "Game (Japan)");
+    expect(backend.getVersionList).toHaveBeenCalledTimes(2);
+    setRommConnectionState("checking");
+    r.unmount();
+
+    await act(async () => {
+      resolveReload(multiVersionList({ server_query_failed: true }));
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    });
+
+    expect(getRommConnectionState()).toBe("checking");
+  });
+
+  it("keeps the refusal visible and releases the guard when its direct reload rejects", async () => {
+    const logWarnSpy = vi.spyOn(backend, "logWarn").mockImplementation(() => {});
+    try {
+      vi.mocked(backend.getVersionList)
+        .mockResolvedValueOnce(multiVersionList())
+        .mockRejectedValueOnce(new Error("refresh failed"));
+      vi.mocked(backend.switchVersion).mockResolvedValue(vanishedFailure);
+
+      const { r, menu } = await renderAndOpen();
+      setRommConnectionState("checking");
+      const dispatched = await captureDataChanged(() => clickRow(menu.container, "Game (Japan)"));
+
+      expect(toaster.toast).toHaveBeenCalledWith({
+        title: "RomM Sync",
+        body: "Could not switch version",
+        subtext: vanishedFailure.message,
+      });
+      expect(logWarnSpy).toHaveBeenCalledWith(expect.stringContaining("version-vanished list refresh failed"));
+      expect(getRommConnectionState()).toBe("checking");
+      expect(r.container.querySelector(".romm-throbber")).toBeNull();
+      expect(dispatched.some((e) => e.detail?.type === "version_switched")).toBe(false);
+
+      captured.menu = null;
+      await act(async () => {
+        fireEvent.click(r.getByTestId("version-btn"));
+        await Promise.resolve();
+      });
+      expect(captured.menu).not.toBeNull();
+    } finally {
+      logWarnSpy.mockRestore();
+    }
+  });
+});
+
 describe("VersionPicker — unsynced-saves soft-block", () => {
   const block = {
     success: false as const,
@@ -743,7 +1017,10 @@ describe("VersionPicker — unsynced-saves soft-block", () => {
     vi.mocked(setLaunchOptionsConfirmed).mockReset().mockResolvedValue(true);
     vi.mocked(showUnsyncedSavesModal).mockReset();
     vi.mocked(toaster.toast).mockReset();
+    setRommConnectionState("checking");
   });
+
+  afterEach(() => setRommConnectionState("checking"));
 
   it("opens the modal with the stranded version's name + reachability", async () => {
     vi.mocked(backend.switchVersion).mockResolvedValue(block);
@@ -815,6 +1092,110 @@ describe("VersionPicker — unsynced-saves soft-block", () => {
     expect(backend.switchVersion).toHaveBeenNthCalledWith(2, APP_ID, 2, false);
     expect(setLaunchOptionsConfirmed).toHaveBeenCalledWith(APP_ID, "");
     expect(dispatched.some((e) => e.detail?.type === "version_switched")).toBe(true);
+  });
+
+  it("routes a version_vanished 'Switch anyway' retry through the common refusal path", async () => {
+    const vanished = {
+      success: false as const,
+      reason: "version_vanished" as const,
+      message: "This version is no longer available on RomM.",
+    };
+    vi.mocked(backend.getVersionList)
+      .mockReset()
+      .mockResolvedValueOnce(multiVersionList())
+      .mockResolvedValueOnce(multiVersionList({ bound_vanished: true }));
+    vi.mocked(backend.switchVersion).mockResolvedValueOnce(block).mockResolvedValueOnce(vanished);
+    vi.mocked(showUnsyncedSavesModal).mockResolvedValue("switch_anyway");
+    const setArt = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("SteamClient", { Apps: { SetCustomArtworkForApp: setArt } });
+
+    const { menu } = await renderAndOpen();
+    vi.mocked(backend.fetchCoverBase64).mockClear();
+    setRommConnectionState("checking");
+    const dispatched = await captureDataChanged(() => clickRow(menu.container, "Game (Japan)"));
+
+    expect(backend.switchVersion).toHaveBeenNthCalledWith(2, APP_ID, 2, true);
+    expect(toaster.toast).toHaveBeenCalledWith({
+      title: "RomM Sync",
+      body: "Could not switch version",
+      subtext: vanished.message,
+    });
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledTimes(2));
+    expect(getRommConnectionState()).toBe("connected");
+    expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+    expect(backend.fetchCoverBase64).not.toHaveBeenCalled();
+    expect(setArt).not.toHaveBeenCalled();
+    expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+    expect(dispatched.some((e) => e.detail?.type === "version_switched")).toBe(false);
+  });
+
+  it("reports an explicit server_unreachable 'Switch anyway' retry as offline", async () => {
+    vi.mocked(backend.switchVersion).mockResolvedValueOnce(block).mockResolvedValueOnce({
+      success: false,
+      reason: "server_unreachable",
+      message: "Server unreachable",
+    });
+    vi.mocked(showUnsyncedSavesModal).mockResolvedValue("switch_anyway");
+
+    const { menu } = await renderAndOpen();
+    setRommConnectionState("checking");
+    await clickRow(menu.container, "Game (Japan)");
+
+    expect(getRommConnectionState()).toBe("offline");
+    expect(backend.getVersionList).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes a version_vanished post-save retry through the common refusal path", async () => {
+    const vanished = {
+      success: false as const,
+      reason: "version_vanished" as const,
+      message: "This version is no longer available on RomM.",
+    };
+    vi.mocked(backend.getVersionList)
+      .mockReset()
+      .mockResolvedValueOnce(multiVersionList())
+      .mockResolvedValueOnce(multiVersionList({ bound_vanished: true }));
+    vi.mocked(backend.switchVersion).mockResolvedValueOnce(block).mockResolvedValueOnce(vanished);
+    vi.mocked(backend.syncRomSaves).mockResolvedValue({ success: true, message: "", synced: 1 });
+    vi.mocked(showUnsyncedSavesModal).mockResolvedValue("sync_and_switch");
+    const setArt = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("SteamClient", { Apps: { SetCustomArtworkForApp: setArt } });
+
+    const { menu } = await renderAndOpen();
+    vi.mocked(backend.fetchCoverBase64).mockClear();
+    setRommConnectionState("checking");
+    const dispatched = await captureDataChanged(() => clickRow(menu.container, "Game (Japan)"));
+
+    expect(backend.switchVersion).toHaveBeenNthCalledWith(2, APP_ID, 2, false);
+    expect(toaster.toast).toHaveBeenCalledWith({
+      title: "RomM Sync",
+      body: "Could not switch version",
+      subtext: vanished.message,
+    });
+    await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledTimes(2));
+    expect(getRommConnectionState()).toBe("connected");
+    expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+    expect(backend.fetchCoverBase64).not.toHaveBeenCalled();
+    expect(setArt).not.toHaveBeenCalled();
+    expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+    expect(dispatched.some((e) => e.detail?.type === "version_switched")).toBe(false);
+  });
+
+  it("reports an explicit server_unreachable post-save retry as offline", async () => {
+    vi.mocked(backend.switchVersion).mockResolvedValueOnce(block).mockResolvedValueOnce({
+      success: false,
+      reason: "server_unreachable",
+      message: "Server unreachable",
+    });
+    vi.mocked(backend.syncRomSaves).mockResolvedValue({ success: true, message: "", synced: 1 });
+    vi.mocked(showUnsyncedSavesModal).mockResolvedValue("sync_and_switch");
+
+    const { menu } = await renderAndOpen();
+    setRommConnectionState("checking");
+    await clickRow(menu.container, "Game (Japan)");
+
+    expect(getRommConnectionState()).toBe("offline");
+    expect(backend.getVersionList).toHaveBeenCalledTimes(1);
   });
 
   it("aborts with a toast + save-status refresh when the pre-switch sync fails", async () => {
