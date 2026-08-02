@@ -843,10 +843,13 @@ run-lifecycle state, no run ids, no cancellation — those are out of scope here
 The wait is **bounded** so a stuck run never traps the launch path. Each of the four trigger methods on `SyncEngine`
 wraps its run body in `bounded_run(timeout=…)` with a per-trigger budget — `pre_launch_sync` (30 s), `post_exit_sync`
 (60 s), `sync_rom_saves` (15 s), `sync_all_saves` (60 s). If the gate can't be acquired within the budget the call
-returns its own fallthrough instead of blocking: the launch-path triggers (`pre_launch_sync` / `post_exit_sync`) return
-the `offline` shape (`reason: SERVER_UNREACHABLE`, additive `offline: True`) so the launch flow treats a busy gate like
-an unreachable server; the manual triggers (`sync_rom_saves` / `sync_all_saves`) return `reason: "sync_busy"`. The lock
-is never leaked on timeout — a timed-out acquire releases any photo-finish hold before raising.
+returns its own fallthrough instead of blocking, and all four fallthroughs carry the **same** busy shape:
+`reason: "sync_busy"`, no additive `offline` flag. A busy gate is a local wait — nothing on that path observed the
+server — so it never borrows a server-reachability slug and never sets the offline flag (#1625); the session-end toast
+would otherwise announce "Server offline" about a reachable server. Each caller routes the skip on `success: False`
+alone: the launch gate maps it to `sync_failed` (fallback-launch confirm, so Play is never trapped), the session-end
+toast keys on the reason. The lock is never leaked on timeout — a timed-out acquire releases any photo-finish hold
+before raising.
 
 The gate sits **outside** the per-ROM lock (`SyncEngine.rom_lock(rom_id)`): the device gate admits one run at a time
 across the whole device, then each ROM still takes its own `rom_lock` for the read-mutate-write of its

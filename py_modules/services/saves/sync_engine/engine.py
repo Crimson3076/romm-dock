@@ -42,6 +42,8 @@ from services.saves._messages import (
     DEVICE_NOT_REGISTERED_REASON,
     DEVICE_SYNC_DISABLED,
     DEVICE_SYNC_DISABLED_REASON,
+    SAVE_SYNC_BUSY,
+    SAVE_SYNC_BUSY_REASON,
     SAVE_SYNC_DISABLED,
     SAVE_SYNC_DISABLED_REASON,
     SAVE_SYNC_IN_CONTENT_DIR,
@@ -776,15 +778,14 @@ class SyncEngine:
                     "conflicts": list(conflicts),
                 }
         except SaveSyncTimeoutError:
-            # Another save-sync run held the device gate past the bounded wait —
-            # treat as offline so the launch path warns on local drift instead
-            # of trapping the Play button. Mirrors _heartbeat_failure_result.
+            # Device gate held past the bounded wait — the same LOCAL outcome the other three triggers
+            # report, so it carries the identical busy shape: no reachability reason, no ``offline`` (#1625).
+            # The launch path routes on ``success: False`` alone (→ ``sync_failed``), so Play is not trapped.
             return {
                 "success": False,
-                "reason": ErrorCode.SERVER_UNREACHABLE.value,
-                "message": "Save-sync busy — treating as offline",
+                "reason": SAVE_SYNC_BUSY_REASON,
+                "message": SAVE_SYNC_BUSY,
                 "synced": 0,
-                "offline": True,
             }
         except RommSyncDisabledError:
             # RomM has save sync disabled for this device server-side. Mirror the
@@ -865,15 +866,14 @@ class SyncEngine:
                     "conflicts": list(conflicts),
                 }
         except SaveSyncTimeoutError:
-            # Another save-sync run held the device gate past the bounded wait —
-            # skip the post-exit upload rather than block on a stuck run.
+            # Device gate held past the bounded wait — skip rather than block on a stuck run. No ``offline``
+            # flag and no reachability reason (#1625): nothing observed the server. Next sync picks it up.
             self._logger.info("post_exit_sync skipped: save-sync busy")
             return {
                 "success": False,
-                "reason": ErrorCode.SERVER_UNREACHABLE.value,
-                "message": "Save-sync busy — skipping post-exit sync",
+                "reason": SAVE_SYNC_BUSY_REASON,
+                "message": SAVE_SYNC_BUSY,
                 "synced": 0,
-                "offline": True,
             }
         except RommSyncDisabledError:
             # RomM has save sync disabled for this device server-side — stop with
@@ -937,8 +937,8 @@ class SyncEngine:
             # Another save-sync run held the device gate past the bounded wait.
             return {
                 "success": False,
-                "reason": "sync_busy",
-                "message": "Another save-sync run is in progress",
+                "reason": SAVE_SYNC_BUSY_REASON,
+                "message": SAVE_SYNC_BUSY,
                 "synced": 0,
                 "errors": [],
                 "conflicts": [],
@@ -1098,8 +1098,8 @@ class SyncEngine:
             # Another save-sync run held the device gate past the bounded wait.
             return {
                 "success": False,
-                "reason": "sync_busy",
-                "message": "Another save-sync run is in progress",
+                "reason": SAVE_SYNC_BUSY_REASON,
+                "message": SAVE_SYNC_BUSY,
                 "synced": 0,
                 "conflicts": 0,
                 "conflicts_list": [],

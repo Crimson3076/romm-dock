@@ -1566,10 +1566,18 @@ are not safe. Two games exiting close together therefore sync one after the othe
 second is skipped and retried at its next sync. Playtime is unaffected either way — it is recorded before the sync runs.
 Per-app sync chains are a non-goal, not an oversight.
 
-Known rough edge in that skip: a gate timeout is currently classified as `server_unreachable`, so the skipped sync
-surfaces the "Server offline — saves will sync next time" toast even though the server is fine. The wait was local. No
-data is at risk (the sync is simply retried), but the copy is misleading, and concurrent exits are the first thing that
-makes the path reachable.
+The skip says what it is (#1625). A gate timeout carries `reason: "sync_busy"` — never `server_unreachable` — and no
+additive `offline` flag, on the pre-launch side as much as the post-exit one: nothing on either path ever contacted the
+server, so neither may claim it is down. The session-end toast keys on the reason and reads "Another save sync was still
+running — saves will sync next time" instead of the old "Server offline", which sent the user debugging a network that
+was fine. Pre-launch, the launch gate routes the skip on `success: False` alone (verdict `sync_failed` → the
+fallback-launch confirm), so a busy gate still never traps the Play button. The gate's offline drift warning is not
+involved on that path and never was: it is reachable only when the gate's own reachability probe says the server is
+down, and a busy gate means that probe already succeeded.
+
+A skipped run is **not** re-queued on a delay. It is picked up by the next pre-launch or manual sync, which is why the
+copy promises exactly that. Retry-on-a-timer would need scheduling and backoff machinery around a gate that must not be
+parallelised, for an outcome that costs one deferred sync — deliberately deferred, not overlooked.
 
 ### Surviving a plugin reload mid-session
 
