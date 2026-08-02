@@ -67,9 +67,10 @@ export function registerMetadataPatches(cache: Record<string, RomMetadata>, appI
  * Attempt one pass of metadata mutations over the given appIds. Returns the
  * appIds whose appStore overview wasn't available yet, so the caller can retry.
  */
-function tryApplyMetadata(appIds: number[]): number[] {
+function tryApplyMetadata(appIds: number[], signal?: AbortSignal): number[] {
   const notApplied: number[] = [];
   for (const appId of appIds) {
+    if (signal?.aborted) break;
     const meta = getMetadataForAppId(appId);
     if (!meta) continue; // no metadata for this app — nothing to apply, not a retry case
     if (!applyDirectMutations(appId, meta)) notApplied.push(appId);
@@ -87,7 +88,7 @@ function tryApplyMetadata(appIds: number[]): number[] {
  * retry. Idempotent (re-applying the same values is safe), so retries can't
  * corrupt state. Call after {@link registerMetadataPatches}.
  */
-export async function applyAllMetadata(): Promise<void> {
+export async function applyAllMetadata(signal?: AbortSignal): Promise<void> {
   let pending = [...registeredAppIds].filter((appId) => getMetadataForAppId(appId) != null);
   if (pending.length === 0) return;
 
@@ -98,8 +99,9 @@ export async function applyAllMetadata(): Promise<void> {
       // attempt < delays.length (loop guard) ⇒ index in bounds
       await new Promise((r) => setTimeout(r, delays[attempt]));
     }
+    if (signal?.aborted) return;
 
-    pending = tryApplyMetadata(pending);
+    pending = tryApplyMetadata(pending, signal);
 
     if (pending.length > 0 && attempt < delays.length - 1) {
       detach(
@@ -134,6 +136,10 @@ export function unregisterMetadataPatches() {
  * Returns true if the write succeeded, false if the overview wasn't available.
  */
 export function updatePlaytimeDisplay(appId: number, totalSeconds: number, updateLastPlayed = true): boolean {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    detach(debugLog(`updatePlaytimeDisplay: appId=${appId} invalid total=${totalSeconds}, skipping`));
+    return false;
+  }
   const overview = appStore.GetAppOverviewByAppID(appId);
   if (!overview) {
     detach(debugLog(`updatePlaytimeDisplay: appId=${appId} overview=null, skipping`));
@@ -171,14 +177,34 @@ type PlaytimeItem = { appId: number; totalSeconds: number };
  * Attempt one pass of playtime writes. Returns items whose appStore overview
  * wasn't available yet, so the caller can retry them after a delay.
  */
-function tryWritePlaytime(items: PlaytimeItem[]): PlaytimeItem[] {
+function tryWritePlaytime(items: PlaytimeItem[], signal?: AbortSignal): PlaytimeItem[] {
   const notWritten: PlaytimeItem[] = [];
   for (const item of items) {
+    if (signal?.aborted) break;
     if (!updatePlaytimeDisplay(item.appId, item.totalSeconds, false)) {
       notWritten.push(item);
     }
   }
   return notWritten;
+}
+
+/** Pair every recorded playtime with the shortcut that shows it, skipping the unshown and the empty. */
+function playtimeItemsToApply(
+  playtimeMap: Record<string, { total_seconds: number }>,
+  appIdMap: Record<string, number>,
+): PlaytimeItem[] {
+  const romIdToAppId: Record<string, number> = {};
+  for (const [appIdStr, romId] of Object.entries(appIdMap)) {
+    romIdToAppId[String(romId)] = Number(appIdStr);
+  }
+  const pending: PlaytimeItem[] = [];
+  for (const [romIdStr, entry] of Object.entries(playtimeMap)) {
+    const appId = romIdToAppId[romIdStr];
+    if (appId && entry.total_seconds > 0) {
+      pending.push({ appId, totalSeconds: entry.total_seconds });
+    }
+  }
+  return pending;
 }
 
 /**
@@ -190,21 +216,9 @@ function tryWritePlaytime(items: PlaytimeItem[]): PlaytimeItem[] {
 export async function applyAllPlaytime(
   playtimeMap: Record<string, { total_seconds: number }>,
   appIdMap: Record<string, number>,
+  signal?: AbortSignal,
 ) {
-  // Build rom_id -> app_id reverse lookup
-  const romIdToAppId: Record<string, number> = {};
-  for (const [appIdStr, romId] of Object.entries(appIdMap)) {
-    romIdToAppId[String(romId)] = Number(appIdStr);
-  }
-
-  // Build list of {appId, totalSeconds} to apply
-  let pending: PlaytimeItem[] = [];
-  for (const [romIdStr, entry] of Object.entries(playtimeMap)) {
-    const appId = romIdToAppId[romIdStr];
-    if (appId && entry.total_seconds > 0) {
-      pending.push({ appId, totalSeconds: entry.total_seconds });
-    }
-  }
+  let pending = playtimeItemsToApply(playtimeMap, appIdMap);
 
   detach(
     debugLog(
@@ -221,8 +235,9 @@ export async function applyAllPlaytime(
       // attempt < delays.length (loop guard) ⇒ index in bounds
       await new Promise((r) => setTimeout(r, delays[attempt]));
     }
+    if (signal?.aborted) return;
 
-    pending = tryWritePlaytime(pending);
+    pending = tryWritePlaytime(pending, signal);
 
     if (pending.length > 0 && attempt < delays.length - 1) {
       detach(

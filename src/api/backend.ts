@@ -53,6 +53,17 @@ export interface BackendResult {
   romm_version?: string;
   /** Set when a callable was rejected because a RetroDECK migration is pending. */
   blocked_by_migration?: boolean;
+  prune_lease_token?: string;
+}
+
+export interface CallableFailure {
+  success: false;
+  reason: string;
+  message: string;
+}
+
+export function isCallableFailure(value: object): value is CallableFailure {
+  return "success" in value && value.success === false;
 }
 
 export interface CachedGameDetail {
@@ -145,9 +156,11 @@ export const clearCompletedDownloads = callable<[], { success: boolean; cleared:
 export const getInstalledRom = callable<[number], InstalledRom | null>("get_installed_rom");
 export const evaluateLaunch = callable<[number], LaunchVerdict>("evaluate_launch");
 export const checkLocalDrift = callable<[number], { drifted: boolean; rom_id: number }>("check_local_drift");
-export const getRomRelaunchOptions = callable<[number], { app_id: number; launch_options: string } | null>(
-  "get_rom_relaunch_options",
-);
+export type RelaunchOptionsResult =
+  | { success: true; app_id: number; launch_options: string; prune_lease_token: string }
+  | { success: false; reason: string; message: string }
+  | null;
+export const getRomRelaunchOptions = callable<[number], RelaunchOptionsResult>("get_rom_relaunch_options");
 /**
  * `stop_running_game` result. On success the counts describe what the backend's
  * stop ladder did to the instance running the ROM it was called for: `stopped`
@@ -221,6 +234,7 @@ export const removePlatformShortcuts = callable<
     app_ids?: number[];
     rom_ids?: (string | number)[];
     platform_name?: string;
+    prune_lease_token?: string;
     reason?: string;
     message?: string;
     blocked_by_migration?: boolean;
@@ -239,6 +253,7 @@ export const removeAllShortcuts = callable<
     message?: string;
     app_ids?: number[];
     rom_ids?: (string | number)[];
+    prune_lease_token?: string;
     blocked_by_migration?: boolean;
   }
 >("remove_all_shortcuts");
@@ -272,9 +287,10 @@ export const cleanupOrphanedGridImages = callable<
     blocked_by_migration?: boolean;
   }
 >("cleanup_orphaned_grid_images");
-export const getSgdbArtworkBase64 = callable<[number, number], { base64: string | null; no_api_key?: boolean }>(
-  "get_sgdb_artwork_base64",
-);
+export const getSgdbArtworkBase64 = callable<
+  [number, number],
+  { base64: string | null; no_api_key?: boolean; prune_lease_token?: string }
+>("get_sgdb_artwork_base64");
 
 /** A single SGDB game candidate for the manual picker. */
 export interface SgdbCandidate {
@@ -303,9 +319,21 @@ export const reportUnitResults = callable<
   [Record<string, number>, string, number | string, number],
   { success: boolean; count: number; ignored?: boolean }
 >("report_unit_results");
-export const reportRemovalResults = callable<[(string | number)[]], { success: boolean; message: string }>(
-  "report_removal_results",
+export const reportRemovalResults = callable<
+  [(string | number)[], string | null],
+  { success: boolean; message: string }
+>("report_removal_results");
+/** Disown leases stranded by a previous frontend context; called once at mount. */
+export const releaseOrphanedPruneLeases = callable<[], { success: boolean; released: number }>(
+  "release_orphaned_prune_leases",
 );
+export const releasePruneConflictLease = callable<[string], { success: boolean; message: string }>(
+  "release_prune_conflict_lease",
+);
+export const renewPruneConflictLease = callable<
+  [string],
+  { success: boolean; reason?: "stale_lease"; message: string }
+>("renew_prune_conflict_lease");
 export const reconcileShortcuts = callable<
   [number[]],
   { success: boolean; reason?: string; message: string; unbound_count?: number }
@@ -325,6 +353,7 @@ export const uninstallAllRoms = callable<
     reason?: string;
     message?: string;
     blocked_by_migration?: boolean;
+    prune_lease_token?: string;
   }
 >("uninstall_all_roms");
 export const saveSgdbApiKey = callable<[string], { success: boolean; message: string }>("save_sgdb_api_key");
@@ -356,7 +385,13 @@ export interface RebakeItem {
 
 export const setSystemCore = callable<
   [string, string],
-  { success: boolean; message?: string; bios_status?: BiosStatus; rebake_items?: RebakeItem[] }
+  {
+    success: boolean;
+    message?: string;
+    bios_status?: BiosStatus;
+    rebake_items?: RebakeItem[];
+    prune_lease_token?: string;
+  }
 >("set_system_core");
 
 /**
@@ -372,6 +407,7 @@ export interface GameCoreApplyResult {
   success: boolean;
   launch_options?: string;
   app_id?: number | null;
+  prune_lease_token?: string;
   reason?: string;
   message?: string;
 }
@@ -425,6 +461,7 @@ export interface SelectDiscResult {
   selected?: string | null;
   reason?: string;
   message?: string;
+  prune_lease_token?: string;
 }
 
 // Per-game disc pick (#865). Keyed by rom_id — the DB pin survives
@@ -474,13 +511,16 @@ export interface VersionInfo {
  * live `sibling_roms` view could not be fetched, so the list is local-only
  * (partial-success carve-out). `bound_vanished` is required even on a
  * single-version/unknown result so a bound-id 404 is never lost when the picker
- * itself does not render. A 404 on the bound id is NOT a query failure — the
+ * itself does not render. A synced singleton vanished binding carries
+ * `bound_version` so the frontend can render its focused cleanup action without
+ * inventing a version menu. A 404 on the bound id is NOT a query failure — the
  * server answered — and the picker does not feed that entity verdict into the
  * global connection state (#1570).
  */
 export interface VersionList {
   multi_version: boolean;
   versions?: VersionInfo[];
+  bound_version?: VersionInfo | null;
   server_query_failed?: boolean;
   bound_vanished: boolean;
 }
@@ -499,6 +539,7 @@ export interface SwitchVersionSuccess {
   target_installed: boolean;
   launch_options: string;
   app_id: number;
+  prune_lease_token?: string;
 }
 
 /**
@@ -549,6 +590,139 @@ export type SwitchVersionResult = SwitchVersionSuccess | SwitchVersionUnsyncedSa
 export const getVersionList = callable<[number], VersionList>("get_version_list");
 export const switchVersion = callable<[number, number, boolean], SwitchVersionResult>("switch_version");
 
+export type PruneScope = "bulk" | "rom";
+
+export interface PrunePreviewRequest {
+  scope: PruneScope;
+  rom_id: number | null;
+  preview_id: string | null;
+  offset: number;
+  limit: number;
+}
+
+export interface PrunePreviewItem {
+  rom_id: number;
+  name: string;
+  name_truncated: boolean;
+  fs_name: string;
+  fs_name_truncated: boolean;
+  platform_slug: string;
+  group_id: string;
+  group_id_truncated: boolean;
+  group_size: number;
+  bound_count: number;
+  candidate: boolean;
+  installed: boolean;
+  installed_bytes: number | null;
+  warning: string | null;
+  warning_truncated: boolean;
+}
+
+export interface PrunePreviewResult {
+  success: boolean;
+  reason?: string;
+  message?: string;
+  preview_id?: string;
+  scope?: PruneScope;
+  items?: PrunePreviewItem[];
+  offset?: number;
+  limit?: number;
+  /** Every disclosed row: the candidates plus the siblings a whole-game removal could still take. */
+  total?: number;
+  /** Only the rows this run can remove on its own — the count the dialog leads with. */
+  candidate_total?: number;
+  free_bytes?: number;
+  recovery_root?: string | null;
+  blocked_by_migration?: boolean;
+}
+
+export interface StartPruneRequest {
+  preview_id: string;
+  confirmed: boolean;
+  repoint_shortcuts: boolean;
+  remove_rows: boolean;
+  remove_fully_vanished: boolean;
+  create_recovery_bundle: boolean;
+  installed_selection_id: string | null;
+}
+
+export interface StagePruneInstalledSelectionRequest {
+  preview_id: string;
+  selection_id: string | null;
+  rom_ids: number[];
+  final: boolean;
+}
+
+export interface StartPruneResult {
+  success: boolean;
+  run_id?: string;
+  status?: "running";
+  reason?: string;
+  message?: string;
+  blocked_by_migration?: boolean;
+}
+
+export interface PruneSteamSnapshot {
+  app_id: number;
+  name: string;
+  exe: string;
+  start_dir: string;
+  launch_options: string;
+  minutes_playtime_forever: number | null;
+  minutes_playtime_last_two_weeks: number | null;
+  last_played: number | null;
+  collections: Array<{ id: string; name: string }>;
+}
+
+export interface ClaimPruneActionRequest {
+  phase: "claim";
+  run_id: string;
+  action_token: string;
+  action: "capture_shortcut_snapshot" | "repoint_shortcut" | "remove_shortcut";
+  app_id: number;
+  target_rom_id: number | null;
+}
+
+export interface CompletePruneActionRequest {
+  phase: "complete";
+  run_id: string;
+  action_token: string;
+  success: boolean;
+  reason?: string;
+  message: string;
+  snapshot?: PruneSteamSnapshot;
+  shortcut_absent?: boolean;
+  mutation_attempted?: boolean;
+}
+
+export type ReportPruneActionRequest = ClaimPruneActionRequest | CompletePruneActionRequest;
+
+export const getPrunePreview = callable<[PrunePreviewRequest], PrunePreviewResult>("get_prune_preview");
+export const stagePruneInstalledSelection = callable<
+  [StagePruneInstalledSelectionRequest],
+  {
+    success: boolean;
+    selection_id?: string;
+    selected_count?: number;
+    finalized?: boolean;
+    reason?: string;
+    message?: string;
+  }
+>("stage_prune_installed_selection");
+export const startPrune = callable<[StartPruneRequest], StartPruneResult>("start_prune");
+/** Stop a run before its next group; the group already executing still finishes. */
+export const cancelPrune = callable<
+  [string],
+  { success: boolean; reason?: string; message: string; already_cancelling?: boolean }
+>("cancel_prune");
+export const reportPruneAction = callable<
+  [ReportPruneActionRequest],
+  { success: boolean; ignored?: boolean; reason?: string; message: string }
+>("report_prune_action");
+export const waitForPruneRelease = callable<[string], { success: boolean; reason?: string; message: string }>(
+  "wait_for_prune_release",
+);
+
 export const saveLogLevel = callable<[string], { success: boolean }>("save_log_level");
 // Preferred sibling-group region (ADR-0021 §3). "auto" = build-time default
 // order; any RomM region string heads the ranking on the next sync.
@@ -575,7 +749,14 @@ export const getMetadataCachePage = callable<[number, number], { items: Record<s
   "get_metadata_cache_page",
 );
 export const getAppIdRomIdMap = callable<[], Record<string, number>>("get_app_id_rom_id_map");
-export const getInstalledRelaunchOptions = callable<[], { app_id: number; launch_options: string }[]>(
+export type InstalledRelaunchOptionsResult =
+  | {
+      success: true;
+      items: { app_id: number; launch_options: string }[];
+      prune_lease_token: string | null;
+    }
+  | { success: false; reason: string; message: string };
+export const getInstalledRelaunchOptions = callable<[], InstalledRelaunchOptionsResult>(
   "get_installed_relaunch_options",
 );
 
@@ -591,7 +772,8 @@ export const ensureDeviceRegistered = callable<[], { success: boolean; device_id
 );
 
 export const listDevices = callable<[], ListDevicesResponse>("list_devices");
-export const getSaveStatus = callable<[number], SaveStatus>("get_save_status");
+export type SaveStatusResult = SaveStatus | CallableFailure;
+export const getSaveStatus = callable<[number], SaveStatusResult>("get_save_status");
 export const preLaunchSync = callable<
   [number],
   {
@@ -690,7 +872,8 @@ export const getAllPlaytime = callable<
 // means the server was unreachable and these are the local fallback.
 export const reconcilePlaytime = callable<
   [number],
-  { total_seconds: number; session_count: number; last_played: string | null; server_query_failed: boolean }
+  | { total_seconds: number; session_count: number; last_played: string | null; server_query_failed: boolean }
+  | { success: false; reason: string; message: string }
 >("reconcile_playtime");
 
 // RetroDECK path-resolution health for the QAM banner — discriminated status

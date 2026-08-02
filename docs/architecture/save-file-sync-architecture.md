@@ -256,6 +256,33 @@ exception: the backup a quarantine just wrote is never pruned in that same call,
 the folder may briefly hold one extra copy (11) — honouring the cap by deleting the just-saved file would defeat the
 backup.
 
+#### Removed-game cleanup and save recovery
+
+Explicit cleanup of a retained RomM 404 starts with the same exact per-ROM save paths used by sync and unions path-safe
+filenames already retained in `RomSaveSyncState.files`; it never broad-scans a save directory. This preserves exact
+historical filenames after a ROM rename or layout change without guessing. Before a row can be purged, the service
+canonicalizes those paths for the purge set and every remaining local ROM row, installed or not — an uninstalled row
+that projects onto the same save path is a co-owner. That matters because a vanished row's live replacement is routinely
+uninstalled. A current save with any owner outside the purge set is copied into an enabled recovery bundle but left in
+the emulator directory. An exclusively owned current save is copied and checksum-verified when recovery is enabled, then
+moved through `PruneSaveSupport.quarantine_prune_saves` → `_quarantine_claimed_file` → `rename_claimed`. This operation
+deliberately keeps all existing `.romm-backup` history instead of enforcing the normal newest-ten cap. Cleanup always
+takes a final no-follow source claim and creates the backup directory through anchored parents before a
+directory-durable rename, including recovery-off runs. A post-rename fsync failure is returned as an actual but
+durability-ambiguous move rather than disappearing from the group ledger. After quarantine, every exclusively owned
+current-save path is expected absent, including one that existed during inventory and was moved successfully. Cleanup
+collectively rechecks the whole set after later filesystem cleanup and immediately before deleting the owning aggregate.
+Any newly created or emulator-recreated save retains the aggregate, with or without a recovery bundle.
+
+Recovery also copies matching `.romm-backup` files while leaving the originals untouched. If an uninstalled ROM or an
+unsupported layout has no resolvable exact path, the manifest preserves known save-sync filenames/state and records a
+warning, but physical files are not guessed or removed. Save states are outside this workflow. Save locks are acquired
+in ascending ROM-id order, including remaining owners of shared paths, and retried if ownership expands. A symlinked or
+out-of-root `.romm-backup` is rejected both during inventory and immediately before quarantine. No UoW is open while
+lock acquisition waits. Short read UoWs close before filesystem work, network/frontend waits run outside the locks, and
+the final stable lock set remains held through quarantine and the aggregate cascade so a newer save baseline cannot be
+deleted after the lock is released.
+
 ### The `none` slot (legacy) — a migration source, no longer a target
 
 - Saves uploaded before v2 (or without the slot parameter) have `slot=null`.
@@ -352,7 +379,7 @@ Sending `&slot=` (empty) for a legacy read was the bug: the server returned `[]`
 the slot resurrected on the next merge (zombie slot).
 
 The **active-slot matching filter** applies the same funnel from the other direction. The matrix sync run,
-`get_save_status`, and rollback narrow the fetched saves through `MatrixExecutor.filter_server_saves_to_slot`, and
+`get_save_status`, and rollback narrow the fetched saves through `domain.save_slot.filter_saves_to_slot`, and
 `switch_slot` client-filters its fetch the same way — every one keeps only `save_in_slot(save, active_slot)`. So a
 legacy `slot:null` save belongs **only** to the legacy slot and is **isolated from every named slot, including
 `"default"`** ([#877](https://github.com/danielcopper/decky-romm-sync/issues/877)): it never enters a named slot's

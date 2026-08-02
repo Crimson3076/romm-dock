@@ -59,6 +59,10 @@ separate label _"No longer available on RomM"_. Its **active** and **Downloaded*
 what the shortcut and local files still refer to, but it never receives the **Default** badge. If the shortcut is still
 active on that unavailable id, choose any live alternative in the same list to recover the game.
 
+When the version the shortcut is bound to is the one confirmed gone, the **Download** button is greyed out as well — it
+stays visible, like the version row, but downloading it could only ever fail. Pick a live version in the version list,
+or remove the local data, to get the button back.
+
 This availability check is fresh each time the version list loads and is not saved in the plugin database. Only a 404
 for that exact ROM id establishes that it is gone. Timeouts, sign-in/permission errors, server errors, and malformed
 responses fail open: the plugin does not disable a version merely because it could not get a trustworthy answer. A
@@ -97,6 +101,87 @@ While a download of the game is running, switching is blocked with a short messa
 While a switch is being applied, the version control briefly shows a spinner and can't be reopened until the switch
 settles and its version list refreshes — so a fast second tap can't act against the not-yet-updated list (for example,
 switching straight back before the list has caught up).
+
+### Cleaning up versions removed from RomM
+
+Normal library sync never deletes retained local rows, installed files, saves, or playtime just because a game
+disappears from RomM. To remove that state explicitly, open **Danger Zone → Clean Up Removed RomM Games**. The first
+scan is local and finds groups containing rows absent from a completed platform fetch.
+
+The dialog opens on the count that matters — how many locally kept versions are no longer on your RomM server — and
+lists those versions first, under **Versions no longer on RomM**. Other versions of the same games follow under **Other
+versions of these games — kept**: they were still on RomM at your last sync, and they go only if the run's fresh check
+finds every version of that game gone, in which case the whole game is removed with its Steam shortcut. They are listed
+so nothing can be removed without having been shown, and they appear only while **Remove fully vanished games** is on —
+with that option off they cannot be removed at all, so the list drops them. The headline count always counts the
+versions that are gone, never these. The modal byte-budgets every page for the Decky bridge; load every page before
+confirmation. The confirmation run checks every exact RomM id again. Only a confirmed 404 can be removed. Offline,
+timeout, authentication, server, malformed-response, active-download, and ambiguous multi-shortcut cases are skipped and
+reported without deleting data.
+
+The confirmation options apply to this run only:
+
+- **Repoint vanished shortcuts to the live default version** is on. It preserves the Steam shortcut and its appId,
+  collections, artwork, and playtime while switching to the group's natural live Default. This option works
+  independently of row removal.
+- **Remove confirmed rows and installed content from groups with a live version** is on.
+- **Remove fully vanished games, including any Steam shortcut** is on. It applies only to games where the server
+  confirms every single version is gone; those are removed whole, Steam shortcut included. It ships on because removing
+  a game RomM no longer has is what this dialog is for, and because the default-on recovery bundle keeps the shortcut's
+  Steam details so it can be rebuilt by hand. Switch it off to limit the run to individual versions of games that still
+  exist — the list then hides the retained siblings, since nothing else can reach them.
+- **Create recovery bundle** is on. Bundles are sealed under `~/decky-romm-sync-recovery/bundles/` before mutation.
+  Leaving it on is what makes whole-game removal reversible by hand; turning it off asks you to confirm separately.
+- **Include installed ROM content** is off for every disclosed installed row. Its exact recursive size is shown;
+  selecting more than the currently free recovery space blocks confirmation. Turning recovery off clears and disables
+  these selections, and so does switching off whole-game removal for a row that is only listed because of it. Large
+  selections are staged in bounded pages before the run without a total selection cap. Unselected installed content is
+  still deleted if the row is removed. When no listed version has ROM files on this device the option has nothing to
+  attach to, so the list says so instead of leaving the option apparently missing.
+
+The displayed selected-content total is a lower-bound preflight, not the complete bundle size. Use **Refresh free
+space** after freeing disk space. The backend remeasures selected ROMs plus mandatory saves, backup history, caches, and
+Steam files before mutation and safely fails the group if the complete bundle does not fit.
+
+Recovery always records the affected database state, local playtime and pending sessions, exact attributable current
+saves (including path-safe filenames retained in prior save-sync state) and backup history, and relevant plugin caches.
+Fully vanished shortcut recovery also records bounded Steam details, collections/playtime fields, grid art, Steam Input
+files, and the controller setting. It contains no settings, credentials, tokens, whole database, BIOS, or save states.
+Recovery is manual only: there is no restore UI, and a new Steam shortcut cannot inherit the recorded Steam-assigned
+appId or playtime. Because the folder is the recovery interface, it is written to be read months later. Each bundle is
+named `<game>_<date>_<id>`, and its `README.txt` lists every game the bundle covers and what the run did to it, every
+copied file with the exact path to put it back, the playtime in hours and minutes, and the steps to restore by hand
+starting with `sha256sum -c checksums.sha256`. The recovery folder itself carries a `README.txt` explaining what it is.
+
+A synced vanished row carries a red trash icon at its right edge in the version picker, and activating that row opens
+the same confirmation scoped to that one version. A synced singleton vanished binding shows the same trash action as a
+single button, without opening an otherwise empty picker. The vanished version itself remains non-switchable either way
+— selecting it can only ever start the cleanup, never rebind the shortcut to it. A vanished version with no local data
+to remove stays listed and disabled, with no trash icon.
+
+While a cleanup runs, the Danger Zone shows a progress bar under the entry point — the game being worked on, the phase
+in words (checking with RomM, backing up, backup complete, updating or removing the Steam shortcut, removing local data,
+done) and how many games are done — and the scan button stays unavailable, so you can close the dialog and still see
+what is happening. Both the dialog and the Danger Zone offer **Stop Cleanup**. It stops at the next safe moment: a
+backup still being written is abandoned and that game is left completely untouched, while a game whose removal has
+already begun finishes and reports what it changed. Backing up a large game can take minutes, so being able to walk away
+from one is the difference between stopping now and waiting it out. While the run winds down the button says
+**Stopping** so a second press is never needed. Nothing already done is undone — stopping is not an undo, and the report
+afterwards lists exactly what was committed. If a game's backup finished before the run stopped, the report says so and
+names the folder, so a recovery bundle that removed nothing is never a mystery.
+
+If Steam changes before local cleanup can finish, the report can show a **partial** group with the concrete committed
+action and failure message. A confirmed shortcut removal is reconciled to an unbound retained row; a committed repoint
+remains bound to the new Default. If Steam removal succeeded but every completion report was lost, the result is marked
+ambiguous and source data stays retained; the same applies when Steam removal was attempted but its absence could not be
+confirmed. Retrying confirms an already-absent shortcut instead of removing it twice. Save ownership warnings are shown
+in a focusable terminal-detail region even when the group was removed successfully, and a run-level cancellation or
+failure message remains visible after earlier groups committed. If bounded warning or message text was omitted or
+shortened, the detail distinguishes omitted warnings from shortened displayed text and never reports zero additional
+warnings. Progress is tied to the preview that you confirmed, so a matching run is still shown if only the successful
+start response is delayed or lost; a matching terminal event makes the modal closable immediately. Once that terminal
+result is assembled, delayed frames for the same run cannot replace it. Frames from an older preview are ignored. These
+outcomes are intentional and retryable rather than being reported as unchanged.
 
 ### Region and Languages
 

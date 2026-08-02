@@ -1,7 +1,7 @@
 """Save-sync aggregate root and facade for the Decky callable surface.
 
 Composes the save-sync sub-services (sync_engine, status, versions,
-slots, rom_info) over the SQLite ``rom_save_sync_states`` aggregate (reached
+slots, rom_info, prune_support) over the SQLite ``rom_save_sync_states`` aggregate (reached
 through the injected Unit-of-Work factory) and exposes the public
 methods the frontend reaches through callables. The five save-sync
 feature toggles and the device label live in ``settings.json`` and are
@@ -25,6 +25,7 @@ from services.saves._settings import (
     save_sync_settings_view,
 )
 from services.saves.copies import SaveCopyService, SaveCopyServiceConfig
+from services.saves.prune_support import PruneSaveSupport, PruneSaveSupportConfig
 from services.saves.rom_info import RomInfoService, RomInfoServiceConfig
 from services.saves.slots import SlotsService, SlotsServiceConfig
 from services.saves.status import StatusService, StatusServiceConfig
@@ -42,7 +43,7 @@ class SaveService:
     """Aggregate root for bidirectional save file sync between RetroDECK and RomM.
 
     Composes the save-sync sub-services (sync_engine, status, versions, slots,
-    rom_info) over the SQLite ``rom_save_sync_states`` aggregate. Exposes the callable
+    rom_info, prune_support) over the SQLite ``rom_save_sync_states`` aggregate. Exposes the callable
     surface consumed by the Decky entrypoints — every public method delegates to
     a sub-service or reads ``settings.json``. Bulk local-save deletion is the
     only flow whose orchestration lives directly on the aggregate root because it
@@ -186,6 +187,22 @@ class SaveService:
                 log_debug=config.log_debug,
             ),
         )
+
+        self._prune_support = PruneSaveSupport(
+            config=PruneSaveSupportConfig(
+                uow_factory=config.uow_factory,
+                save_file_store=config.save_file_store,
+                retrodeck_paths=config.retrodeck_paths,
+                clock=config.clock,
+                rom_info=self._rom_info,
+                sync_engine=self._sync_engine,
+            ),
+        )
+
+    @property
+    def prune_support(self) -> PruneSaveSupport:
+        """The save-side collaborator the composition root wires as ``PruneSaveCoordinator``."""
+        return self._prune_support
 
     # ------------------------------------------------------------------
     # Device registration (delegated to SyncEngine)

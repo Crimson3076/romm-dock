@@ -137,9 +137,10 @@ adapter's single-attempt short-timeout `request_once` path, concurrently on the 
 `RommNotFoundError` produces `vanished: true`. All other probe failures and malformed/falsy responses fail open. No
 result is persisted.
 
-The response carries `vanished` on every version and `bound_vanished` even when `multi_version` is false. Retained
-vanished rows remain in the payload and keep the independently-computed `switchable` membership verdict, but are
-excluded from default ranking. A bound-id 404 is a successful entity verdict (`bound_vanished: true`,
+The response carries `vanished` on every version and `bound_vanished` even when `multi_version` is false. A singleton
+also carries its `bound_version`, which lets a definitively vanished synced binding expose scoped cleanup without
+inventing a multi-version picker. Retained vanished rows keep the independently-computed `switchable` membership verdict
+but are excluded from default ranking. A bound-id 404 is a successful entity verdict (`bound_vanished: true`,
 `server_query_failed: false`), not a global reachability signal. Artwork and save reads do not contribute availability
 evidence; `fetch_cover_base64` remains a nullable data callable.
 
@@ -162,6 +163,113 @@ A server-only target still needs its full detail before it can be validated and 
 the normal retry/classification policy and is not preceded by a redundant exact-id probe; only its typed 404 is peeled
 into `version_vanished`. A refusal performs no binding, row/install/applied-launch-options write, launch-command
 resolution, event, cache invalidation, sync, or completion-stamp update.
+
+#### Explicit removed-game cleanup (`services/prune/`)
+
+| Module        | Role                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------- |
+| `service.py`  | Callable facade, atomic preview/run admission, and claimed frontend action leases                 |
+| `executor.py` | Serial per-group liveness, recovery, Steam-action, reconciliation, and finalization state machine |
+| `preview.py`  | Local generation-gated candidate snapshot, complete affected-group disclosure, sizing, and paging |
+| `recovery.py` | Lossless aggregate snapshots, recovery artifact assembly, and sealed-state comparison             |
+| `registry.py` | Short SQLite reads, action/final race validation, reconciliation, and final cascade delete        |
+| `requests.py` | Preview/option decoding, bounded selections, and lossless bounded Steam snapshot validation       |
+
+`PruneService` is the only path that deliberately deletes retained `roms` aggregate roots. A bulk preview is local-only:
+for each platform it requires a non-empty completed fetch generation and selects rows whose `last_fetch_id` differs,
+including NULL row generations. An inline preview may nominate one concrete retained ROM without generation evidence.
+Both forms return serialized-byte-budgeted pages plus an ephemeral fingerprint. A page may therefore contain fewer than
+the requested row limit, and the next offset advances by the rows actually returned. Pages include every member of an
+affected sibling group, with generation candidates marked separately, so whole-game deletion cannot reach an undisclosed
+row. `start_prune` consumes a finalized preview-bound installed-content selection. The frontend stages that selection in
+bounded pages, so wire bounds do not cap the total selected set. Start atomically refuses any registered conflicting
+callable and reserves the run before rebuilding the preview; concurrent starts cannot consume one token twice, and
+shutdown owns/cancels an admitted refresh before it can spawn a run. Each sync, download, migration, version-switch,
+save-write, session, uninstall, connection-identity change (including a successful connection test), or cache-mutation
+callable registers for its full lifetime before its first await. Detached status, download, and playtime tasks transfer
+the claim to their task lifetime. Core/disc writes, launch evaluation, and Steam Input application are included because
+they mutate recovered state. Frontend-owned shortcut removal, core/disc writes, version switches, uninstalls, SGDB/icon
+application, download completion, home migration, startup healing, pre-launch healing, and every post-sync Steam branch
+(launch options, collections, playtime, and overview metadata) hold tokenized conflict leases through their final Steam
+write and bounded release. Active continuations heartbeat those leases once per minute. A global frontend registry
+signals cooperative cancellation by component owner or on plugin dismount. Every backend wait captures the current
+plugin/owner mount generation before it starts; teardown tombstones that generation synchronously, so a lease-bearing
+response that arrives afterward is released without running its continuation. Only a genuine plugin/component remount
+opens a new generation. Cancellation stops every not-yet-started Steam mutation and lease renewal, but explicit backend
+release waits for any already-started non-cancellable Steam promise to settle. An unresolved operation stops renewing
+after a bounded five minutes; the backend's five-minute no-heartbeat expiry is the abandonment backstop if it never
+settles. Launch funnels carry the admission captured at the original Play action through every gate, modal, and
+launch-options confirmation wait. The version picker likewise rechecks its captured owner admission after save-sync and
+modal waits before any successor `switch_version` mutation, so an unmounted chain cannot resume under a new picker. Each
+non-empty `sync_stale` event carries its own lease through the paced removal tail; a later `sync_complete` lease
+overlaps and joins that same promise, so success composes both leases while a post-stale backend failure still leaves
+the tail covered. A terminal prune result that needs repoint publication likewise acquires its lease before event
+delivery while the old run is active; the frontend holds it across release acknowledgement and cover publication. Event
+delivery failure releases a token that never reached the frontend. This closes the reciprocal admission race, and each
+path refuses while a prune claim is active. Migration and active-library-sync decorators additionally guard preview and
+start.
+
+The executor processes sibling groups serially and catches ordinary exceptions per group. It rejects multiple shortcut
+bindings and active downloads, pins the preview's canonical RomM origin/token-origin/user namespace, probes every local
+group member with the single-attempt three-second `get_rom_once`, and treats only a typed `RommNotFoundError` from that
+same namespace as destructive authority. A connection/server/user change before, during, or after an exact-ID request is
+uncertain. Live, malformed, wrong-id, transport, authentication, timeout, server, and unknown outcomes retain data. Long
+recovery and frontend round trips are followed by another exact-ID proof before local source removal; every repoint
+re-proves both the vanished source and live target after the frontend action, including a vanished source that is not
+itself a generation candidate. The natural live repoint target uses the same filename-stem projection and
+`resolve_group_representative` ranking as the version picker with empty installed/bound preference sets. Repoint
+selection is independent of row deletion.
+
+Recovery is coordinated through ordered ROM save locks, acquired with no UoW open. The lock set is retried until shared
+save ownership is stable. Short read UoWs close before filesystem work, and no RomM request, event emission, or frontend
+wait runs under those locks. The bundle is sealed before mutation. Aggregate, save-inventory, bundle/source, controller,
+and fresh frontend Steam state are validated before the irreversible Steam action. After that action the service
+reacquires the same recovery-set locks and repeats the guards immediately before local finalization; quarantine
+ownership is separately projected only for rows being deleted. The locks remain held through save quarantine,
+filesystem-only installed-content removal, and the final parent cascade. Source sets record expected presence or
+absence, the root's sealed no-follow identity and regular-file hash, and every descendant identity, mount ID, and
+regular-file hash. Every resolvable exclusive save path is represented even when it was absent. Traversal refuses nested
+mount transitions. After the anchored root rename, deletion obtains kernel read leases for every regular root/descendant
+before removing any entry and holds them through the last descriptor/hash check and unlink. An existing writer, an
+unsupported lease, or any inability to establish exclusion restores/retains the source rather than deleting bytes not in
+recovery. The controller VDF's held claimed inode uses the same writer exclusion from its final identity/hash validation
+through claim unlink on both normal publication and collision/rollback discard; setup failure preserves the claim and
+teardown failure after unlink is an ambiguous mutation. Content excluded from the bundle and recovery-off saves still
+receive a final complete no-follow claim; their remove/quarantine uses anchored parents and atomic no-replace rename
+rather than a raw path fallback, so a concurrently created backup is never overwritten. Writer-exclusion teardown faults
+after mutation are reported as ambiguous, not exact success. Controller rewrites revalidate the held claimed inode
+before every restore/discard branch and retain a newer claimed inode at a surfaced path when a concurrent Steam file
+wins publication. Every exclusive current-save path is expected absent after quarantine, regardless of whether it
+existed during inventory, and the whole set is collectively rechecked after all filesystem work and immediately before
+the aggregate cascade. Validation and claim decoding share one held bundle descriptor and return a digest that every
+later guard compares to the cached claims. Recovery root, staging, bundles, destination files, and the sealed bundle
+remain descriptor-anchored through copy, metadata application, hashing, cross-directory rename, validation, and
+both-parent fsync. Failure cleanup uses the same mount-aware descriptor-relative remover; if cleanup cannot prove a safe
+tree, it leaves and reports the full anchored staging path instead of recursively entering uncertain data. Adapter
+outcomes carry actual and durability-ambiguous changes into the mutation ledger even when a later item or parent fsync
+fails. The final SQLite delete is one short UoW that revalidates complete row/binding state and invalidates intersecting
+collection stamps; platform stamps are deliberately preserved
+([removed-game-cleanup.md](removed-game-cleanup.md#discovery)).
+
+Frontend Steam events use a claim/complete protocol. A claim checks the run, token, discriminant, appId, target, exact
+single-binding group, and current binding before the frontend rechecks the live `rom-launcher` executable and mutates
+Steam. The lease is monotonic-clock bounded and rechecked after asynchronous validation; an identical repeat claim is
+idempotent, while mismatched or expired claims cannot authorize a mutation. Repoint commits through the normal
+version-switch authority first; shortcut removal is immediately reconciled to an unbound local row after Steam confirms
+absence. A claimed action whose completion is lost, or a `RemoveShortcut`/launch-options write that was attempted but
+could not be confirmed, is an explicit ambiguous partial. A pre-mutation refusal remains an ordinary failure. A later
+run can confirm a shortcut is already absent and reconcile without repeating Steam removal. A later guard failure is
+likewise an explicit `partial` result with the committed action and actual mutation categories recorded, not a claim
+that the group was unchanged. Cancellation can stop final guards and every later group; shielding starts only with the
+first irreversible local mutation and awaits that phase to a known result. Cancellation remains authoritative if that
+shielded child faults: the current group's truthful fault/ledger result is recorded and no later group starts. Terminal
+result strings/arrays are bounded and chunks are built to a serialized byte budget. Every action/progress/completion
+frame carries the originating preview ID, allowing the frontend to adopt a matching run even if the successful start
+response is delayed or lost while still rejecting foreign frames; completion finalizes only a contiguous chunk sequence.
+An accepted contiguous terminal sequence seals that run against every later action, progress, or completion frame, and
+the modal exposes its terminal controls immediately even if the start response is still pending. Committed repoint
+publication performs a bounded/retried backend release acknowledgement before gated cover/status work. Mixed runs
+continue unrelated groups.
 
 #### LibraryService decomposition (`services/library/`)
 
@@ -531,13 +639,15 @@ sibling row holding `shortcut_app_id` is the group's **active version**.
   binding. Convergence to one-shortcut-per-group happens naturally as the user uninstalls duplicates.
 - **Downstream group semantics.** The incremental-skip gate compares RomM's platform `rom_count` against the persisted
   rows carrying the completion stamp's **fetch generation** — bound and unbound alike, so skip parity on platforms with
-  sibling groups holds (a NULL `sibling_group_key` still forces a backfill full-fetch), while a row for a `rom_id` the
-  server has since dropped is excluded rather than inflating the count forever (#1504; the row itself is retained per
-  ADR-0007 — nothing is deleted). A stamp with no generation predates the contract and falls back to counting every row.
-  Artwork downloads only for the emitted representatives (+ grandfathered bound siblings), never eager sibling covers.
-  Steam-collection membership resolves each RomM collection `rom_id` with a **group fallback** — an unbound sibling maps
-  to its group's bound sibling's appId — so collecting or favouriting any version puts the game's single shortcut in the
-  collection.
+  sibling groups holds (a NULL `sibling_group_key` on such a row still forces a backfill full-fetch), while a row for a
+  `rom_id` the server has since dropped is excluded rather than inflating the count forever (#1504; the row itself is
+  retained per ADR-0007 — nothing is deleted). The **backfill gate reads the same generation**: only a row the last
+  complete fetch returned may demand a full fetch, because a dropped row is never returned again and no fetch could ever
+  fill its key in — counting it would wedge the platform into a full fetch on every sync, forever. A stamp with no
+  generation predates the contract and falls back to counting — and backfilling for — every row. Artwork downloads only
+  for the emitted representatives (+ grandfathered bound siblings), never eager sibling covers. Steam-collection
+  membership resolves each RomM collection `rom_id` with a **group fallback** — an unbound sibling maps to its group's
+  bound sibling's appId — so collecting or favouriting any version puts the game's single shortcut in the collection.
 
 **Same-named collections union into one Steam collection (#1503).** RomM enforces name uniqueness only per-table and
 per-`(name, user_id)`, so two enabled collections can share a display name — a standard collection and a smart/virtual
@@ -611,9 +721,9 @@ shortcuts. No stamp means a full fetch — including, once, every platform's fir
 reporter writes the stamp when a platform work unit's **last** apply chunk commits — atomically in the same write UoW as
 the chunk's `roms` upserts — so a platform that fully synced inside a run the user later cancelled/crashed still skips
 on the next run instead of re-walking every already-applied game through CEF. All the existing guards still gate the
-skip (zero-bound-rows, `sibling_group_key` backfill, the `updated_after` server-delta check, the persisted-row count
-match); additionally the stamp's `rom_count` must still equal the server's platform `rom_count` — a server-side count
-change invalidates it.
+skip (zero-bound-rows, the `sibling_group_key` backfill for rows carrying the stamp's generation, the `updated_after`
+server-delta check, the persisted-row count match); additionally the stamp's `rom_count` must still equal the server's
+platform `rom_count` — a server-side count change invalidates it.
 
 The stamp's contract is **stamp exists ⟺ the platform's most recent apply attempt ran to completion**, so a stale stamp
 can never skip a half-mirrored platform. Because unbinding keeps the `roms` row (ADR-0007), a platform's persisted-row
@@ -676,50 +786,50 @@ weights + planned totals, via `sync_plan`) and the applying frames.
   riders read in one short UoW (`_read_plan_estimates` + the pure `domain/skip_prediction.py`): `predicted_skip` —
   whether the wholesale incremental-skip gate is expected to skip the platform, replaying the gate's **local**
   conditions only (completion stamp present, the stamped count and the count of rows carrying the stamp's fetch
-  generation both match the server's `rom_count`, bound rows exist, no sibling-group-key backfill pending; the gate's
-  `list_roms_updated_after` server check is deliberately not replayed — no network at plan time) — and
-  `collapsed_count`, the persisted post-collapse shortcut count, mirroring the collapse's lane selection (ADR-0021):
-  `max(1, bound rows)` per sibling group — so a grandfathered legacy group with multiple independently-bound duplicates
-  (§5) prices one shortcut per bound sibling, not one per group — plus one per keyless row. Both of **those two** ride
-  the `sync_plan` payload conditionally-present (absent on collections, never-synced platforms, and failed reads);
-  `collapsed_count` is additionally **gated on the platform's completion stamp** (#1412, mirroring the `get_platforms`
-  garnish below) — a never-synced platform holds only PARTIAL collection-sibling rows (ADR-0021), so an ungated count
-  would weight the ETA below the true work, and without a stamp the frontend falls back to the raw `rom_count`. The
-  payload's `total_roms` stays the raw pre-collapse total (backward compat); an additive `total_estimated_items` sums
-  `0` for predicted skips, else `collapsed_count ?? rom_count`. A third rider, `bound_count` (#1511), counts the unit's
-  known ROMs that already carry a `shortcut_app_id`, and is the one rider that rides **both** unit kinds. On a
-  **platform** it counts the persisted rows, read in the same short UoW the skip prediction already needed that count
-  for, and is **not** stamp-gated: a bound row genuinely has a Steam shortcut whether or not the mirror is complete, and
-  zero persisted rows honestly means "every planned item is a create". On a **collection** it counts the bound members
-  of the completion stamp's stored `member_rom_ids` (the same member set the skip replays), in one short read UoW
-  covering every collection unit — no ROM fetch. The two sides are deliberately **asymmetric** on the empty case: a
-  platform reports `0`, an unstamped or virtual collection is **omitted**. A collection's membership exists only in its
-  stamp, and virtual collections are never stampable (`CollectionSyncState.stamp` accepts only `standard`/`smart`), so
-  `0` there would claim knowledge that does not exist. Absent and `0` price identically today; the distinction keeps the
-  field honest for later consumers, so do not collapse it into consistency. A collection's stored member set may be
-  **stale** if membership changed since the stamp — accepted and bounded, since this is estimate-only and a freshness
-  probe would mean network I/O at plan time. A fourth rider, `new_shortcut_count` (#1517), is the create-side complement
-  of `collapsed_count`: the shortcuts the next apply must **mint** rather than update — sibling groups with no binding
-  anywhere, unbound keyless rows, and every server ROM the local mirror holds no row for (`rom_count − persisted rows`,
-  clamped at zero). It is **platform-only** — a collection's rows belong to their platform's unit, so counting creates
-  on a collection too would price the same shortcuts twice — and like `bound_count` it is **not** stamp-gated: an
-  unbound group genuinely has no shortcut and a ROM with no local row genuinely has to be created, whether or not the
-  mirror is complete. The frontend takes it as its create term directly instead of deriving creates by subtracting
-  `bound_count` from the unit's weight (see the composition-priced seed below). **Hard constraint (ADR-0023): the
-  prediction never feeds the actual skip decision** — `_try_unit_incremental_skip` at fetch time remains the sole skip
-  authority, so a mis-prediction can only make the estimate read long or short, never mis-apply. A Force Full Sync needs
-  no special case: `clear_sync_cache` deletes every stamp before the run, so a forced plan predicts no skips and drops
-  every `collapsed_count` — the unit is then weighed at the full pre-collapse `rom_count`, but `bound_count` and
-  `new_shortcut_count` both survive the clear (they read the rows, not the stamp) and keep the forced re-apply priced by
-  composition (#1517). The same collapsed counts also garnish `get_platforms` (an optional per-platform
-  `collapsed_count`), so the platform toggles show the number of games a synced platform actually produces rather than
-  the raw server file count. That garnish is **gated on the platform's completion stamp** (`_read_collapsed_counts`,
-  #1412): the count is emitted only for slugs that currently carry a `PlatformSyncState` stamp — the stamp exists iff
-  the local mirror is complete, which is exactly when a post-collapse count is meaningful. A never-synced platform
-  legitimately holds only PARTIAL rows (cross-platform collection siblings persist per ADR-0021), so an ungated count
-  would shadow the true server total; with no stamp the field is absent and the toggle label falls back to the raw
-  `rom_count`. Clearing the stamp (local removal / Force Full Sync) reverts the label to the server total until the next
-  completed sync re-stamps.
+  generation both match the server's `rom_count`, bound rows exist, no sibling-group-key backfill pending for a row of
+  that generation; the gate's `list_roms_updated_after` server check is deliberately not replayed — no network at plan
+  time) — and `collapsed_count`, the persisted post-collapse shortcut count, mirroring the collapse's lane selection
+  (ADR-0021): `max(1, bound rows)` per sibling group — so a grandfathered legacy group with multiple independently-bound
+  duplicates (§5) prices one shortcut per bound sibling, not one per group — plus one per keyless row. Both of **those
+  two** ride the `sync_plan` payload conditionally-present (absent on collections, never-synced platforms, and failed
+  reads); `collapsed_count` is additionally **gated on the platform's completion stamp** (#1412, mirroring the
+  `get_platforms` garnish below) — a never-synced platform holds only PARTIAL collection-sibling rows (ADR-0021), so an
+  ungated count would weight the ETA below the true work, and without a stamp the frontend falls back to the raw
+  `rom_count`. The payload's `total_roms` stays the raw pre-collapse total (backward compat); an additive
+  `total_estimated_items` sums `0` for predicted skips, else `collapsed_count ?? rom_count`. A third rider,
+  `bound_count` (#1511), counts the unit's known ROMs that already carry a `shortcut_app_id`, and is the one rider that
+  rides **both** unit kinds. On a **platform** it counts the persisted rows, read in the same short UoW the skip
+  prediction already needed that count for, and is **not** stamp-gated: a bound row genuinely has a Steam shortcut
+  whether or not the mirror is complete, and zero persisted rows honestly means "every planned item is a create". On a
+  **collection** it counts the bound members of the completion stamp's stored `member_rom_ids` (the same member set the
+  skip replays), in one short read UoW covering every collection unit — no ROM fetch. The two sides are deliberately
+  **asymmetric** on the empty case: a platform reports `0`, an unstamped or virtual collection is **omitted**. A
+  collection's membership exists only in its stamp, and virtual collections are never stampable
+  (`CollectionSyncState.stamp` accepts only `standard`/`smart`), so `0` there would claim knowledge that does not exist.
+  Absent and `0` price identically today; the distinction keeps the field honest for later consumers, so do not collapse
+  it into consistency. A collection's stored member set may be **stale** if membership changed since the stamp —
+  accepted and bounded, since this is estimate-only and a freshness probe would mean network I/O at plan time. A fourth
+  rider, `new_shortcut_count` (#1517), is the create-side complement of `collapsed_count`: the shortcuts the next apply
+  must **mint** rather than update — sibling groups with no binding anywhere, unbound keyless rows, and every server ROM
+  the local mirror holds no row for (`rom_count − persisted rows`, clamped at zero). It is **platform-only** — a
+  collection's rows belong to their platform's unit, so counting creates on a collection too would price the same
+  shortcuts twice — and like `bound_count` it is **not** stamp-gated: an unbound group genuinely has no shortcut and a
+  ROM with no local row genuinely has to be created, whether or not the mirror is complete. The frontend takes it as its
+  create term directly instead of deriving creates by subtracting `bound_count` from the unit's weight (see the
+  composition-priced seed below). **Hard constraint (ADR-0023): the prediction never feeds the actual skip decision** —
+  `_try_unit_incremental_skip` at fetch time remains the sole skip authority, so a mis-prediction can only make the
+  estimate read long or short, never mis-apply. A Force Full Sync needs no special case: `clear_sync_cache` deletes
+  every stamp before the run, so a forced plan predicts no skips and drops every `collapsed_count` — the unit is then
+  weighed at the full pre-collapse `rom_count`, but `bound_count` and `new_shortcut_count` both survive the clear (they
+  read the rows, not the stamp) and keep the forced re-apply priced by composition (#1517). The same collapsed counts
+  also garnish `get_platforms` (an optional per-platform `collapsed_count`), so the platform toggles show the number of
+  games a synced platform actually produces rather than the raw server file count. That garnish is **gated on the
+  platform's completion stamp** (`_read_collapsed_counts`, #1412): the count is emitted only for slugs that currently
+  carry a `PlatformSyncState` stamp — the stamp exists iff the local mirror is complete, which is exactly when a
+  post-collapse count is meaningful. A never-synced platform legitimately holds only PARTIAL rows (cross-platform
+  collection siblings persist per ADR-0021), so an ungated count would shadow the true server total; with no stamp the
+  field is absent and the toggle label falls back to the raw `rom_count`. Clearing the stamp (local removal / Force Full
+  Sync) reverts the label to the server total until the next completed sync re-stamps.
 - **Static walk-cost ceiling (pre-run seed).** Before a run — in the preview, and again as the initial "up to X min" the
   instant a skip-preview run starts — the estimate is a pure cost model over **three independent terms** (#1511),
   because a run is three independent phases and one blended per-item rate cannot describe a mix of them:
@@ -1169,12 +1279,15 @@ Adapters own all I/O and implement the Protocols defined in `services/protocols/
 | `download_file.py`                                                         | `DownloadFileAdapter` — download filesystem                                                                                                                                                                                                                                            |
 | `firmware_file.py` / `migration_file.py` / `rom_files.py` / `save_file.py` | per-subtree filesystem adapters (BIOS, RetroDECK migration, ROM removal, local saves)                                                                                                                                                                                                  |
 | `retrodeck_paths.py`                                                       | `RetroDeckPathsAdapter` — reads `retrodeck.json` for ROMs/saves/BIOS/home paths                                                                                                                                                                                                        |
+| `recovery_bundle.py`                                                       | `RecoveryBundleAdapter` — safe recovery-root derivation, exact source measurement, verified copies, checksums/human manifests, fsync, staging cleanup, and atomic bundle sealing                                                                                                       |
+| `prune_artifacts.py`                                                       | `PruneArtifactAdapter` — per-ROM cover/validator and SteamGridDB cache discovery/removal                                                                                                                                                                                               |
+| `steam_recovery.py`                                                        | `SteamRecoveryAdapter` — per-shortcut Steam grid, Steam Input, and controller-setting recovery inventory plus post-confirmation cleanup                                                                                                                                                |
 | `retroarch_config.py`                                                      | `RetroArchConfigAdapter` — reads `retroarch.cfg` save-sort flags                                                                                                                                                                                                                       |
 | `retroarch_core_info.py`                                                   | `RetroArchCoreInfoAdapter` — reads RetroArch `.info` files (`corename`, metadata)                                                                                                                                                                                                      |
 | `es_de_config.py`                                                          | `CoreResolver` — ES-DE `es_systems.xml` (system-layer default core + available cores); the gamelist is no longer read or written                                                                                                                                                       |
 | `gavel_native.py`                                                          | `GavelNativeAdapter` — loads the compiled [romm-gavel](https://github.com/danielcopper/romm-gavel) core (`py_modules/native/libgavel-x86_64-linux.so`) via `ctypes` and is itself the `ResolveUploadConflictFn` seam for the save-sync upload-409 decision (no Python fallback)        |
 | `system_clock.py` / `system_uuid_gen.py` / `asyncio_sleeper.py`            | concrete `Clock` / `UuidGen` / `Sleeper` seams                                                                                                                                                                                                                                         |
-| `hostname.py` / `path_probe.py` / `plugin_metadata.py` / `debug_logger.py` | hostname, path-exists probe, `package.json` version reader, settings-aware debug logger                                                                                                                                                                                                |
+| `hostname.py` / `path_probe.py` / `plugin_metadata.py` / `debug_logger.py` | hostname, path-exists probe, `package.json` name/version reader, settings-aware debug logger                                                                                                                                                                                           |
 | `renderer_rss.py` / `renderer_gc.py`                                       | `RendererRssFn` — max `steamwebhelper` `VmRSS` from `/proc`; `RendererGcFn` (`HeapProfiler.collectGarbage`) over the CEF debugger. The session-budget measure + settle seams (ADR-0024). The "free memory" action is a frontend `SteamClient.User.StartRestart`, not a backend adapter |
 | `game_process.py`                                                          | `GameProcessControl` — resolves a flatpak app's live instances via the per-user registry (`info` / `bwrapinfo.json`) plus the `/proc` child walk, reporting each tree's PIDs and argv separately, and signals them. Direct reads + `os.kill`, no subprocess; fail-soft on every read   |
 

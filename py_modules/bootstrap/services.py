@@ -32,6 +32,7 @@ from services.library import LibraryService, LibraryServiceConfig
 from services.metadata import MetadataService, MetadataServiceConfig
 from services.migration import MigrationService, MigrationServiceConfig
 from services.playtime import PlaytimeService, PlaytimeServiceConfig
+from services.prune import PruneService, PruneServiceConfig
 from services.relaunch_options_resolver import RelaunchOptionsResolver, RelaunchOptionsResolverConfig
 from services.rom_removal import RomRemovalService, RomRemovalServiceConfig
 from services.saves import SaveService, SaveServiceConfig
@@ -481,12 +482,35 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         ),
     )
 
+    prune_service = PruneService(
+        config=PruneServiceConfig(
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            clock=cfg.runtime.clock,
+            uuid_gen=cfg.runtime.uuid_gen,
+            emit=cfg.runtime.emit,
+            uow_factory=cfg.callbacks.uow_factory,
+            romm_api=cfg.adapters.romm_api,
+            recovery_store=cfg.adapters.recovery_store,
+            prune_artifacts=cfg.adapters.prune_artifacts,
+            steam_recovery=cfg.adapters.steam_recovery,
+            retrodeck_paths=cfg.callbacks.retrodeck_paths,
+            save_coordinator=save_sync_service.prune_support,
+            active_downloads=download_service.active_download_rom_ids,
+            drift_probe=launch_gate_service.check_local_drift,
+            remove_installed_files=rom_removal_service.delete_rom_files,
+            switch_version=version_switch_service.switch_version,
+            settings=cfg.stores.settings,
+        )
+    )
+
     return {
         "save_sync_service": save_sync_service,
         "playtime_service": playtime_service,
         "sync_service": sync_service,
         "download_service": download_service,
         "rom_removal_service": rom_removal_service,
+        "prune_service": prune_service,
         "firmware_service": firmware_service,
         "sgdb_service": sgdb_service,
         "metadata_service": metadata_service,

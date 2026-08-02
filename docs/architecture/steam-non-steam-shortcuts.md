@@ -167,6 +167,54 @@ short write UoW, whose fresh membership and bound-elsewhere checks still decide 
 cross-system interval after a successful response: the liveness check reduces stale-list risk but is not a transaction
 with RomM.
 
+## Explicit cleanup of vanished versions
+
+Automatic sync remains unbind/retain-only. Deleting retained local state is a separate confirmed workflow under **Danger
+Zone → Clean Up Removed RomM Games**, also reachable by activating a synced vanished version's own picker row (which
+carries a trash affordance, the menu row being the focusable unit) or as a focused button for a synced singleton
+vanished binding. Candidate discovery is not deletion authority: the backend freshly probes each exact RomM id, and only
+typed 404s can proceed.
+
+For a vanished bound version with a live sibling, the default-on repoint action reuses `switch_version` independently of
+the row-removal option, then the frontend confirm-writes the returned exact launch options. Cover/cache publication and
+the `version_switched` event are deferred until terminal prune completion. Before emitting a terminal result that needs
+repoint publication, the backend acquires a continuation lease while the old run is still active; the frontend registers
+that token immediately and holds it across both release acknowledgement and the final artwork write. Another prune
+therefore cannot enter between the old claim and publication. Publication uses the same path as VersionPicker. Repoint
+changes neither shortcut name nor exe and never calls `AddShortcut`, so the assigned appId, collections, and Steam
+playtime remain attached. Unsynced-save stranding can be overridden only after enabled recovery has sealed.
+
+For a fully vanished bound game, whole-game cleanup is its own confirmation option, default-on and paired with the
+default-on recovery bundle that keeps the shortcut rebuildable. With recovery enabled, the root frontend handler
+captures complete shortcut details, available Steam playtime fields, and every collection id/name or fails closed if
+that JSON cannot fit the wire bound. The backend resolves the active account from Steam's login identity once, stores
+that identity in the recovery handle, and adds only that user's grid artwork, both per-app Steam Input roots, and
+relevant controller setting. Cleanup must use those exact captured roots even if the active account changes later.
+
+Every action event is deduplicated and serialized. Before any Steam mutation, the frontend claims its token from the
+backend, re-reads the live shortcut, and requires the appId to exist with an exe ending in `/bin/rom-launcher`. Only
+then does shortcut removal capture a fresh complete snapshot, compare it with the sealed snapshot, call
+`RemoveShortcut(appId)` once, and poll the live store until absence. Identical claim retries are idempotent. Completion
+reporting uses bounded retries of the same payload without repeating the Steam operation. If every completion report is
+lost, the claimed lease expires as an ambiguous partial and retains source data. A `RemoveShortcut` call followed by an
+unreadable store or settle timeout is also explicitly attempted-but-unconfirmed, never reported as an unchanged failure;
+a later run can confirm the appId is already absent and reconcile the binding without calling removal again. An
+unreadable/foreign store before mutation, stale claim, or unclaimed timeout is failure, and no row/source finalization
+follows an uncommitted action.
+
+The same reciprocal exclusion covers ordinary frontend Steam continuations outside an action event. SGDB fetch results
+carry leases through hero/logo/grid/icon writes; `sync_complete` keeps one shared lease until launch-option, collection,
+playtime, and overview-metadata branches all settle; and bulk shortcut removal clears its collections before
+acknowledging and releasing the removal lease. Leases live in one frontend registry, renew only for a bounded active
+continuation, and receive a cooperative cancellation signal before their component owner or plugin dismount releases
+them. Owner/plugin mount generations are captured before backend waits, so a token arriving after teardown is released
+without admitting old continuation work even if a new owner has since mounted. Each non-empty `sync_stale` frame owns a
+lease through its paced tail; successful `sync_complete` processing overlaps that lease while joining the same tail. A
+backend emit failure rolls back a token the frontend never received.
+
+Recovery records the Steam-assigned appId and playtime, but there is no automatic restore and Steam cannot currently
+reattach those values to a newly created shortcut.
+
 ## Sync-start reconcile of Steam-UI-deleted shortcuts
 
 A user can delete a RomM shortcut through **Steam's own UI** (remove from library), which the plugin never observes. The
@@ -416,6 +464,15 @@ The backend also writes each `{app_id}p.png` grid file at commit (`SyncReporter.
 file even if a per-item API call failed, so a residual gray tile resolves the next time the game's page is opened or on
 the next client restart.
 
+## Pre-launch launch-options confirmation
+
+Both launch funnels (the game-detail Play button and Steam's direct-launch watcher) re-fetch the selected ROM's resolved
+command and confirm-write it immediately before `RunGame`. Ordinary fetch or Steam-write failures remain best-effort and
+the launch proceeds. A three-second callable timeout is different: the already-cancelled launch remains blocked, while
+the unresolved callable stays observed so a lease token returned later is released without a Steam write. Each launch
+captures its plugin/component generation before gate and modal waits; teardown makes that admission stale, and even an
+immediate remount cannot let the old chain write launch options or invoke `RunGame` under the new generation.
+
 ## Key Files
 
 | File                                      | Purpose                                                                                                                                                                                                                                                                                                                                        |
@@ -475,9 +532,8 @@ two callers differ only in chunk size:
 - **Remove** (`removeShortcutsPaced` in `src/utils/shortcutRemoval.ts`, shared by the DangerZone actions and the
   `sync_stale` cleanup) paces in **25-item chunks with a 50ms breather** between them. A removal is a single cheap call,
   so chunked yielding keeps a 5000-game teardown at ~seconds of overhead instead of the ~4 minutes strict 50ms/item
-  would cost, while still letting the renderer breathe. No heartbeat hook: the DangerZone actions run outside any sync,
-  and `sync_stale` fires at run finalize — after every per-unit heartbeat window has already closed and detached from
-  the watchdog (the backend never awaits the frontend's stale removal).
+  would cost, while still letting the renderer breathe. DangerZone and `sync_stale` removals hold renewable prune
+  conflict leases for the complete paced loop even though the backend does not await the frontend's stale removal.
 
 ### The apply is chunked; a heartbeat timeout must not discard a chunk's delivered bindings
 

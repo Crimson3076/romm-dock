@@ -97,6 +97,8 @@ import { showOfflineDriftModal } from "../components/OfflineDriftModal";
 import { showFallbackLaunchModal } from "../components/FallbackLaunchModal";
 import { handleConflicts } from "../components/SyncConflictModal";
 import { showStopGameModal } from "../components/StopGameModal";
+import { mountPruneLeasePlugin, releaseAllPruneLeases } from "../utils/pruneLease";
+import { resetBoundVanished, setBoundVanished } from "../utils/vanishedBinding";
 import type { SyncConflict, SaveStatus } from "../types";
 
 function mockCachedDetail(overrides: Partial<CachedGameDetail> = {}): void {
@@ -113,6 +115,63 @@ function mockCachedDetail(overrides: Partial<CachedGameDetail> = {}): void {
 // persists across tests) so the default render path is "connected" (#1345).
 beforeEach(() => {
   setRommConnectionState("connected");
+  resetBoundVanished();
+});
+
+describe("CustomPlayButton — vanished bound ROM (#1570 F20)", () => {
+  beforeEach(() => {
+    vi.mocked(getCachedGameDetail).mockReset();
+    vi.mocked(backend.startDownload).mockReset();
+  });
+
+  const downloadButton = (container: HTMLElement): HTMLButtonElement =>
+    container.querySelector<HTMLButtonElement>("button.romm-btn-download")!;
+
+  it("disables Download once RomM confirms the bound ROM is gone", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    const { findByText, container } = render(<CustomPlayButton appId={100} />);
+    await findByText("Download");
+    expect(downloadButton(container).disabled).toBe(false);
+
+    act(() => setBoundVanished(100, true));
+
+    // The download can only ever come back not_found, so stop offering it.
+    expect(downloadButton(container).disabled).toBe(true);
+  });
+
+  it("starts no download when a vanished button is activated anyway", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    const { findByText, container } = render(<CustomPlayButton appId={100} />);
+    await findByText("Download");
+    act(() => setBoundVanished(100, true));
+
+    downloadButton(container).click();
+    await act(async () => Promise.resolve());
+
+    expect(backend.startDownload).not.toHaveBeenCalled();
+  });
+
+  it("keeps Download enabled when the server could not be reached", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    const { findByText, container } = render(<CustomPlayButton appId={100} />);
+    await findByText("Download");
+
+    // A failed query reports bound_vanished:false — uncertainty must never
+    // disable the download. Fail-open is the whole feature's rule.
+    act(() => setBoundVanished(100, false));
+
+    expect(downloadButton(container).disabled).toBe(false);
+  });
+
+  it("does not disable a different game's Download", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    const { findByText, container } = render(<CustomPlayButton appId={100} />);
+    await findByText("Download");
+
+    act(() => setBoundVanished(999, true));
+
+    expect(downloadButton(container).disabled).toBe(false);
+  });
 });
 
 describe("CustomPlayButton — download_failed listener", () => {
@@ -1326,6 +1385,23 @@ describe("CustomPlayButton — resolve conflict reads the known conflict (#1276)
     );
     await utils.findByText("Resolve Conflict");
   });
+
+  it("a prune-active getSaveStatus failure keeps the visible conflict", async () => {
+    vi.mocked(backend.getSaveStatus).mockResolvedValue({
+      success: false,
+      reason: "prune_active",
+      message: "Cleanup is active.",
+    });
+
+    const utils = await renderInConflict();
+    await act(async () => {
+      (await utils.findByText("Resolve Conflict")).click();
+    });
+
+    expect(vi.mocked(handleConflicts)).not.toHaveBeenCalled();
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM Sync", body: "Cleanup is active." });
+    await utils.findByText("Resolve Conflict");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1820,7 +1896,12 @@ describe("CustomPlayButton — pre-launch relaunch re-confirm (#1150)", () => {
   }
 
   it("re-confirms launch_options (getRomRelaunchOptions → setLaunchOptionsConfirmed) BEFORE RunGame", async () => {
-    vi.mocked(backend.getRomRelaunchOptions).mockResolvedValue({ app_id: 100, launch_options: RELAUNCH_COMMAND });
+    vi.mocked(backend.getRomRelaunchOptions).mockResolvedValue({
+      success: true,
+      app_id: 100,
+      launch_options: RELAUNCH_COMMAND,
+      prune_lease_token: "launch-lease",
+    });
 
     await clickPlay();
 
@@ -1868,10 +1949,10 @@ describe("CustomPlayButton — pre-launch relaunch re-confirm (#1150)", () => {
     logSpy.mockRestore();
   });
 
-  it("a hung getRomRelaunchOptions falls through to the launch after the timeout (button never trapped)", async () => {
+  it("a hung getRomRelaunchOptions aborts launch after the timeout and restores Play", async () => {
     // The Decky callable bridge can hang forever on a wedged backend. The fetch
-    // is bounded by a 3s Promise.race; on timeout the re-confirm is skipped and
-    // the launch still fires — the button must not stay stuck on "Launching…".
+    // is bounded by a 3s Promise.race; on timeout the launch is aborted and the
+    // button must not stay stuck on "Launching…".
     // RTL's findBy* deadlocks under fake timers, so render + settle to "Play"
     // under REAL timers, then switch to fake timers right before the click so the
     // 3s re-confirm timeout fires without a real wait (kept fast).
@@ -1881,28 +1962,63 @@ describe("CustomPlayButton — pre-launch relaunch re-confirm (#1150)", () => {
 
     try {
       mockCachedDetail();
-      const { findByText } = render(<CustomPlayButton appId={100} />);
+      const { findByText, getByText } = render(<CustomPlayButton appId={100} />);
       const playBtn = await findByText("Play");
 
       vi.useFakeTimers();
       await act(async () => {
         playBtn.click();
-        // The gate chain up to dispatchLaunch is microtask-driven (no setTimeout);
-        // advancing past 3000ms flushes those microtasks and fires the re-confirm
-        // timeout that unblocks the hung fetch.
+        // Let the gate chain schedule the re-confirm timeout before advancing it.
+        for (let index = 0; index < 12; index++) await Promise.resolve();
+      });
+      expect(backend.getRomRelaunchOptions).toHaveBeenCalledWith(42);
+      await act(async () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
 
-      // The hung fetch timed out → re-confirm skipped (no set), logged, and the
-      // launch STILL fired. RunGame is the proof the button escaped "Launching…".
+      // The hung fetch timed out → no set and no launch. Returning to Play proves
+      // the current component is not trapped in its optimistic launching state.
       expect(vi.mocked(setLaunchOptionsConfirmed)).not.toHaveBeenCalled();
       expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining("CustomPlayButton: launch_options re-confirm failed"),
+        expect.stringContaining("CustomPlayButton: launch_options re-confirm timed out"),
       );
-      expect(vi.mocked(SteamClient.Apps.RunGame)).toHaveBeenCalledWith("gid-1", "", -1, 100);
+      expect(vi.mocked(SteamClient.Apps.RunGame)).not.toHaveBeenCalled();
+      expect(getByText("Play")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
       logSpy.mockRestore();
+    }
+  });
+
+  it("plugin teardown while relaunch options are pending releases the late token and never calls RunGame", async () => {
+    let resolveFetch!: (value: Awaited<ReturnType<typeof backend.getRomRelaunchOptions>>) => void;
+    vi.mocked(backend.getRomRelaunchOptions).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.mocked(backend.releasePruneConflictLease).mockResolvedValue({ success: true, message: "released" });
+
+    try {
+      await clickPlay();
+      await waitFor(() => expect(backend.getRomRelaunchOptions).toHaveBeenCalledWith(42));
+      await releaseAllPruneLeases();
+      resolveFetch({
+        success: true,
+        app_id: 100,
+        launch_options: RELAUNCH_COMMAND,
+        prune_lease_token: "late-plugin-launch-lease",
+      });
+      await act(async () => {
+        for (let index = 0; index < 8; index++) await Promise.resolve();
+      });
+
+      expect(backend.releasePruneConflictLease).toHaveBeenCalledWith("late-plugin-launch-lease");
+      expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+      expect(SteamClient.Apps.RunGame).not.toHaveBeenCalled();
+    } finally {
+      mountPruneLeasePlugin();
     }
   });
 });

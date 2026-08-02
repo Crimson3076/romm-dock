@@ -19,11 +19,14 @@ import zipfile
 import zlib
 from typing import TYPE_CHECKING
 
+from adapters.descriptor_paths import claim_source, ensure_directory, rename_claimed
 from domain.save_hash import combine_zip_entry_hashes
 
 if TYPE_CHECKING:
     import logging
     from collections.abc import Iterator
+
+    from models.prune import MutationOutcome, SourceClaim
 
 _MD5_CHUNK_SIZE = 8192
 
@@ -72,6 +75,18 @@ class SaveFileAdapter:
         """Return True when *path* exists and is a directory."""
         return os.path.isdir(path)
 
+    def is_symlink(self, path: str) -> bool:
+        return os.path.islink(path)
+
+    def canonical_path(self, path: str) -> str:
+        return os.path.realpath(path)
+
+    def is_within(self, path: str, root: str) -> bool:
+        try:
+            return os.path.commonpath((os.path.realpath(path), os.path.realpath(root))) == os.path.realpath(root)
+        except ValueError:
+            return False
+
     def make_dirs(self, path: str) -> None:
         """Create *path* and any missing parents. Idempotent."""
         os.makedirs(path, exist_ok=True)
@@ -91,6 +106,15 @@ class SaveFileAdapter:
     def rename(self, src: str, dst: str) -> None:
         """Atomically rename *src* to *dst*, replacing any existing file at *dst*."""
         os.replace(src, dst)
+
+    def claim_source(self, path: str, safe_root: str) -> SourceClaim:
+        return claim_source(path, safe_root)
+
+    def ensure_directory(self, path: str, safe_root: str) -> None:
+        ensure_directory(path, safe_root)
+
+    def rename_claimed(self, src: str, dst: str, safe_root: str, claim: SourceClaim) -> MutationOutcome:
+        return rename_claimed(src, dst, safe_root, claim)
 
     def get_mtime(self, path: str) -> float:
         """Return the mtime of *path* as a Unix timestamp."""

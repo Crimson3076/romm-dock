@@ -28,13 +28,32 @@ import {
 const captured: { menu: ReactNode } = { menu: null };
 
 vi.mock("@decky/ui", () => ({
-  DialogButton: (p: { onClick?: (e: unknown) => void; children?: ReactNode; className?: string }) =>
-    createElement("button", { "data-testid": "version-btn", onClick: p.onClick, className: p.className }, p.children),
+  DialogButton: (p: {
+    onClick?: (e: unknown) => void;
+    children?: ReactNode;
+    className?: string;
+    "aria-label"?: string;
+  }) =>
+    createElement(
+      "button",
+      {
+        "data-testid": "version-btn",
+        onClick: p.onClick,
+        className: p.className,
+        "aria-label": p["aria-label"],
+      },
+      p.children,
+    ),
   Menu: (p: { children?: ReactNode }) => createElement("div", { "data-testid": "version-menu" }, p.children),
-  MenuItem: (p: { onClick?: () => void; children?: ReactNode; disabled?: boolean }) =>
+  MenuItem: (p: { onClick?: () => void; children?: ReactNode; disabled?: boolean; tone?: string }) =>
     createElement(
       "div",
-      { role: "menuitem", onClick: p.onClick, "aria-disabled": p.disabled ? "true" : undefined },
+      {
+        role: "menuitem",
+        onClick: p.onClick,
+        "aria-disabled": p.disabled ? "true" : undefined,
+        "data-tone": p.tone,
+      },
       p.children,
     ),
   showContextMenu: (menu: ReactNode) => {
@@ -59,10 +78,14 @@ vi.mock("../utils/steamShortcuts", () => ({
 vi.mock("./UnsyncedSavesSwitchModal", () => ({
   showUnsyncedSavesModal: vi.fn(),
 }));
+vi.mock("./RemovedGamesCleanup", () => ({
+  openRemovedGamesCleanupModal: vi.fn(),
+}));
 
 import { invalidateCachedGameDetail } from "../utils/cachedGameDetailStore";
 import { setLaunchOptionsConfirmed } from "../utils/steamShortcuts";
 import { showUnsyncedSavesModal } from "./UnsyncedSavesSwitchModal";
+import { openRemovedGamesCleanupModal } from "./RemovedGamesCleanup";
 
 const APP_ID = 100;
 
@@ -197,6 +220,7 @@ describe("VersionPicker — non-switchable rows (#1359)", () => {
     vi.mocked(backend.switchVersion).mockReset();
     vi.mocked(backend.fetchCoverBase64).mockResolvedValue({ base64: null });
     vi.mocked(toaster.toast).mockReset();
+    vi.mocked(openRemovedGamesCleanupModal).mockReset().mockResolvedValue(true);
   });
 
   // A group whose second version is a RomM sibling from a DIFFERENT local group
@@ -275,6 +299,9 @@ describe("VersionPicker — vanished retained rows (#1570)", () => {
     vi.mocked(backend.switchVersion).mockReset();
     vi.mocked(backend.fetchCoverBase64).mockResolvedValue({ base64: null });
     vi.mocked(toaster.toast).mockReset();
+    // Reset per test: the rows here assert both that cleanup opens and that it
+    // does NOT, so a call leaking in from a sibling test would pass either way.
+    vi.mocked(openRemovedGamesCleanupModal).mockReset().mockResolvedValue(true);
   });
 
   function listWithBoundVanished(): VersionList {
@@ -284,7 +311,7 @@ describe("VersionPicker — vanished retained rows (#1570)", () => {
     return multiVersionList({ bound_vanished: true, versions });
   }
 
-  it("keeps a vanished active row visible, dimmed, disabled, labelled, and marked", async () => {
+  it("keeps a vanished active row visible, dimmed, labelled, marked, and non-switchable", async () => {
     vi.mocked(backend.getVersionList).mockResolvedValue(listWithBoundVanished());
 
     const { menu } = await renderAndOpen();
@@ -292,17 +319,95 @@ describe("VersionPicker — vanished retained rows (#1570)", () => {
     const items = within(menu.container).getAllByRole("menuitem");
     const vanishedRow = items.find((i) => i.textContent.includes("Game (USA)"));
     expect(vanishedRow).toBeTruthy();
-    expect(vanishedRow?.getAttribute("aria-disabled")).toBe("true");
     expect(vanishedRow?.textContent).toContain("No longer available on RomM");
     expect(vanishedRow?.textContent).toContain("Downloaded");
     expect(vanishedRow?.textContent).toContain("✓");
     expect((vanishedRow?.firstElementChild as HTMLElement | null)?.style.opacity).toBe("0.55");
+    // The row now carries the cleanup action, so "non-switchable" has to be
+    // asserted as behaviour: activating it can never rebind the shortcut to a
+    // version RomM no longer serves.
+    expect(within(vanishedRow!).getByLabelText("Remove local data")).toBeTruthy();
+    await clickRow(menu.container, "Game (USA)");
+    expect(backend.switchVersion).not.toHaveBeenCalled();
+    expect(openRemovedGamesCleanupModal).toHaveBeenCalledWith(1);
     // The live recovery target remains selectable.
     const liveRow = items.find((i) => i.textContent.includes("Game (Japan)"));
     expect(liveRow?.getAttribute("aria-disabled")).toBeNull();
   });
 
-  it("clicking an inactive vanished row is inert in code", async () => {
+  it("carries the cleanup affordance on the vanished row itself, marked destructive", async () => {
+    vi.mocked(backend.getVersionList).mockResolvedValue(listWithBoundVanished());
+
+    const { menu } = await renderAndOpen();
+
+    const items = within(menu.container).getAllByRole("menuitem");
+    const vanishedRow = items.find((i) => i.textContent.includes("Game (USA)"))!;
+    // A free-standing entry below the row belonged to no version visually; the
+    // trash sits ON the row, and the row is the single gamepad-focusable unit.
+    expect(within(vanishedRow).getByLabelText("Remove local data")).toBeTruthy();
+    expect(vanishedRow.getAttribute("data-tone")).toBe("destructive");
+    expect(vanishedRow.getAttribute("aria-disabled")).toBeNull();
+    // The live row offers no removal and stays a plain switch target.
+    const liveRow = items.find((i) => i.textContent.includes("Game (Japan)"))!;
+    expect(within(liveRow).queryByLabelText("Remove local data")).toBeNull();
+    expect(liveRow.getAttribute("data-tone")).toBeNull();
+  });
+
+  it("leaves the trash colour to CSS and opts only the menu row into the focused flip", async () => {
+    vi.mocked(backend.getVersionList).mockResolvedValue(listWithBoundVanished());
+
+    const { menu } = await renderAndOpen();
+    const rowTrash = within(menu.container).getByLabelText("Remove local data");
+
+    // An inline colour would survive Steam's repaint of the focused destructive
+    // row and leave a red icon on a red row, so the element must carry none.
+    expect(rowTrash.style.color).toBe("");
+    expect(rowTrash.getAttribute("fill")).toBe("currentColor");
+    expect(rowTrash.classList.contains("romm-vanished-trash")).toBe(true);
+    expect(rowTrash.classList.contains("romm-vanished-trash-row")).toBe(true);
+  });
+
+  it("keeps the singleton binding's trash out of the focused flip", async () => {
+    const bound = multiVersionList().versions![0]!;
+    vi.mocked(backend.getVersionList).mockResolvedValue({
+      multi_version: false,
+      server_query_failed: false,
+      bound_vanished: true,
+      bound_version: { ...bound, vanished: true },
+    });
+
+    const picker = render(<VersionPicker appId={APP_ID} />);
+    await picker.findByRole("button", { name: "Remove local data" });
+    const trash = picker.container.querySelector<SVGElement>("svg.romm-vanished-trash")!;
+
+    // This one sits in a .romm-disc-btn whose focus background stays dark —
+    // the black-on-focus rule would swap one invisible icon for another.
+    expect(trash).toBeTruthy();
+    expect(trash.classList.contains("romm-vanished-trash-row")).toBe(false);
+    expect(trash.style.color).toBe("");
+  });
+
+  it("offers no cleanup on a vanished row whose local data was never synced", async () => {
+    const list = listWithBoundVanished();
+    list.versions = (list.versions ?? []).map((v) => (v.rom_id === 1 ? { ...v, synced: false } : v));
+    vi.mocked(backend.getVersionList).mockResolvedValue(list);
+
+    const { menu } = await renderAndOpen();
+    const vanishedRow = within(menu.container)
+      .getAllByRole("menuitem")
+      .find((i) => i.textContent.includes("Game (USA)"))!;
+
+    // Nothing local to remove, so the row stays a dead end rather than offering
+    // a destructive action that would find nothing.
+    expect(within(vanishedRow).queryByLabelText("Remove local data")).toBeNull();
+    expect(vanishedRow.getAttribute("aria-disabled")).toBe("true");
+
+    await clickRow(menu.container, "Game (USA)");
+    expect(openRemovedGamesCleanupModal).not.toHaveBeenCalled();
+    expect(backend.switchVersion).not.toHaveBeenCalled();
+  });
+
+  it("never switches to a vanished row, inactive or not", async () => {
     const list = listWithBoundVanished();
     list.bound_vanished = false;
     list.versions = (list.versions ?? []).map((v) =>
@@ -313,8 +418,11 @@ describe("VersionPicker — vanished retained rows (#1570)", () => {
     const { menu } = await renderAndOpen();
     await clickRow(menu.container, "Game (USA)");
 
+    // Activating the row opens the cleanup confirmation — it can never rebind
+    // the shortcut to a version RomM no longer serves.
     expect(backend.switchVersion).not.toHaveBeenCalled();
     expect(toaster.toast).not.toHaveBeenCalled();
+    expect(openRemovedGamesCleanupModal).toHaveBeenCalledWith(1);
   });
 
   it("allows recovery by selecting a live alternative to the vanished binding", async () => {
@@ -329,6 +437,86 @@ describe("VersionPicker — vanished retained rows (#1570)", () => {
     await clickRow(menu.container, "Game (Japan)");
 
     expect(backend.switchVersion).toHaveBeenCalledWith(APP_ID, 2, false);
+  });
+
+  it("offers local cleanup only for a synced vanished row and scopes it to that ROM", async () => {
+    vi.mocked(backend.getVersionList).mockResolvedValue(listWithBoundVanished());
+
+    const { menu } = await renderAndOpen();
+    const cleanup = within(menu.container).getByLabelText("Remove local data");
+    await act(async () => {
+      fireEvent.click(cleanup.closest('[role="menuitem"]')!);
+      await Promise.resolve();
+    });
+
+    expect(openRemovedGamesCleanupModal).toHaveBeenCalledWith(1);
+    // One affordance for one vanished version — never a second, free-standing row.
+    expect(within(menu.container).getAllByLabelText("Remove local data")).toHaveLength(1);
+    expect(menu.container.textContent).not.toContain("Remove local data...");
+  });
+
+  it("offers local cleanup for a synced singleton vanished binding", async () => {
+    const bound = multiVersionList().versions![0]!;
+    vi.mocked(backend.getVersionList).mockResolvedValue({
+      multi_version: false,
+      server_query_failed: false,
+      bound_vanished: true,
+      bound_version: { ...bound, vanished: true },
+    });
+    vi.mocked(openRemovedGamesCleanupModal).mockResolvedValue(true);
+    const picker = render(<VersionPicker appId={APP_ID} />);
+    const cleanup = await picker.findByRole("button", { name: "Remove local data" });
+
+    fireEvent.click(cleanup);
+    await waitFor(() => expect(openRemovedGamesCleanupModal).toHaveBeenCalledWith(1));
+  });
+
+  it("explains WHY a singleton vanished binding only offers cleanup", async () => {
+    const bound = multiVersionList().versions![0]!;
+    vi.mocked(backend.getVersionList).mockResolvedValue({
+      multi_version: false,
+      server_query_failed: false,
+      bound_vanished: true,
+      bound_version: { ...bound, vanished: true },
+    });
+
+    const picker = render(<VersionPicker appId={APP_ID} />);
+    await picker.findByRole("button", { name: "Remove local data" });
+
+    // Without the label the lone destructive action has no stated cause.
+    expect(picker.container.textContent).toContain("No longer available on RomM");
+  });
+
+  it("renders nothing for a singleton whose binding is still live", async () => {
+    const bound = multiVersionList().versions![0]!;
+    vi.mocked(backend.getVersionList).mockResolvedValue({
+      multi_version: false,
+      server_query_failed: false,
+      bound_vanished: false,
+      bound_version: bound,
+    });
+
+    const { container } = render(<VersionPicker appId={APP_ID} />);
+
+    await waitFor(() => expect(vi.mocked(backend.getVersionList)).toHaveBeenCalledWith(APP_ID));
+    expect(container.textContent).not.toContain("No longer available on RomM");
+    expect(container.querySelector('[aria-label="Remove local data"]')).toBeNull();
+  });
+
+  it("surfaces an inline cleanup-preview failure", async () => {
+    vi.mocked(backend.getVersionList).mockResolvedValue(listWithBoundVanished());
+    vi.mocked(openRemovedGamesCleanupModal).mockRejectedValue(new Error("offline"));
+    const log = vi.spyOn(backend, "logError").mockImplementation(() => {});
+
+    const { menu } = await renderAndOpen();
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByLabelText("Remove local data").closest('[role="menuitem"]')!);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("offline"));
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM Sync", body: "Could not prepare local cleanup." });
   });
 });
 
@@ -350,6 +538,23 @@ describe("VersionPicker — liveness connection signals (#1570)", () => {
     render(<VersionPicker appId={APP_ID} />);
     await waitFor(() => expect(backend.getVersionList).toHaveBeenCalledWith(APP_ID));
 
+    expect(getRommConnectionState()).toBe("checking");
+  });
+
+  it("manufactures no verdict from a singleton vanished binding", async () => {
+    const bound = multiVersionList().versions![0]!;
+    vi.mocked(backend.getVersionList).mockResolvedValue({
+      multi_version: false,
+      server_query_failed: false,
+      bound_vanished: true,
+      bound_version: { ...bound, vanished: true },
+    });
+
+    const picker = render(<VersionPicker appId={APP_ID} />);
+    await picker.findByRole("button", { name: "Remove local data" });
+
+    // The 404 is an entity verdict; the server plainly answered, so neither
+    // "connected" nor "offline" may be inferred from it.
     expect(getRommConnectionState()).toBe("checking");
   });
 
@@ -542,6 +747,84 @@ describe("VersionPicker — per-version covers (#1346)", () => {
       logWarnSpy.mockRestore();
     }
   });
+
+  it("unmount aborts a delayed post-switch cover and releases only after its fetch settles", async () => {
+    const setArt = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("SteamClient", { Apps: { SetCustomArtworkForApp: setArt } });
+    vi.mocked(backend.switchVersion).mockResolvedValue({
+      success: true,
+      rom_id: 2,
+      target_installed: true,
+      launch_options: "cmd",
+      app_id: APP_ID,
+      prune_lease_token: "version-lease",
+    });
+    vi.mocked(backend.releasePruneConflictLease).mockResolvedValue({ success: true, message: "released" });
+    vi.mocked(backend.fetchCoverBase64).mockResolvedValue({ base64: null });
+    const { r, menu } = await renderAndOpen();
+    await waitFor(() => expect(backend.fetchCoverBase64).toHaveBeenCalledTimes(3));
+    let resolveCover!: (value: { base64: string }) => void;
+    vi.mocked(backend.fetchCoverBase64)
+      .mockReset()
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveCover = resolve;
+          }),
+      );
+
+    fireEvent.click(within(menu.container).getByText("Game (Japan)"));
+    await waitFor(() => expect(backend.fetchCoverBase64).toHaveBeenCalledWith(2));
+    r.unmount();
+    await Promise.resolve();
+    expect(backend.releasePruneConflictLease).not.toHaveBeenCalledWith("version-lease");
+    resolveCover({ base64: "LATE" });
+    await act(async () => {
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    });
+    await waitFor(() => expect(backend.releasePruneConflictLease).toHaveBeenCalledWith("version-lease"));
+
+    expect(setArt).not.toHaveBeenCalled();
+    expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+  });
+
+  it("releases a switch token that arrives after unmount without writing Steam", async () => {
+    vi.mocked(backend.fetchCoverBase64).mockResolvedValue({ base64: null });
+    let resolveSwitch!: (value: {
+      success: true;
+      rom_id: number;
+      target_installed: true;
+      launch_options: string;
+      app_id: number;
+      prune_lease_token: string;
+    }) => void;
+    vi.mocked(backend.switchVersion).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSwitch = resolve;
+        }),
+    );
+    vi.mocked(backend.releasePruneConflictLease).mockResolvedValue({ success: true, message: "released" });
+    const { r, menu } = await renderAndOpen();
+    vi.mocked(backend.fetchCoverBase64).mockClear();
+
+    fireEvent.click(within(menu.container).getByText("Game (Japan)"));
+    await waitFor(() => expect(backend.switchVersion).toHaveBeenCalledWith(APP_ID, 2, false));
+    r.unmount();
+    resolveSwitch({
+      success: true,
+      rom_id: 2,
+      target_installed: true,
+      launch_options: "cmd",
+      app_id: APP_ID,
+      prune_lease_token: "late-version-lease",
+    });
+
+    await waitFor(() => expect(backend.releasePruneConflictLease).toHaveBeenCalledWith("late-version-lease"));
+    expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+    expect(backend.fetchCoverBase64).not.toHaveBeenCalledWith(2);
+    expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+  });
 });
 
 /** Capture the events dispatched on `romm_data_changed` while `fn` runs. */
@@ -713,6 +996,39 @@ describe("VersionPicker — switching", () => {
     expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM Sync", body: "Could not switch version" });
     expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
   });
+
+  it("stays silent when the in-flight switch rejects only because the page unmounted", async () => {
+    const logWarnSpy = vi.spyOn(backend, "logWarn").mockImplementation(() => {});
+    try {
+      vi.mocked(backend.getVersionList).mockResolvedValue(multiVersionList());
+      let rejectSwitch!: (error: unknown) => void;
+      vi.mocked(backend.switchVersion).mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectSwitch = reject;
+          }),
+      );
+
+      const { r, menu } = await renderAndOpen();
+      fireEvent.click(within(menu.container).getByText("Game (Japan)"));
+      await waitFor(() => expect(backend.switchVersion).toHaveBeenCalledWith(APP_ID, 2, false));
+      r.unmount();
+      vi.mocked(toaster.toast).mockClear();
+
+      await act(async () => {
+        rejectSwitch(new Error("teardown cancelled the callable"));
+        for (let i = 0; i < 6; i++) await Promise.resolve();
+      });
+
+      // The picker is gone: a "Could not switch version" toast would blame the
+      // user's next screen for work that either committed or never ran.
+      expect(toaster.toast).not.toHaveBeenCalled();
+      expect(logWarnSpy).toHaveBeenCalledWith(expect.stringContaining("version switch continuation was cancelled"));
+      expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+    } finally {
+      logWarnSpy.mockRestore();
+    }
+  });
 });
 
 describe("VersionPicker — switch target liveness (#1570)", () => {
@@ -771,8 +1087,15 @@ describe("VersionPicker — switch target liveness (#1570)", () => {
     const target = within(refreshedMenu.container)
       .getAllByRole("menuitem")
       .find((item) => item.textContent.includes("Game (Japan)"));
-    expect(target?.getAttribute("aria-disabled")).toBe("true");
+    // The refused target converged out of the switchable set: it now states why
+    // and offers only the cleanup, so a repeat click can never re-attempt it.
     expect(target?.textContent).toContain("No longer available on RomM");
+    expect(within(target!).getByLabelText("Remove local data")).toBeTruthy();
+    expect(target?.getAttribute("data-tone")).toBe("destructive");
+
+    vi.mocked(backend.switchVersion).mockClear();
+    await clickRow(refreshedMenu.container, "Game (Japan)");
+    expect(backend.switchVersion).not.toHaveBeenCalled();
   });
 
   it("leaves connection state alone for version_vanished itself", async () => {
@@ -1092,6 +1415,87 @@ describe("VersionPicker — unsynced-saves soft-block", () => {
     expect(backend.switchVersion).toHaveBeenNthCalledWith(2, APP_ID, 2, false);
     expect(setLaunchOptionsConfirmed).toHaveBeenCalledWith(APP_ID, "");
     expect(dispatched.some((e) => e.detail?.type === "version_switched")).toBe(true);
+  });
+
+  it("unmount during save sync stops before the successor switch commits", async () => {
+    let resolveSync!: (value: { success: true; message: string; synced: number }) => void;
+    vi.mocked(backend.switchVersion).mockResolvedValue(block);
+    vi.mocked(backend.syncRomSaves).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSync = resolve;
+        }),
+    );
+    vi.mocked(showUnsyncedSavesModal).mockResolvedValue("sync_and_switch");
+    const { r, menu } = await renderAndOpen();
+
+    fireEvent.click(within(menu.container).getByText("Game (Japan)"));
+    await waitFor(() => expect(backend.syncRomSaves).toHaveBeenCalledWith(1));
+    r.unmount();
+    resolveSync({ success: true, message: "", synced: 1 });
+    await act(async () => {
+      for (let index = 0; index < 8; index++) await Promise.resolve();
+    });
+
+    expect(backend.switchVersion).toHaveBeenCalledTimes(1);
+    expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+    expect(invalidateCachedGameDetail).not.toHaveBeenCalled();
+  });
+
+  it("unmount during the unsynced-save modal stops before Switch anyway commits", async () => {
+    let resolveChoice!: (value: "switch_anyway") => void;
+    vi.mocked(backend.switchVersion).mockResolvedValue(block);
+    vi.mocked(showUnsyncedSavesModal).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveChoice = resolve;
+        }),
+    );
+    const { r, menu } = await renderAndOpen();
+
+    fireEvent.click(within(menu.container).getByText("Game (Japan)"));
+    await waitFor(() => expect(showUnsyncedSavesModal).toHaveBeenCalled());
+    r.unmount();
+    resolveChoice("switch_anyway");
+    await act(async () => {
+      for (let index = 0; index < 8; index++) await Promise.resolve();
+    });
+
+    expect(backend.switchVersion).toHaveBeenCalledTimes(1);
+    expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("a genuine remount admits its own switch while the old modal chain stays stale", async () => {
+    let resolveOldChoice!: (value: "switch_anyway") => void;
+    vi.mocked(backend.switchVersion)
+      .mockResolvedValueOnce(block)
+      .mockResolvedValueOnce(block)
+      .mockResolvedValueOnce(successResult);
+    vi.mocked(showUnsyncedSavesModal)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOldChoice = resolve;
+          }),
+      )
+      .mockResolvedValueOnce("switch_anyway");
+
+    const oldPicker = await renderAndOpen();
+    fireEvent.click(within(oldPicker.menu.container).getByText("Game (Japan)"));
+    await waitFor(() => expect(showUnsyncedSavesModal).toHaveBeenCalledTimes(1));
+    oldPicker.r.unmount();
+
+    const currentPicker = await renderAndOpen();
+    await clickRow(currentPicker.menu.container, "Game (Japan)");
+    resolveOldChoice("switch_anyway");
+    await act(async () => {
+      for (let index = 0; index < 8; index++) await Promise.resolve();
+    });
+
+    expect(backend.switchVersion).toHaveBeenCalledTimes(3);
+    expect(backend.switchVersion).toHaveBeenNthCalledWith(2, APP_ID, 2, false);
+    expect(backend.switchVersion).toHaveBeenNthCalledWith(3, APP_ID, 2, true);
+    expect(setLaunchOptionsConfirmed).toHaveBeenCalledWith(APP_ID, "");
   });
 
   it("routes a version_vanished 'Switch anyway' retry through the common refusal path", async () => {

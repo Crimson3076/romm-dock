@@ -29,7 +29,7 @@ import { DiscSelector } from "./DiscSelector";
 import { VersionPicker } from "./VersionPicker";
 import { WarningCard } from "./WarningCard";
 import { SgdbGamePickerModalContent } from "./SgdbGamePickerModal";
-import { applyArtwork } from "../utils/artwork";
+import { applyArtwork, cancelArtworkApply } from "../utils/artwork";
 import { hasAnySaveConflict } from "../utils/saveStatus";
 import { saveSyncToastBody } from "../utils/saveSyncToast";
 import { scrollToTop } from "../utils/scrollHelpers";
@@ -40,6 +40,7 @@ import {
   testConnection,
   probeReachability,
   getSaveStatus,
+  isCallableFailure,
   getBiosStatus,
   getPlatformCoreInfo,
   getSgdbResolution,
@@ -56,6 +57,15 @@ import {
   logError,
 } from "../api/backend";
 import { setLaunchOptionsConfirmed } from "../utils/steamShortcuts";
+import {
+  capturePruneLeaseAdmission,
+  isPruneLeaseCancelled,
+  isPruneLeaseCancellation,
+  mountPruneLeaseOwner,
+  releasePruneLeasesByOwner,
+  withPruneLease,
+  type PruneLeaseAdmission,
+} from "../utils/pruneLease";
 import { updatePlaytimeDisplay } from "../patches/metadataPatches";
 import { buildEmulatorMenu } from "../utils/emulatorMenu";
 import type { BiosStatus, DownloadCompleteEvent, EmulatorOption, SaveStatus } from "../types";
@@ -298,6 +308,7 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
 
   // Cache-first load: render instantly from cached data, then check connection in background
   useEffect(() => {
+    mountPruneLeaseOwner(`game-detail:${appId}`);
     let cancelled = false;
 
     detach(loadCached(appId, () => cancelled, romIdRef, setInfo));
@@ -311,7 +322,9 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       if (enabled) {
         const rid = romIdRef.current;
         if (rid) {
-          const saveStatus = await getSaveStatus(rid).catch((): SaveStatus | null => null);
+          const result = await getSaveStatus(rid).catch(() => null);
+          if (result && isCallableFailure(result)) return;
+          const saveStatus: SaveStatus | null = result;
           const { status: ss, label: sl } = applySaveSyncDisplay(saveStatus?.save_sync_display, saveStatus);
           setInfo((prev) => ({
             ...prev,
@@ -362,8 +375,9 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       if (!romId) return;
       // If event specifies a rom_id, skip if it's not for this game
       if (detail.rom_id && romIdRef.current && detail.rom_id !== romIdRef.current) return;
-      const saveStatus: SaveStatus | null =
-        detail.save_status ?? (await getSaveStatus(romId).catch((): SaveStatus | null => null));
+      const fetched = detail.save_status ?? (await getSaveStatus(romId).catch(() => null));
+      if (fetched && isCallableFailure(fetched)) return;
+      const saveStatus: SaveStatus | null = fetched;
       const { status: saveSyncStatus, label: saveSyncLabel } = applySaveSyncDisplay(
         saveStatus?.save_sync_display,
         saveStatus,
@@ -441,6 +455,8 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
 
     return () => {
       cancelled = true;
+      detach(cancelArtworkApply(appId));
+      detach(releasePruneLeasesByOwner(`game-detail:${appId}`));
       globalThis.removeEventListener("romm_data_changed", onDataChanged);
       removeEventListener("download_complete", onDownloadComplete);
       globalThis.removeEventListener("romm_rom_uninstalled", onUninstalled);
@@ -461,6 +477,10 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       try {
         const saveStatus = await getSaveStatus(romId);
         if (isCancelled) return;
+        if (isCallableFailure(saveStatus)) {
+          detach(debugLog(`RomMPlaySection: background save check deferred: ${saveStatus.message}`));
+          return;
+        }
         const hasConflict = hasAnySaveConflict(saveStatus);
         globalThis.dispatchEvent(
           new CustomEvent("romm_data_changed", {
@@ -566,6 +586,10 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       try {
         const result = await reconcilePlaytime(rid);
         if (isCancelled()) return;
+        if ("success" in result) {
+          detach(debugLog(`RomMPlaySection: playtime reconcile deferred: ${result.message}`));
+          return;
+        }
         if (!result.server_query_failed) {
           // Connected: adopt the restored cross-device last_played (#1294) and
           // refresh the display from it. Set BEFORE updatePlaytimeDisplay so the
@@ -610,6 +634,10 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       try {
         const saveStatus = await getSaveStatus(rid);
         if (isCancelled()) return;
+        if (isCallableFailure(saveStatus)) {
+          detach(debugLog(`RomMPlaySection: content-dir probe deferred: ${saveStatus.message}`));
+          return;
+        }
         const inContentDir = saveStatus.savefiles_in_content_dir === true;
         setInfo((prev) => ({ ...prev, savefilesInContentDir: inContentDir }));
       } catch (e) {
@@ -669,6 +697,7 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     }
     const romId = info.romId;
     setActionPending("artwork");
+    const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
     try {
       // Step 1: re-download the RomM cover, rename to {app_id}p.png, and
       // patch cover_path on the registry row so the game info panel can
@@ -728,7 +757,13 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
           );
           break;
       }
-    } catch {
+    } catch (e) {
+      // Leaving the game page cancels the artwork continuation mid-apply — that is
+      // teardown, not a refresh failure, so it must not toast at the next surface.
+      if (isPruneLeaseCancellation(e, admission)) {
+        detach(debugLog(`handleRefreshArtwork: continuation was cancelled: ${e}`));
+        return;
+      }
       toaster.toast({ title: "RomM Sync", body: "Failed to refresh artwork" });
     } finally {
       setActionPending(null);
@@ -830,15 +865,33 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
   const handleUninstall = async () => {
     if (actionPending || !info.romId) return;
     setActionPending("uninstall");
+    const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
     try {
       const result = await removeRom(info.romId);
       if (result.success) {
-        globalThis.dispatchEvent(new CustomEvent("romm_rom_uninstalled", { detail: { rom_id: info.romId } }));
+        await withPruneLease(
+          result.prune_lease_token,
+          "Game detail uninstall",
+          async (signal) => {
+            if (isPruneLeaseCancelled(signal)) return;
+            await setLaunchOptionsConfirmed(appId, "").catch(() => false);
+            if (isPruneLeaseCancelled(signal)) return;
+            globalThis.dispatchEvent(new CustomEvent("romm_rom_uninstalled", { detail: { rom_id: info.romId } }));
+          },
+          `game-detail:${appId}`,
+          admission,
+        );
         toaster.toast({ title: "RomM Sync", body: `${info.romName || "ROM"} uninstalled` });
       } else {
         toaster.toast({ title: "RomM Sync", body: result.message || "Uninstall failed" });
       }
-    } catch {
+    } catch (e) {
+      // The backend uninstall already committed before the continuation was torn
+      // down; reporting it as a failure would be a lie the user can't act on.
+      if (isPruneLeaseCancellation(e, admission)) {
+        detach(debugLog(`handleUninstall: continuation was cancelled: ${e}`));
+        return;
+      }
       toaster.toast({ title: "RomM Sync", body: "Uninstall failed" });
     } finally {
       setActionPending(null);
@@ -925,25 +978,30 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     romId: number,
     platformSlug: string,
     successBody: string,
+    admission: PruneLeaseAdmission,
   ) => {
-    if (!result.success) {
-      toaster.toast({ title: "RomM Sync", body: result.message || "Failed to set core" });
-      return;
-    }
-    // Installed + bound: confirm the re-baked launch_options landed before
-    // claiming success. app_id can be null/undefined for an unbound ROM.
-    if (result.launch_options !== undefined && result.app_id != null) {
-      const confirmed = await setLaunchOptionsConfirmed(result.app_id, result.launch_options);
-      if (!confirmed) {
-        // Never toast success on an unconfirmed bake. Keep the DB row — a Steam
-        // restart (or the next migration/re-sync) re-bakes from the override.
-        toaster.toast({ title: "RomM Sync", body: "Core saved — restart Steam to apply" });
+    await withPruneLease(result.prune_lease_token, "Core selection", async (signal) => {
+      if (!result.success) {
+        toaster.toast({ title: "RomM Sync", body: result.message || "Failed to set core" });
         return;
       }
-    }
-    // Confirmed (or uninstalled/unbound: nothing to confirm) → success.
-    toaster.toast({ title: "RomM Sync", body: successBody });
-    await refreshCoreDisplay(romId, platformSlug);
+      // Installed + bound: confirm the re-baked launch_options landed before
+      // claiming success. app_id can be null/undefined for an unbound ROM.
+      if (result.launch_options !== undefined && result.app_id != null) {
+        if (isPruneLeaseCancelled(signal)) return;
+        const confirmed = await setLaunchOptionsConfirmed(result.app_id, result.launch_options);
+        if (isPruneLeaseCancelled(signal)) return;
+        if (!confirmed) {
+          // Never toast success on an unconfirmed bake. Keep the DB row — a Steam
+          // restart (or the next migration/re-sync) re-bakes from the override.
+          toaster.toast({ title: "RomM Sync", body: "Core saved — restart Steam to apply" });
+          return;
+        }
+      }
+      // Confirmed (or uninstalled/unbound: nothing to confirm) → success.
+      toaster.toast({ title: "RomM Sync", body: successBody });
+      await refreshCoreDisplay(romId, platformSlug);
+    }, `game-detail:${appId}`, admission);
   };
 
   const handleChangeGameCore = async (coreLabel: string) => {
@@ -951,11 +1009,18 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     if (!romId || !info.platformSlug) return;
     const platformSlug = info.platformSlug;
     detach(debugLog(`handleChangeGameCore: romId=${romId} coreLabel=${coreLabel}`));
+    const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
     try {
       const result = await setGameCore(romId, coreLabel);
       detach(debugLog(`handleChangeGameCore: result success=${result.success}`));
-      await applyCoreResult(result, romId, platformSlug, `Core set to ${coreLabel}`);
-    } catch {
+      await applyCoreResult(result, romId, platformSlug, `Core set to ${coreLabel}`, admission);
+    } catch (e) {
+      // The core pin is persisted before the Steam continuation runs, so a
+      // teardown cancellation is not a "failed to set core" the user must see.
+      if (isPruneLeaseCancellation(e, admission)) {
+        detach(debugLog(`handleChangeGameCore: continuation was cancelled: ${e}`));
+        return;
+      }
       toaster.toast({ title: "RomM Sync", body: "Failed to set core" });
     }
   };
@@ -965,11 +1030,16 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     if (!romId || !info.platformSlug) return;
     const platformSlug = info.platformSlug;
     detach(debugLog(`handleResetGameCore: romId=${romId}`));
+    const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
     try {
       const result = await clearGameCore(romId);
       detach(debugLog(`handleResetGameCore: result success=${result.success}`));
-      await applyCoreResult(result, romId, platformSlug, "Now following the system core");
-    } catch {
+      await applyCoreResult(result, romId, platformSlug, "Now following the system core", admission);
+    } catch (e) {
+      if (isPruneLeaseCancellation(e, admission)) {
+        detach(debugLog(`handleResetGameCore: continuation was cancelled: ${e}`));
+        return;
+      }
       toaster.toast({ title: "RomM Sync", body: "Failed to reset core" });
     }
   };

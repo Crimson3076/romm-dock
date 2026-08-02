@@ -10,6 +10,9 @@ from __future__ import annotations
 import os
 import re
 
+BACKUP_DIR_NAME = ".romm-backup"
+"""Name of the per-saves-directory quarantine folder every removed save is moved into."""
+
 _TS = r"\d{8}_\d{6}"
 
 
@@ -60,3 +63,9 @@ def select_backups_to_prune(filename: str, existing: list[str], keep: int) -> li
     if len(matches) <= keep:
         return []
     return matches[: len(matches) - keep]
+
+
+def is_backup_for(filename: str, candidate: str) -> bool:
+    """Return whether *candidate* is a quarantine backup of *filename*."""
+    name, ext = os.path.splitext(filename)
+    return re.fullmatch(rf"{re.escape(name)}_{_TS}(?:_\d+)?{re.escape(ext)}", candidate) is not None

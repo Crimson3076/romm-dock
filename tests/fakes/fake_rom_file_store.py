@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from models.prune import MutationOutcome, SourceClaim
+
 
 class FakeRomFileStore:
     """In-memory ``RomFileStore`` for tests.
@@ -65,3 +71,34 @@ class FakeRomFileStore:
         for d in list(self.dirs):
             if d.startswith(prefix):
                 self.dirs.discard(d)
+
+    def claim_source(self, path: str, safe_root: str) -> SourceClaim:
+        exists = self.exists(path)
+        return {
+            "source_path": path,
+            "safe_root": safe_root,
+            "source_identity": {
+                "exists": exists,
+                "mount_id": 1 if exists else 0,
+                "device": 1 if exists else 0,
+                "inode": 1 if exists else 0,
+                "mode": 1 if exists else 0,
+                "size": 0,
+                "mtime_ns": 0,
+                "ctime_ns": 0,
+            },
+            "sha256": hashlib.sha256(self.files[path]).hexdigest() if path in self.files else None,
+            "entries": {},
+        }
+
+    def remove_claimed(self, path: str, safe_root: str, claim: SourceClaim) -> MutationOutcome:
+        del safe_root, claim
+        if self.is_dir(path):
+            self.remove_tree(path)
+            changed = True
+        elif path in self.files:
+            self.remove_file(path)
+            changed = True
+        else:
+            changed = False
+        return {"success": True, "changed": changed, "ambiguous": False, "message": "Source removed"}

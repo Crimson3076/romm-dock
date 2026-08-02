@@ -13,6 +13,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
+    from models.prune import SourceClaim
     from models.state import InstalledRomEntry, ShortcutRegistryEntry
     from models.sync import ClientSaveState
 
@@ -182,6 +185,18 @@ class InstalledRomRemoverFn(Protocol):
     async def __call__(self, rom_id: int) -> dict[str, Any]: ...
 
 
+class InstalledRomFilesRemoverFn(Protocol):
+    """Filesystem-only installed-ROM removal consumed by explicit prune."""
+
+    def __call__(self, rom_id: int, claims: dict[str, SourceClaim] | None = None) -> dict[str, Any]: ...
+
+
+class VersionSwitcherFn(Protocol):
+    """Version-switch authority consumed by explicit prune repointing."""
+
+    async def __call__(self, app_id: int, target_rom_id: int, allow_stranded: bool) -> dict[str, Any]: ...
+
+
 class RomRemoverProvider(Protocol):
     """Deferred access to the installed-ROM remover consumed by DownloadService.
 
@@ -208,6 +223,17 @@ class ActiveDownloadRomIdsFn(Protocol):
     """
 
     def __call__(self) -> set[int]: ...
+
+
+class PruneSaveCoordinator(Protocol):
+    """Exact-path save inventory, locking, and quarantine consumed by prune."""
+
+    def lock_prune_roms(self, rom_ids: list[int]) -> AbstractAsyncContextManager[None]: ...
+    def inventory_prune_saves(self, purge_rom_ids: list[int]) -> dict[str, Any]: ...
+    def quarantine_prune_saves(
+        self, files: list[dict[str, str]], claims: dict[str, SourceClaim] | None = None
+    ) -> dict[str, Any]: ...
+    def validate_prune_absences(self, claims: dict[str, SourceClaim]) -> bool: ...
 
 
 class AchievementsReader(Protocol):

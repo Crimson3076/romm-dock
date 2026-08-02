@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     import asyncio
     import logging
 
+    from models.prune import MutationOutcome, SourceClaim
+
     from domain.rom_install import RomInstall
     from services.protocols import (
         DownloadQueueCleanup,
@@ -62,7 +64,7 @@ class RomRemovalService:
         self._download_queue_cleanup = config.download_queue_cleanup
         self._uow_factory = config.uow_factory
 
-    def _delete_rom_files(self, install: RomInstall) -> None:
+    def _delete_rom_files(self, install: RomInstall, claims: dict[str, SourceClaim] | None = None) -> MutationOutcome:
         """Delete ROM files for an install record. Handles both single-file and multi-file ROMs.
 
         A multi-file ROM owns a dedicated per-ROM directory (``rom_dir`` is set)
@@ -76,16 +78,52 @@ class RomRemovalService:
         file_path = install.file_path
 
         roms_base = self._retrodeck_paths.roms_path()
-        if rom_dir and is_safe_rom_path(rom_dir, roms_base) and self._rom_file_store.is_dir(rom_dir):
-            self._rom_file_store.remove_tree(rom_dir)
-        elif file_path:
+        if rom_dir:
+            if not is_safe_rom_path(rom_dir, roms_base):
+                raise ValueError(f"Refusing to delete path outside roms directory: {rom_dir}")
+            if self._rom_file_store.exists(rom_dir) and not self._rom_file_store.is_dir(rom_dir):
+                raise ValueError(f"Expected installed ROM directory, found another file type: {rom_dir}")
+            return self._remove_under_claim(rom_dir, roms_base, claims)
+        if file_path:
             if not is_safe_rom_path(file_path, roms_base):
-                self._logger.error(f"Refusing to delete path outside roms directory: {file_path}")
-                return
+                raise ValueError(f"Refusing to delete path outside roms directory: {file_path}")
             if self._rom_file_store.is_dir(file_path):
-                self._rom_file_store.remove_tree(file_path)
-            elif self._rom_file_store.exists(file_path):
-                self._rom_file_store.remove_file(file_path)
+                raise ValueError(f"Expected installed ROM file, found a directory: {file_path}")
+            return self._remove_under_claim(file_path, roms_base, claims)
+        return {"success": True, "changed": False, "ambiguous": False, "message": "No installed path recorded"}
+
+    def _remove_under_claim(self, path: str, roms_base: str, claims: dict[str, SourceClaim] | None) -> MutationOutcome:
+        """Remove one already-guarded path under the claim that authorizes it.
+
+        A run that sealed the claim earlier hands it in, so the removal is
+        authorized by what the preview proved; anything else claims the source
+        here and is authorized by that.
+        """
+        claim = claims.get(path) if claims is not None else None
+        if claim is None:
+            claim = self._rom_file_store.claim_source(path, roms_base)
+        return self._rom_file_store.remove_claimed(path, roms_base, claim)
+
+    def delete_rom_files(self, rom_id: int, claims: dict[str, SourceClaim] | None = None) -> dict[str, Any]:
+        """Delete only installed content, leaving every database row untouched."""
+        with self._uow_factory() as uow:
+            install = uow.rom_installs.get(int(rom_id))
+        if install is None:
+            return {"success": False, "reason": "not_installed", "message": "ROM not installed"}
+        try:
+            outcome = self._delete_rom_files(install, claims)
+        except Exception as exc:
+            self._logger.error(f"Failed to delete ROM files: {exc}")
+            return {
+                "success": False,
+                "reason": ErrorCode.UNKNOWN.value,
+                "message": str(exc),
+                "changed": False,
+                "ambiguous": False,
+            }
+        if not outcome["success"]:
+            return {"reason": ErrorCode.UNKNOWN.value, **outcome}
+        return dict(outcome)
 
     def _remove_rom_io(self, rom_id: int, install: RomInstall) -> None:
         """Sync helper for remove_rom — file deletion (outside UoW) then row delete in a short write UoW.
@@ -101,7 +139,9 @@ class RomRemovalService:
         ``""`` keeps the next sync from re-touching an already-correct shortcut
         (delta apply, #1383). Third of the five recorded-state writer sites.
         """
-        self._delete_rom_files(install)
+        outcome = self._delete_rom_files(install)
+        if not outcome["success"]:
+            raise RuntimeError(outcome["message"])
         with self._uow_factory() as uow:
             uow.rom_installs.delete(rom_id)
             rom = uow.roms.get(rom_id)
@@ -149,7 +189,9 @@ class RomRemovalService:
         successfully_deleted: list[int] = []
         for install in installs:
             try:
-                self._delete_rom_files(install)
+                outcome = self._delete_rom_files(install)
+                if not outcome["success"]:
+                    raise RuntimeError(outcome["message"])
                 count += 1
                 successfully_deleted.append(install.rom_id)
             except Exception as e:

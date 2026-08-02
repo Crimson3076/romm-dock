@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import sys
 
 import pytest
@@ -15,6 +16,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 sys.path.insert(0, os.path.dirname(__file__))
 
 # conftest.py patches decky before this import
+from adapters.recovery_bundle import RecoveryBundleAdapter
+from adapters.rom_files import RomFileAdapter
+from domain.prune import BundleReadmeContext
 from domain.rom import Rom
 from domain.rom_install import RomInstall
 from services.rom_removal import RomRemovalService, RomRemovalServiceConfig
@@ -141,11 +145,36 @@ class TestDeleteRomFiles:
         assert system_dir in rom_files.dirs  # the system dir itself survives
         assert rom_files.remove_tree_calls == []
 
+    def test_single_file_record_pointing_at_nested_directory_fails_closed(self, service, rom_files):
+        nested = f"{_ROMS_BASE}/n64/shared-content"
+        rom_files.dirs.add(nested)
+        rom_files.files[f"{nested}/other.z64"] = b"keep"
+
+        install = _make_install(1, file_path=nested, rom_dir=None)
+        with pytest.raises(ValueError, match="Expected installed ROM file"):
+            service._delete_rom_files(install)
+
+        assert f"{nested}/other.z64" in rom_files.files
+        assert rom_files.remove_tree_calls == []
+
+    def test_filesystem_only_removal_leaves_install_and_rom_rows(self, service, uow, rom_files):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(7, file_path=rom_path))
+
+        result = service.delete_rom_files(7)
+
+        assert result["success"] is True
+        assert uow.roms.get(7) is not None
+        assert uow.rom_installs.get(7) is not None
+
     def test_refuses_file_outside_roms_dir(self, service, rom_files):
         evil = "/evil/important.txt"
         rom_files.files[evil] = b"do not delete"
 
-        service._delete_rom_files(_make_install(1, file_path=evil, rom_dir=None))
+        install = _make_install(1, file_path=evil, rom_dir=None)
+        with pytest.raises(ValueError, match="outside roms directory"):
+            service._delete_rom_files(install)
 
         assert evil in rom_files.files
         assert rom_files.remove_file_calls == []
@@ -155,7 +184,9 @@ class TestDeleteRomFiles:
         evil_dir = "/evil/dir"
         rom_files.files[f"{evil_dir}/file.txt"] = b"important"
 
-        service._delete_rom_files(_make_install(1, file_path="", rom_dir=evil_dir))
+        install = _make_install(1, file_path="", rom_dir=evil_dir)
+        with pytest.raises(ValueError, match="outside roms directory"):
+            service._delete_rom_files(install)
 
         assert f"{evil_dir}/file.txt" in rom_files.files
         assert rom_files.remove_tree_calls == []
@@ -167,6 +198,157 @@ class TestDeleteRomFiles:
     def test_empty_paths_no_crash(self, service):
         # No file_path, no rom_dir
         service._delete_rom_files(_make_install(1, file_path="", rom_dir=None))
+
+    def test_sealed_file_replacement_is_retained_at_mutation_time(self, tmp_path, logger):
+        roms = tmp_path / "roms"
+        rom_path = roms / "n64" / "game.z64"
+        rom_path.parent.mkdir(parents=True)
+        rom_path.write_bytes(b"sealed")
+        recovery = RecoveryBundleAdapter(
+            user_home=str(tmp_path),
+            package_name="decky-romm-sync",
+            plugin_version="test",
+        )
+        bundle = recovery.seal_bundle(
+            "Game_2026-07-24_romfile",
+            {"roms": [{"rom_id": 1}]},
+            [{"source_path": str(rom_path), "safe_root": str(roms), "kind": "installed_rom", "rom_id": 1}],
+            BundleReadmeContext(
+                bundle_id="Game_2026-07-24_romfile",
+                created_at="2026-07-24T12:00:00+00:00",
+                games=[],
+                playtime_lines=[],
+            ),
+            "playtime",
+        )
+        claims = recovery.source_claims(bundle)["claims"]
+        rom_path.unlink()
+        rom_path.write_bytes(b"replacement")
+        uow = FakeUnitOfWork()
+        _seed_install(uow, _make_install(1, file_path=str(rom_path)))
+        real_service = RomRemovalService(
+            config=RomRemovalServiceConfig(
+                logger=logger,
+                loop=asyncio.new_event_loop(),
+                rom_file_store=RomFileAdapter(),
+                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                download_queue_cleanup=None,
+                uow_factory=FakeUnitOfWorkFactory(uow),
+            )
+        )
+
+        result = real_service.delete_rom_files(1, claims)
+
+        assert result["success"] is False
+        assert "identity changed" in result["message"]
+        assert rom_path.read_bytes() == b"replacement"
+
+    def test_preopened_rom_writer_prevents_installed_file_deletion(self, tmp_path, logger):
+        roms = tmp_path / "roms"
+        rom_path = roms / "n64" / "game.z64"
+        rom_path.parent.mkdir(parents=True)
+        rom_path.write_bytes(b"installed")
+        uow = FakeUnitOfWork()
+        _seed_install(uow, _make_install(1, file_path=str(rom_path)))
+        real_service = RomRemovalService(
+            config=RomRemovalServiceConfig(
+                logger=logger,
+                loop=asyncio.new_event_loop(),
+                rom_file_store=RomFileAdapter(),
+                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                download_queue_cleanup=None,
+                uow_factory=FakeUnitOfWorkFactory(uow),
+            )
+        )
+        writer = os.open(rom_path, os.O_WRONLY)
+        try:
+            result = real_service.delete_rom_files(1)
+        finally:
+            os.close(writer)
+
+        assert result["success"] is False
+        assert "active writer" in result["message"]
+        assert rom_path.read_bytes() == b"installed"
+
+    def test_selected_directory_child_change_is_retained_at_mutation_time(self, tmp_path, logger):
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        rom_dir.mkdir(parents=True)
+        child = rom_dir / "disc.bin"
+        child.write_bytes(b"sealed")
+        recovery = RecoveryBundleAdapter(user_home=str(tmp_path), package_name="decky-romm-sync", plugin_version="test")
+        bundle = recovery.seal_bundle(
+            "Game_2026-07-24_romdir",
+            {"roms": [{"rom_id": 1}]},
+            [{"source_path": str(rom_dir), "safe_root": str(roms), "kind": "installed_rom", "rom_id": 1}],
+            BundleReadmeContext(
+                bundle_id="Game_2026-07-24_romdir",
+                created_at="2026-07-24T12:00:00+00:00",
+                games=[],
+                playtime_lines=[],
+            ),
+            "playtime",
+        )
+        claims = recovery.source_claims(bundle)["claims"]
+        child.write_bytes(b"replacement")
+        uow = FakeUnitOfWork()
+        _seed_install(uow, _make_install(1, file_path=str(child), rom_dir=str(rom_dir), system="psx"))
+        real_service = RomRemovalService(
+            config=RomRemovalServiceConfig(
+                logger=logger,
+                loop=asyncio.new_event_loop(),
+                rom_file_store=RomFileAdapter(),
+                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                download_queue_cleanup=None,
+                uow_factory=FakeUnitOfWorkFactory(uow),
+            )
+        )
+
+        result = real_service.delete_rom_files(1, claims)
+
+        assert result["success"] is False
+        assert "subtree changed" in result["message"]
+        assert child.read_bytes() == b"replacement"
+
+    def test_unselected_directory_replacement_after_final_claim_is_retained(self, tmp_path, logger, monkeypatch):
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        rom_dir.mkdir(parents=True)
+        (rom_dir / "disc.bin").write_bytes(b"original")
+        replacement = roms / "psx" / "Replacement"
+        replacement.mkdir()
+        (replacement / "disc.bin").write_bytes(b"replacement")
+        store = RomFileAdapter()
+        original_claim = store.claim_source
+
+        def claim_then_replace(path: str, safe_root: str):
+            claim = original_claim(path, safe_root)
+            shutil.rmtree(path)
+            replacement.rename(path)
+            return claim
+
+        monkeypatch.setattr(store, "claim_source", claim_then_replace)
+        uow = FakeUnitOfWork()
+        _seed_install(
+            uow,
+            _make_install(1, file_path=str(rom_dir / "disc.bin"), rom_dir=str(rom_dir), system="psx"),
+        )
+        real_service = RomRemovalService(
+            config=RomRemovalServiceConfig(
+                logger=logger,
+                loop=asyncio.new_event_loop(),
+                rom_file_store=store,
+                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                download_queue_cleanup=None,
+                uow_factory=FakeUnitOfWorkFactory(uow),
+            )
+        )
+
+        result = real_service.delete_rom_files(1)
+
+        assert result["success"] is False
+        assert "identity changed" in result["message"]
+        assert (rom_dir / "disc.bin").read_bytes() == b"replacement"
 
 
 class TestRemoveRom:
@@ -305,16 +487,20 @@ class TestRemoveRom:
         assert f"{_ROMS_BASE}/psx" in rom_files.dirs
 
     @pytest.mark.asyncio
-    async def test_path_traversal_rejected_record_still_deleted(self, service, uow, rom_files):
+    async def test_path_traversal_rejected_preserves_install_record(self, service, uow, rom_files):
         evil = "/etc/passwd"
         rom_files.files[evil] = b"root:x:0:0"
         _seed_install(uow, _make_install(99, file_path=evil, rom_dir=None))
 
         result = await service.remove_rom(99)
 
-        assert result["success"] is True
+        assert result == {
+            "success": False,
+            "reason": "unknown",
+            "message": "Failed to delete ROM files",
+        }
         assert evil in rom_files.files  # not deleted (outside roms dir)
-        assert uow.rom_installs.get(99) is None
+        assert uow.rom_installs.get(99) is not None
 
     @pytest.mark.asyncio
     async def test_removes_nested_single_file_entry(self, service, uow, rom_files):
@@ -447,7 +633,7 @@ class TestUninstallAllRoms:
         assert all(not p.startswith(rom_dir + "/") for p in rom_files.files)
 
     @pytest.mark.asyncio
-    async def test_outside_roms_dir_skipped_record_still_cleared(self, service, uow, rom_files):
+    async def test_outside_roms_dir_is_partial_failure_and_preserves_record(self, service, uow, rom_files):
         good_file = f"{_ROMS_BASE}/n64/game_a.z64"
         rom_files.files[good_file] = b"\x00" * 100
         bad_file = "/outside/game_b.z64"
@@ -459,12 +645,12 @@ class TestUninstallAllRoms:
             uow.rom_installs.save(_make_install(2, file_path=bad_file, rom_dir=None, system="snes"))
 
         result = await service.uninstall_all_roms()
-        assert result["success"] is True
+        assert result["success"] is False
+        assert result["removed_count"] == 1
+        assert len(result["errors"]) == 1
         assert good_file not in rom_files.files
         assert bad_file in rom_files.files  # not deleted (outside roms dir)
-        # Install records for the path-rejected (no exception) ROMs are still cleared:
-        # the safety guard returns silently, so the deletion is treated as "succeeded".
-        assert list(uow.rom_installs.iter_all()) == []
+        assert [install.rom_id for install in uow.rom_installs.iter_all()] == [2]
 
     @pytest.mark.asyncio
     async def test_partial_failure_reports_errors_and_not_success(self, service, uow, rom_files):

@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 plugin_dir = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(plugin_dir, "py_modules"))
@@ -17,6 +17,19 @@ from bootstrap import (
 )
 
 from lib.migration_gate import migration_blocked
+from lib.prune_gate import (
+    acquire_prune_conflict_lease,
+    prune_active_blocked,
+    prune_exclusive_start,
+    release_orphaned_frontend_leases,
+    retain_prune_conflict,
+)
+from lib.prune_gate import (
+    release_prune_conflict_lease as release_prune_gate_lease,
+)
+from lib.prune_gate import (
+    renew_prune_conflict_lease as renew_prune_gate_lease,
+)
 from lib.sync_gate import sync_active_blocked
 
 
@@ -59,6 +72,11 @@ class Plugin:
     # consumes the callback.
     _debug_logger = staticmethod(lambda _msg: None)
 
+    # The admission gate lives in ``lib`` and resolves its logger off the owner
+    # so it stays runtime-dependency-free. ``None`` keeps a bare ``Plugin()``
+    # silent; ``_main`` wires the real logger before any callable can run.
+    _prune_gate_logger = None
+
     def _log_debug(self, msg):
         """Forward a debug message through the wired ``DebugLogger`` adapter.
 
@@ -68,6 +86,29 @@ class Plugin:
         :class:`adapters.debug_logger.SettingsAwareDebugLogger`.
         """
         self._debug_logger(msg)
+
+    async def _emit_with_prune_continuation(self, event, /, *args):
+        """Attach a prune lease to events whose Steam writes outlive backend work."""
+        payload = cast("dict[str, Any]", args[0]) if args and isinstance(args[0], dict) else None
+        needs_lease = payload is not None and (
+            event == "sync_complete"
+            or (event == "sync_stale" and bool(payload.get("remove")))
+            or (event == "prune_complete" and payload.get("final") is not False and payload.get("publication_required"))
+            or (event == "download_complete" and payload.get("app_id") is not None)
+            or (event == "migration_relaunch_options" and bool(payload.get("items")))
+        )
+        lease_token = None
+        if needs_lease and payload is not None:
+            payload = dict(payload)
+            lease_token = await acquire_prune_conflict_lease(self, event)
+            payload["prune_lease_token"] = lease_token
+            args = (payload, *args[1:])
+        try:
+            await decky.emit(event, *args)
+        except BaseException:
+            if lease_token is not None:
+                await release_prune_gate_lease(self, lease_token)
+            raise
 
     async def _main(self):  # Decky lifecycle — must be async
         self.loop = asyncio.get_event_loop()
@@ -84,6 +125,7 @@ class Plugin:
         )
         self.settings = result.stores.settings
         self._debug_logger = result.handles.debug_logger
+        self._prune_gate_logger = decky.logger
         # Persistence adapter — held directly for the disk-touching callable
         # paths that read/write settings without routing through a service.
         self._persistence = result.handles.persistence
@@ -102,7 +144,7 @@ class Plugin:
                     logger=decky.logger,
                     plugin_dir=decky.DECKY_PLUGIN_DIR,
                     runtime_dir=decky.DECKY_PLUGIN_RUNTIME_DIR,
-                    emit=decky.emit,
+                    emit=self._emit_with_prune_continuation,
                     clock=result.runtime_adapters.clock,
                     uuid_gen=result.runtime_adapters.uuid_gen,
                     sleeper=result.runtime_adapters.sleeper,
@@ -130,6 +172,7 @@ class Plugin:
         self._core_service = services["core_service"]
         self._disc_service = services["disc_service"]
         self._version_switch_service = services["version_switch_service"]
+        self._prune_service = services["prune_service"]
         self._connection_service = services["connection_service"]
         self._startup_healing_service = services["startup_healing_service"]
         self._launch_gate_service = services["launch_gate_service"]
@@ -162,6 +205,7 @@ class Plugin:
 
     async def _unload(self):  # Decky lifecycle — must be async
         self._sync_service.shutdown()
+        await self._prune_service.shutdown()
         await self._download_service.shutdown()
         await self._migration_service.shutdown()
         await self._session_lifecycle_service.shutdown()
@@ -187,21 +231,27 @@ class Plugin:
     # framework, which requires `async def` even when no `await` is used.
     # S7503 warnings are suppressed in sonar-project.properties (fp1).
 
+    @prune_active_blocked
     async def test_connection(self):
         return await self._connection_service.test_connection()
 
+    @prune_active_blocked
     async def connect_with_credentials(self, romm_url, username, password, allow_insecure_ssl=None):
         return await self._connection_service.establish_token(romm_url, username, password, allow_insecure_ssl)
 
+    @prune_active_blocked
     async def connect_with_token(self, romm_url, token, allow_insecure_ssl=None):
         return await self._connection_service.establish_user_token(romm_url, token, allow_insecure_ssl)
 
+    @prune_active_blocked
     async def connect_with_pairing_code(self, romm_url, code, allow_insecure_ssl=None):
         return await self._connection_service.establish_paired_token(romm_url, code, allow_insecure_ssl)
 
+    @prune_active_blocked
     async def sign_out(self):
         return self._connection_service.sign_out()
 
+    @prune_active_blocked
     async def save_server_url(self, romm_url, allow_insecure_ssl=None):
         return self._settings_service.save_server_url(romm_url, allow_insecure_ssl)
 
@@ -223,6 +273,7 @@ class Plugin:
     async def get_known_regions(self):
         return self._settings_service.get_known_regions()
 
+    @prune_active_blocked
     async def apply_steam_input_setting(self):
         return self._settings_service.apply_steam_input_setting()
 
@@ -256,16 +307,28 @@ class Plugin:
         return self._game_detail_service.get_cached_game_detail(app_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def set_system_core(self, platform_slug, core_label):
-        return await self._core_service.set_system_core(platform_slug, core_label)
+        result = await self._core_service.set_system_core(platform_slug, core_label)
+        if result.get("success") and result.get("rebake_items"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "system_core")
+        return result
 
     @migration_blocked
+    @prune_active_blocked
     async def set_game_core(self, rom_id, label):
-        return await self._core_service.set_game_core(rom_id, label)
+        result = await self._core_service.set_game_core(rom_id, label)
+        if result.get("success") and result.get("launch_options") is not None and result.get("app_id") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "game_core")
+        return result
 
     @migration_blocked
+    @prune_active_blocked
     async def clear_game_core(self, rom_id):
-        return await self._core_service.clear_game_core(rom_id)
+        result = await self._core_service.clear_game_core(rom_id)
+        if result.get("success") and result.get("launch_options") is not None and result.get("app_id") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "game_core")
+        return result
 
     async def get_platform_core_info(self, rom_id):
         return await self._core_service.get_platform_core_info(rom_id)
@@ -276,8 +339,12 @@ class Plugin:
         return await self._disc_service.get_disc_selection(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def select_disc(self, rom_id, filename):
-        return await self._disc_service.select_disc(rom_id, filename)
+        result = await self._disc_service.select_disc(rom_id, filename)
+        if result.get("success") and result.get("launch_options") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "disc_selection")
+        return result
 
     # ── Version picker delegation to VersionSwitchService ──────────────
 
@@ -285,8 +352,58 @@ class Plugin:
         return await self._version_switch_service.get_version_list(app_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def switch_version(self, app_id, target_rom_id, allow_stranded):
-        return await self._version_switch_service.switch_version(app_id, target_rom_id, allow_stranded)
+        result = await self._version_switch_service.switch_version(app_id, target_rom_id, allow_stranded)
+        if result.get("success"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "version_switch")
+        return result
+
+    @migration_blocked
+    @sync_active_blocked
+    async def get_prune_preview(self, request):
+        return await self._prune_service.get_prune_preview(request)
+
+    async def stage_prune_installed_selection(self, request):
+        return await self._prune_service.stage_prune_installed_selection(request)
+
+    @prune_exclusive_start
+    @migration_blocked
+    @sync_active_blocked
+    async def start_prune(self, request):
+        return await self._prune_service.start_prune(request)
+
+    # Deliberately undecorated, like cancel_prune: a frontend that just mounted
+    # has to be able to disown leases stranded by the context before it, and a
+    # stranded lease is exactly what would otherwise refuse this call.
+    async def release_orphaned_prune_leases(self):
+        released = await release_orphaned_frontend_leases(self)
+        return {"success": True, "released": released}
+
+    # Deliberately undecorated: stopping the run is the one operation that must
+    # stay reachable while the prune claim is held.
+    async def cancel_prune(self, run_id):
+        return await self._prune_service.cancel_prune(run_id)
+
+    async def report_prune_action(self, request):
+        return await self._prune_service.report_prune_action(request)
+
+    async def wait_for_prune_release(self, run_id):
+        return await self._prune_service.wait_for_prune_release(run_id)
+
+    async def release_prune_conflict_lease(self, lease_token):
+        await release_prune_gate_lease(self, str(lease_token))
+        return {"success": True, "message": "Operation lease released."}
+
+    async def renew_prune_conflict_lease(self, lease_token):
+        renewed = await renew_prune_gate_lease(self, str(lease_token))
+        if not renewed:
+            return {
+                "success": False,
+                "reason": "stale_lease",
+                "message": "Operation lease is no longer active.",
+            }
+        return {"success": True, "message": "Operation lease renewed."}
 
     # ── Firmware delegation to FirmwareService ──────────────
 
@@ -351,6 +468,7 @@ class Plugin:
         return self._settings_service.set_collection_naming_mode(mode)
 
     @migration_blocked
+    @prune_active_blocked
     async def start_sync(self):
         return self._sync_service.start_sync()
 
@@ -361,10 +479,12 @@ class Plugin:
         return self._sync_service.sync_heartbeat()
 
     @migration_blocked
+    @prune_active_blocked
     async def sync_preview(self):
         return await self._sync_service.sync_preview()
 
     @migration_blocked
+    @prune_active_blocked
     async def sync_apply_delta(self, preview_id):
         return await self._sync_service.sync_apply_delta(preview_id)
 
@@ -377,6 +497,7 @@ class Plugin:
     async def get_session_budget_status(self):
         return await self._sync_service.get_session_budget_status()
 
+    @prune_active_blocked
     async def report_unit_results(self, rom_id_to_app_id, run_id, unit_id, chunk_index):
         return await self._sync_service.report_unit_results(rom_id_to_app_id, run_id, unit_id, chunk_index)
 
@@ -385,42 +506,60 @@ class Plugin:
 
     @migration_blocked
     @sync_active_blocked
+    @prune_active_blocked
     async def remove_platform_shortcuts(self, platform_slug):
-        return await self._shortcut_removal_service.remove_platform_shortcuts(platform_slug)
+        result = await self._shortcut_removal_service.remove_platform_shortcuts(platform_slug)
+        if result.get("success") and result.get("app_ids"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "shortcut_removal")
+        return result
 
     @migration_blocked
     @sync_active_blocked
+    @prune_active_blocked
     async def remove_all_shortcuts(self):
-        return self._shortcut_removal_service.remove_all_shortcuts()
+        result = self._shortcut_removal_service.remove_all_shortcuts()
+        if result.get("success") and result.get("app_ids"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "shortcut_removal")
+        return result
 
-    async def report_removal_results(self, removed_rom_ids):
-        return await self._shortcut_removal_service.report_removal_results(removed_rom_ids)
+    @prune_active_blocked
+    async def report_removal_results(self, removed_rom_ids, lease_token):
+        try:
+            return await self._shortcut_removal_service.report_removal_results(removed_rom_ids)
+        finally:
+            await release_prune_gate_lease(self, str(lease_token))
 
+    @prune_active_blocked
     async def reconcile_shortcuts(self, live_app_ids):
         return await self._shortcut_removal_service.reconcile_live_shortcuts(live_app_ids)
 
     async def get_artwork_base64(self, rom_id):
         return await self._artwork_service.get_artwork_base64(rom_id)
 
+    @prune_active_blocked
     async def fetch_cover_base64(self, rom_id):
         return await self._artwork_service.fetch_cover_base64(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def refresh_cover_artwork(self, rom_id):
         return await self._artwork_service.refresh_cover(int(rom_id))
 
     @migration_blocked
     @sync_active_blocked
+    @prune_active_blocked
     async def cleanup_orphaned_grid_images(self, live_app_ids, dry_run):
         return await self._artwork_service.cleanup_orphaned_grid_images(live_app_ids, dry_run)
 
     @migration_blocked
+    @prune_active_blocked
     async def clear_sync_cache(self):
         return self._sync_service.clear_sync_cache()
 
     async def get_sync_stats(self):
         return self._sync_service.get_sync_stats()
 
+    @prune_active_blocked
     async def evaluate_launch(self, steam_app_id):
         verdict = await self._launch_gate_service.evaluate(steam_app_id)
         return asdict(verdict)
@@ -428,25 +567,32 @@ class Plugin:
     async def check_local_drift(self, rom_id):
         return await self._launch_gate_service.check_local_drift(rom_id)
 
+    @prune_active_blocked
     async def get_rom_relaunch_options(self, rom_id):
-        """Return ``{app_id, launch_options}`` for one installed+bound ROM, or None.
+        """Return one lease-bearing relaunch item, a gate failure, or ``None``.
 
         The Play-button funnel re-confirms the shortcut's launch command from
         this just before launch to heal mid-session ``launch_options`` drift
-        (#1150). Read-only — no migration gate, no canonical failure shape.
+        (#1150). The lease covers the subsequent frontend Steam write.
         """
-        return await self.loop.run_in_executor(None, self._relaunch_options_resolver.relaunch_item_for_rom, int(rom_id))
+        item = await self.loop.run_in_executor(None, self._relaunch_options_resolver.relaunch_item_for_rom, int(rom_id))
+        if item is not None:
+            item["success"] = True
+            item["prune_lease_token"] = await acquire_prune_conflict_lease(self, "launch_reconfirm")
+        return item
 
     async def probe_reachability(self):
         return await self._connection_service.probe_reachability()
 
+    @prune_active_blocked
     async def refresh_save_status(self, rom_id):
         # Fire-and-forget: schedule the background status check (which re-reads
         # the conflict state and emits ``save_status_updated``) and return
         # immediately so the frontend never blocks on the round-trip. Mirrors the
         # create_task pattern in services/saves/slots/switching.py (same call,
         # same target); check_save_status_background owns its own error handling.
-        self.loop.create_task(self._save_sync_service.check_save_status_background(int(rom_id)))
+        task = self.loop.create_task(self._save_sync_service.check_save_status_background(int(rom_id)))
+        await retain_prune_conflict(self, task, "refresh_save_status")
         return {"success": True}
 
     async def stop_running_game(self, rom_id):
@@ -461,6 +607,7 @@ class Plugin:
         """
         return await self._game_process_service.stop_running_game(int(rom_id))
 
+    @prune_active_blocked
     async def finalize_game_session(self, rom_id):
         result = await self._session_lifecycle_service.finalize(rom_id)
         return asdict(result)
@@ -468,8 +615,13 @@ class Plugin:
     # ── Download delegation to DownloadService ──────────────
 
     @migration_blocked
+    @prune_active_blocked
     async def start_download(self, rom_id):
-        return await self._download_service.start_download(rom_id)
+        result = await self._download_service.start_download(rom_id)
+        task = self._download_service.task_for_rom(int(rom_id)) if result.get("success") else None
+        if task is not None:
+            await retain_prune_conflict(self, task, "start_download")
+        return result
 
     async def cancel_download(self, rom_id):
         return self._download_service.cancel_download(rom_id)
@@ -478,8 +630,13 @@ class Plugin:
         return self._download_service.pause_download(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def resume_download(self, rom_id):
-        return await self._download_service.resume_download(rom_id)
+        result = await self._download_service.resume_download(rom_id)
+        task = self._download_service.task_for_rom(int(rom_id)) if result.get("success") else None
+        if task is not None:
+            await retain_prune_conflict(self, task, "resume_download")
+        return result
 
     async def get_download_queue(self):
         return self._download_service.get_download_queue()
@@ -491,13 +648,21 @@ class Plugin:
         return self._download_service.get_installed_rom(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def remove_rom(self, rom_id):
-        return await self._rom_removal_service.remove_rom(rom_id)
+        result = await self._rom_removal_service.remove_rom(rom_id)
+        if result.get("success"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "rom_uninstall")
+        return result
 
     @migration_blocked
     @sync_active_blocked
+    @prune_active_blocked
     async def uninstall_all_roms(self):
-        return await self._rom_removal_service.uninstall_all_roms()
+        result = await self._rom_removal_service.uninstall_all_roms()
+        if result.get("app_ids"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "bulk_uninstall")
+        return result
 
     # ── Save Sync / Playtime delegation to services ──────────
 
@@ -507,6 +672,7 @@ class Plugin:
     async def list_devices(self):
         return await self._save_sync_service.list_devices()
 
+    @prune_active_blocked
     async def get_save_status(self, rom_id):
         return await self._save_sync_service.get_save_status(rom_id)
 
@@ -514,13 +680,16 @@ class Plugin:
         return self._save_sync_service.check_core_change(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def pre_launch_sync(self, rom_id):
         return await self._save_sync_service.pre_launch_sync(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def sync_rom_saves(self, rom_id):
         return await self._save_sync_service.sync_rom_saves(rom_id)
 
+    @prune_active_blocked
     async def get_save_slots(self, rom_id):
         return await self._save_sync_service.get_save_slots(rom_id)
 
@@ -528,6 +697,7 @@ class Plugin:
         return await self._save_sync_service.get_slot_saves(rom_id, slot)
 
     @migration_blocked
+    @prune_active_blocked
     async def switch_slot(self, rom_id, new_slot):
         return await self._save_sync_service.switch_slot(rom_id, new_slot)
 
@@ -535,6 +705,7 @@ class Plugin:
         return await self._save_sync_service.get_slot_delete_info(rom_id, slot)
 
     @migration_blocked
+    @prune_active_blocked
     async def delete_slot(self, rom_id, slot):
         return await self._save_sync_service.delete_slot(rom_id, slot)
 
@@ -545,6 +716,7 @@ class Plugin:
         return await self._save_sync_service.get_save_setup_info(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def confirm_slot_choice(
         self, rom_id, chosen_slot, migrate=False, migrate_from_slot=None, use_server_on_conflict=False
     ):
@@ -553,10 +725,12 @@ class Plugin:
         )
 
     @migration_blocked
+    @prune_active_blocked
     async def sync_all_saves(self):
         return await self._save_sync_service.sync_all_saves()
 
     @migration_blocked
+    @prune_active_blocked
     async def resolve_sync_conflict(self, rom_id, filename, server_save_id, action):
         return await self._save_sync_service.resolve_sync_conflict(rom_id, filename, server_save_id, action)
 
@@ -568,10 +742,12 @@ class Plugin:
         return self._save_sync_service.update_save_sync_settings(settings)
 
     @migration_blocked
+    @prune_active_blocked
     async def delete_local_saves(self, rom_id):
         return self._save_sync_service.delete_local_saves(rom_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def delete_platform_saves(self, platform_slug):
         return self._save_sync_service.delete_platform_saves(platform_slug)
 
@@ -579,20 +755,24 @@ class Plugin:
         return await self._save_sync_service.list_file_versions(rom_id, slot, filename)
 
     @migration_blocked
+    @prune_active_blocked
     async def saves_rollback_to_version(self, rom_id, slot, save_id):
         return await self._save_sync_service.rollback_to_version(rom_id, slot, save_id)
 
     @migration_blocked
+    @prune_active_blocked
     async def copy_save_to_slot(self, rom_id, save_id, target_slot):
         return await self._save_sync_service.copy_save_to_slot(rom_id, save_id, target_slot)
 
+    @prune_active_blocked
     async def record_session_start(self, rom_id):
         result = self._playtime_service.record_session_start(rom_id)
         # Fire-and-forget: drain any offline play-session backlog into RomM's
         # native ingest on the next launch; returns immediately so the launch is
         # never blocked on the round-trip. flush_pending_sessions owns its own
         # error handling (best-effort, offline-safe).
-        self._schedule_playtime_flush()
+        task = self._schedule_playtime_flush()
+        await retain_prune_conflict(self, task, "record_session_start")
         return result
 
     def _schedule_playtime_flush(self):
@@ -609,10 +789,12 @@ class Plugin:
         task = self.loop.create_task(self._playtime_service.flush_pending_sessions())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+        return task
 
     async def get_all_playtime(self):
         return self._playtime_service.get_all_playtime()
 
+    @prune_active_blocked
     async def reconcile_playtime(self, rom_id):
         return await self._playtime_service.reconcile_playtime(int(rom_id))
 
@@ -631,8 +813,12 @@ class Plugin:
 
     # ── SGDB delegation to SteamGridService ───────────────────────
 
+    @prune_active_blocked
     async def get_sgdb_artwork_base64(self, rom_id, asset_type_num):
-        return await self._sgdb_service.get_sgdb_artwork_base64(rom_id, asset_type_num)
+        result = await self._sgdb_service.get_sgdb_artwork_base64(rom_id, asset_type_num)
+        if result.get("base64") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "sgdb_artwork")
+        return result
 
     async def verify_sgdb_api_key(self, api_key=None):
         return await self._sgdb_service.verify_sgdb_api_key(api_key)
@@ -640,15 +826,18 @@ class Plugin:
     async def save_sgdb_api_key(self, api_key):
         return self._sgdb_service.save_sgdb_api_key(api_key)
 
+    @prune_active_blocked
     async def save_shortcut_icon(self, app_id, icon_base64):
         return await self._sgdb_service.save_shortcut_icon(app_id, icon_base64)
 
+    @prune_active_blocked
     async def get_sgdb_resolution(self, rom_id):
         return await self._sgdb_service.get_sgdb_resolution(rom_id)
 
     async def search_sgdb_games(self, term):
         return await self._sgdb_service.search_sgdb_games(term)
 
+    @prune_active_blocked
     async def apply_sgdb_game_id(self, rom_id, sgdb_id):
         return await self._sgdb_service.apply_sgdb_game_id(rom_id, sgdb_id)
 
@@ -663,11 +852,15 @@ class Plugin:
     async def get_app_id_rom_id_map(self):
         return self._metadata_service.get_app_id_rom_id_map()
 
+    @prune_active_blocked
     async def get_installed_relaunch_options(self):
-        """Return [{app_id, launch_options}] for every installed+bound ROM so the
-        frontend can re-confirm drifted Steam-shortcut launch commands at startup
-        (#1043). Read-only — not migration-gated."""
-        return await self.loop.run_in_executor(None, self._startup_healing_service.get_installed_relaunch_options)
+        """Return lease-bearing relaunch items for installed and bound ROMs.
+
+        The frontend uses them to heal Steam-shortcut drift at startup (#1043).
+        """
+        items = await self.loop.run_in_executor(None, self._startup_healing_service.get_installed_relaunch_options)
+        token = await acquire_prune_conflict_lease(self, "installed_reconcile") if items else None
+        return {"success": True, "items": items, "prune_lease_token": token}
 
     # ── Achievements delegation to AchievementsService ───────
 
@@ -679,6 +872,7 @@ class Plugin:
 
     # ── Migration delegation to MigrationService ──────────────
 
+    @prune_active_blocked
     async def migrate_retrodeck_files(self, conflict_strategy=None):
         return await self._migration_service.migrate_retrodeck_files(conflict_strategy)
 
@@ -688,6 +882,7 @@ class Plugin:
     async def get_save_sort_migration_status(self):
         return await self._migration_service.get_save_sort_migration_status()
 
+    @prune_active_blocked
     async def migrate_save_sort_files(self, conflict_strategy=None):
         return await self._migration_service.migrate_save_sort_files(conflict_strategy)
 

@@ -4,6 +4,7 @@ import {
   addShortcut,
   getExistingRomMShortcuts,
   getLiveRomMShortcutAppIds,
+  removeShortcutConfirmedOutcome,
   setLaunchOptionsConfirmed,
 } from "./steamShortcuts";
 import type { SyncAddItem } from "../types";
@@ -69,6 +70,94 @@ describe("setLaunchOptionsConfirmed", () => {
     await expect(promise).resolves.toBe(false);
     expect(setLaunchOptions).toHaveBeenCalledWith(99, "new-value");
     expect(unregister).toHaveBeenCalled();
+  });
+});
+
+describe("removeShortcutConfirmedOutcome", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("removes one shortcut and confirms absence from the live store", async () => {
+    const apps = new Map<number, object>([[77, {}]]);
+    const remove = vi.fn((appId: number) => apps.delete(appId));
+    vi.stubGlobal("collectionStore", { deckDesktopApps: { apps } });
+    vi.stubGlobal("SteamClient", {
+      Apps: {
+        RemoveShortcut: remove,
+        RegisterForAppDetails: (_appId: number, callback: (details: SteamAppDetails) => void) => {
+          queueMicrotask(() => callback({ strShortcutExe: "/plugin/bin/rom-launcher" }));
+          return { unregister: vi.fn() };
+        },
+      },
+    });
+
+    await expect(removeShortcutConfirmedOutcome(77)).resolves.toEqual({ status: "confirmed" });
+    expect(remove).toHaveBeenCalledWith(77);
+  });
+
+  it("refuses without mutating when the live shortcut store is unreadable", async () => {
+    const remove = vi.fn();
+    vi.stubGlobal("collectionStore", { deckDesktopApps: undefined });
+    vi.stubGlobal("SteamClient", { Apps: { RemoveShortcut: remove } });
+
+    await expect(removeShortcutConfirmedOutcome(77)).resolves.toEqual({ status: "not_attempted" });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("refuses a live appId whose executable is not RomM-owned", async () => {
+    const apps = new Map<number, object>([[77, {}]]);
+    const remove = vi.fn();
+    vi.stubGlobal("collectionStore", { deckDesktopApps: { apps } });
+    vi.stubGlobal("SteamClient", {
+      Apps: {
+        RemoveShortcut: remove,
+        RegisterForAppDetails: (_appId: number, callback: (details: SteamAppDetails) => void) => {
+          queueMicrotask(() => callback({ strShortcutExe: "/usr/bin/foreign-game" }));
+          return { unregister: vi.fn() };
+        },
+      },
+    });
+
+    await expect(removeShortcutConfirmedOutcome(77)).resolves.toEqual({ status: "not_attempted" });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("times out when Steam never removes the shortcut from its live store", async () => {
+    vi.useFakeTimers();
+    const apps = new Map<number, object>([[77, {}]]);
+    const remove = vi.fn();
+    vi.stubGlobal("collectionStore", { deckDesktopApps: { apps } });
+    vi.stubGlobal("SteamClient", {
+      Apps: {
+        RemoveShortcut: remove,
+        RegisterForAppDetails: (_appId: number, callback: (details: SteamAppDetails) => void) => {
+          queueMicrotask(() => callback({ strShortcutExe: "/plugin/bin/rom-launcher" }));
+          return { unregister: vi.fn() };
+        },
+      },
+    });
+
+    const result = removeShortcutConfirmedOutcome(77, 200);
+    await vi.advanceTimersByTimeAsync(200);
+
+    await expect(result).resolves.toEqual({ status: "attempted_unconfirmed" });
+    expect(apps.has(77)).toBe(true);
+  });
+
+  it("reports an attempted-but-unconfirmed outcome when the store becomes unreadable", async () => {
+    const apps = new Map<number, object>([[77, {}]]);
+    const store: { deckDesktopApps?: { apps: Map<number, object> } } = { deckDesktopApps: { apps } };
+    const remove = vi.fn(() => {
+      delete store.deckDesktopApps;
+    });
+    vi.stubGlobal("collectionStore", store);
+    vi.stubGlobal("SteamClient", { Apps: { RemoveShortcut: remove } });
+
+    await expect(removeShortcutConfirmedOutcome(77, 200, true)).resolves.toEqual({
+      status: "attempted_unconfirmed",
+    });
+    expect(remove).toHaveBeenCalledWith(77);
   });
 });
 

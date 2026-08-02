@@ -119,12 +119,18 @@ vi.mock("@decky/ui", () => {
       children,
       style,
       onButtonDown,
+      role,
+      tabIndex,
+      "aria-label": ariaLabel,
     }: AnyProps & { style?: unknown; onButtonDown?: (evt: unknown) => void }) =>
       createElement(
         "div",
         {
           "data-testid": "focusable",
           style,
+          role,
+          tabIndex,
+          "aria-label": ariaLabel,
           ref: (el: HTMLDivElement | null) => {
             if (!el) return;
             const prev = (el as unknown as { _deckyButtonDown?: EventListener })._deckyButtonDown;
@@ -154,7 +160,9 @@ vi.mock("@decky/ui", () => {
         onChange: (e: unknown) => p.onChange?.(e),
         onKeyDown: (e: unknown) => p.onKeyDown?.(e),
       }),
-    ToggleField: (p: AnyProps & { checked?: boolean; onChange?: (v: boolean) => void; label?: unknown }) =>
+    ToggleField: (
+      p: AnyProps & { checked?: boolean; onChange?: (v: boolean) => void; label?: unknown; description?: unknown },
+    ) =>
       createElement(
         "div",
         { "data-testid": "toggle" },
@@ -165,9 +173,21 @@ vi.mock("@decky/ui", () => {
           onChange: (e: { target: { checked: boolean } }) => p.onChange?.(e.target.checked),
         }),
         typeof p.label === "string" ? p.label : null,
+        // Mirrors the ButtonItem stub: a toggle's description carries real
+        // user-facing copy, so it has to be assertable rather than dropped.
+        p.description == null ? null : createElement("span", { "data-testid": "toggle-desc" }, p.description as never),
       ),
     Dropdown: passthrough("select"),
     DropdownItem: (p: AnyProps) => createElement("select", {}, p.children as never),
+    // Per-prop testids so bar wiring (nProgress / indeterminate) is assertable
+    // without a local re-mock; mirrors DownloadProgressRow's own stub.
+    ProgressBar: (p: AnyProps & { nProgress?: number; indeterminate?: boolean }) =>
+      createElement(
+        "div",
+        { "data-testid": "progress" },
+        createElement("span", { "data-testid": "progress-progress" }, String(p.nProgress)),
+        createElement("span", { "data-testid": "progress-indeterminate" }, String(p.indeterminate)),
+      ),
     Spinner: () => createElement("div", { "data-testid": "spinner" }),
     showModal: vi.fn(),
     showContextMenu: vi.fn(),

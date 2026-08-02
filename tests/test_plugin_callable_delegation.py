@@ -54,6 +54,8 @@ def plugin():
     p._launch_gate_service = MagicMock()
     p._session_lifecycle_service = MagicMock()
     p._game_process_service = MagicMock()
+    p._prune_service = MagicMock()
+    p._prune_service.is_active.return_value = False
     return p
 
 
@@ -225,7 +227,12 @@ class TestCoreCallableDelegation:
         )
         result = await plugin.set_game_core(42, "Snes9x")
         plugin._core_service.set_game_core.assert_awaited_once_with(42, "Snes9x")
-        assert result == {"success": True, "launch_options": "flatpak run …", "app_id": 99}
+        assert result == {
+            "success": True,
+            "launch_options": "flatpak run …",
+            "app_id": 99,
+            "prune_lease_token": "game_core:1",
+        }
 
     @pytest.mark.asyncio
     async def test_clear_game_core_delegates(self, plugin):
@@ -236,7 +243,12 @@ class TestCoreCallableDelegation:
         )
         result = await plugin.clear_game_core(42)
         plugin._core_service.clear_game_core.assert_awaited_once_with(42)
-        assert result == {"success": True, "launch_options": "flatpak run …", "app_id": 99}
+        assert result == {
+            "success": True,
+            "launch_options": "flatpak run …",
+            "app_id": 99,
+            "prune_lease_token": "game_core:1",
+        }
 
     @pytest.mark.asyncio
     async def test_get_platform_core_info_delegates(self, plugin):
@@ -432,7 +444,7 @@ class TestShortcutRemovalCallableDelegation:
     @pytest.mark.asyncio
     async def test_report_removal_results_delegates(self, plugin):
         plugin._shortcut_removal_service.report_removal_results = AsyncMock(return_value={"ok": True})
-        result = await plugin.report_removal_results([1, 2])
+        result = await plugin.report_removal_results([1, 2], None)
         plugin._shortcut_removal_service.report_removal_results.assert_awaited_once_with([1, 2])
         assert result == {"ok": True}
 
@@ -548,17 +560,20 @@ class TestDownloadCallableDelegation:
 class TestRomRemovalCallableDelegation:
     @pytest.mark.asyncio
     async def test_remove_rom_delegates(self, plugin):
-        plugin._rom_removal_service.remove_rom = AsyncMock(return_value={"removed": True})
+        plugin._rom_removal_service.remove_rom = AsyncMock(return_value={"success": True})
         result = await plugin.remove_rom(42)
         plugin._rom_removal_service.remove_rom.assert_awaited_once_with(42)
-        assert result == {"removed": True}
+        assert result["success"] is True
+        assert result["prune_lease_token"].startswith("rom_uninstall:")
 
     @pytest.mark.asyncio
     async def test_uninstall_all_roms_delegates(self, plugin):
-        plugin._rom_removal_service.uninstall_all_roms = AsyncMock(return_value={"removed": 3})
+        plugin._rom_removal_service.uninstall_all_roms = AsyncMock(return_value={"success": True, "app_ids": [42]})
         result = await plugin.uninstall_all_roms()
         plugin._rom_removal_service.uninstall_all_roms.assert_awaited_once_with()
-        assert result == {"removed": 3}
+        assert result["success"] is True
+        assert result["app_ids"] == [42]
+        assert result["prune_lease_token"].startswith("bulk_uninstall:")
 
 
 # ── Saves callables ───────────────────────────────────────────────────
@@ -657,7 +672,19 @@ class TestSgdbCallableDelegation:
         plugin._sgdb_service.get_sgdb_artwork_base64 = AsyncMock(return_value={"base64": "data"})
         result = await plugin.get_sgdb_artwork_base64(42, 1)
         plugin._sgdb_service.get_sgdb_artwork_base64.assert_awaited_once_with(42, 1)
+        token = result.pop("prune_lease_token")
+        assert token.startswith("sgdb_artwork:")
         assert result == {"base64": "data"}
+        assert (await plugin.release_prune_conflict_lease(token))["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_sgdb_artwork_without_image_creates_no_continuation_lease(self, plugin):
+        plugin._sgdb_service.get_sgdb_artwork_base64 = AsyncMock(return_value={"base64": None})
+
+        result = await plugin.get_sgdb_artwork_base64(42, 1)
+
+        assert result == {"base64": None}
+        assert plugin._prune_admission_gate.conflicting_operations == 0
 
     @pytest.mark.asyncio
     async def test_verify_sgdb_api_key_delegates(self, plugin):
@@ -834,8 +861,10 @@ class TestUnloadHook:
         plugin._download_service.shutdown = AsyncMock()
         plugin._migration_service.shutdown = AsyncMock()
         plugin._session_lifecycle_service.shutdown = AsyncMock()
+        plugin._prune_service.shutdown = AsyncMock()
         await plugin._unload()
         plugin._sync_service.shutdown.assert_called_once_with()
         plugin._download_service.shutdown.assert_awaited_once_with()
         plugin._migration_service.shutdown.assert_awaited_once_with()
         plugin._session_lifecycle_service.shutdown.assert_awaited_once_with()
+        plugin._prune_service.shutdown.assert_awaited_once_with()

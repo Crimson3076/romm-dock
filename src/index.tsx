@@ -13,7 +13,12 @@ import { estimatePlanSeconds } from "./utils/syncEstimate";
 import { beginEtaRun } from "./utils/syncEta";
 import { updateDownload, getDownloadState, removeDownload } from "./utils/downloadStore";
 import { handleGlobalDownloadFailure } from "./utils/downloadFailure";
-import { registerGameDetailPatch, unregisterGameDetailPatch, registerRomMAppId } from "./patches/gameDetailPatch";
+import {
+  registerGameDetailPatch,
+  unregisterGameDetailPatch,
+  registerRomMAppId,
+  unregisterRomMAppId,
+} from "./patches/gameDetailPatch";
 import {
   registerMetadataPatches,
   unregisterMetadataPatches,
@@ -31,8 +36,10 @@ import {
   getSaveSortMigrationStatus,
   getInstalledRelaunchOptions,
   testConnection,
+  invalidateCachedGameDetail,
   logError,
   logInfo,
+  waitForPruneRelease,
 } from "./api/backend";
 import {
   createOrUpdateCollections,
@@ -62,8 +69,21 @@ import type {
 import { setLaunchOptionsConfirmed } from "./utils/steamShortcuts";
 import { removeShortcutsPaced } from "./utils/shortcutRemoval";
 import { batchConfirmLaunchOptions } from "./utils/launchOptionsReconcile";
+import {
+  capturePruneLeaseAdmission,
+  isPruneLeaseCancelled,
+  mountPruneLeasePlugin,
+  releaseAllPruneLeases,
+  releasePruneLease,
+  withPruneLease,
+} from "./utils/pruneLease";
 import { withTimeout } from "./utils/withTimeout";
 import { fetchMetadataCachePages } from "./utils/metadataCache";
+import { cancelPruneActions, handlePruneAction } from "./utils/pruneActions";
+import type { PruneActionRequired } from "./utils/pruneActions";
+import { admitPruneFrame, setPruneComplete, setPruneProgress } from "./utils/pruneStore";
+import type { PruneComplete, PruneProgress } from "./utils/pruneStore";
+import { publishCommittedVersionSwitch } from "./utils/versionSwitchApplication";
 
 type Page = "main" | "settings" | "library" | "data" | "downloads" | "system";
 
@@ -172,6 +192,103 @@ function buildSyncCompleteToast(
   return { body };
 }
 
+const ROMM_COLLECTION_NAME = /^RomM: \[([^\]]+)\]/;
+const COLLECTION_HOST_SUFFIX = /\s\([^)]+\)$/;
+
+/** The platform a "RomM: <platform> (host)" collection is named after. */
+function platformOfCollection(displayName: string): string {
+  return displayName.slice(6).replace(COLLECTION_HOST_SUFFIX, "");
+}
+
+/** Whether a platform collection on this host no longer has a platform behind it. */
+function isStalePlatformCollection(displayName: string, suffix: string, activePlatforms: Set<string>): boolean {
+  if (!displayName.startsWith("RomM: ") || displayName.slice(6).startsWith("[")) return false;
+  if (!displayName.endsWith(suffix)) return false;
+  return !activePlatforms.has(platformOfCollection(displayName).toLowerCase());
+}
+
+/** Whether a "RomM: [name] (host)" collection on this host no longer has a RomM collection behind it. */
+function isStaleRomMCollection(displayName: string, suffix: string, activeNames: Set<string>): boolean {
+  if (!displayName.startsWith("RomM: [") || !displayName.endsWith(suffix)) return false;
+  const match = ROMM_COLLECTION_NAME.exec(displayName);
+  return match ? !activeNames.has(match[1]!.toLowerCase()) : false;
+}
+
+/**
+ * Drop this host's RomM collections whose source is gone. Scoped by the hostname
+ * suffix so a Steam-Cloud-synced collection belonging to another device is never
+ * touched.
+ */
+async function removeStaleCollections(
+  activePlatformNames: string[],
+  activeCollectionNames: string[],
+  signal: AbortSignal,
+): Promise<void> {
+  const hostname = await getHostname();
+  if (isPruneLeaseCancelled(signal)) return;
+  const suffix = ` (${hostname})`;
+  const activePlatforms = new Set(activePlatformNames.map((name) => name.toLowerCase()));
+  for (const collection of collectionStore.userCollections.filter((candidate) =>
+    isStalePlatformCollection(candidate.displayName, suffix, activePlatforms),
+  )) {
+    const platformName = platformOfCollection(collection.displayName);
+    logInfo(`Removing stale platform collection "${collection.displayName}"`);
+    await clearPlatformCollection(platformName, signal);
+    if (isPruneLeaseCancelled(signal)) return;
+  }
+  const activeNames = new Set(activeCollectionNames.map((name) => name.toLowerCase()));
+  for (const collection of collectionStore.userCollections.filter((candidate) =>
+    isStaleRomMCollection(candidate.displayName, suffix, activeNames),
+  )) {
+    logInfo(`Removing stale RomM collection "${collection.displayName}"`);
+    if (isPruneLeaseCancelled(signal)) return;
+    await collection.Delete();
+  }
+}
+
+/** Publish each committed version switch in order, stopping the moment the lease is cancelled. */
+async function publishSwitchesUntilCancelled(
+  pending: Array<{ appId: number; romId: number }>,
+  signal: AbortSignal,
+): Promise<void> {
+  for (const item of pending) {
+    if (isPruneLeaseCancelled(signal)) return;
+    await publishCommittedVersionSwitch(item.appId, item.romId, undefined, signal);
+  }
+}
+
+/** Name a committed shortcut action the way the completion toast says it. */
+function shortcutActionLabel(committedAction: string | undefined): string {
+  return committedAction === "remove_shortcut" ? "Shortcut removal" : "Shortcut repoint";
+}
+
+/**
+ * Say what a finished cleanup run did, leading with anything that committed a
+ * Steam change without finishing: an uncertain outcome and a committed-but-
+ * incomplete one both matter more to the user than the count of rows removed.
+ */
+function buildPruneCompleteToast(completed: PruneComplete): { body: string; subtext: string | undefined } {
+  const ambiguousPartial = completed.results.find((item) => item.status === "partial" && item.action_ambiguous);
+  const committedPartial = completed.results.find((item) => item.status === "partial" && item.committed_action);
+  const subtext = ambiguousPartial?.message ?? committedPartial?.message ?? completed.message;
+  if (ambiguousPartial) {
+    const label = shortcutActionLabel(ambiguousPartial.committed_action);
+    return { body: `${label} outcome is uncertain; source data was retained.`, subtext };
+  }
+  if (committedPartial) {
+    const label = shortcutActionLabel(committedPartial.committed_action);
+    return { body: `${label} committed; local cleanup incomplete.`, subtext };
+  }
+  const removed = completed.removed_count ?? completed.removed_rom_ids.length;
+  if (!removed) return { body: completed.message || "No removed RomM games were cleaned up.", subtext };
+  const skipped =
+    completed.problem_count ??
+    completed.results.filter((item) => ["failed", "skipped", "partial"].includes(item.status)).length;
+  const skippedNote = skipped ? `; ${skipped} group(s) skipped` : "";
+  const plural = removed === 1 ? "y" : "ies";
+  return { body: `Removed ${removed} local entr${plural}${skippedNote}.`, subtext };
+}
+
 /** Register every appId in *map* (values are per-key appId arrays) as RomM-owned. */
 function registerAppIds(map: Record<string, number[]>): void {
   for (const appIds of Object.values(map)) {
@@ -182,6 +299,8 @@ function registerAppIds(map: Record<string, number[]>): void {
 }
 
 export default definePlugin(() => {
+  mountPruneLeasePlugin();
+  const pluginAdmission = capturePruneLeaseAdmission();
   registerGameDetailPatch();
   registerLaunchInterceptor();
 
@@ -196,6 +315,8 @@ export default definePlugin(() => {
   const METADATA_PAGE_SIZE = 500;
   let initAttempt = 0;
   let initDone = false;
+  let syncContinuationController = new AbortController();
+  let staleRemovalTail: Promise<void> = Promise.resolve();
 
   async function loadAppIdsAndMetadata() {
     const appIdMap = await withTimeout(getAppIdRomIdMap(), CALLABLE_TIMEOUT);
@@ -253,11 +374,24 @@ export default definePlugin(() => {
       }
       // After backend reachability is confirmed, reconcile launch_options for
       // all installed+bound ROMs to heal any drift from a missed bake (#1043).
+      // This lease-issuing call must stay behind the awaited init round-trips:
+      // the orphan-lease disown dispatched at definePlugin entry has to land
+      // before any lease is issued to this mount — a lease issued earlier
+      // would be disowned while live, and its refused renewal would abort the
+      // continuation's Steam work mid-flight.
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `initDone` is flipped to true inside the awaited `loadAppIdsAndMetadata()`; TS's control-flow analysis can't see that cross-function mutation and narrows it to the `false` literal here. The guard is real: it gates the reconcile on the loop having actually reached a reachable backend.
       if (initDone) {
         try {
-          const items = await getInstalledRelaunchOptions();
-          await batchConfirmLaunchOptions(items, "startup_reconcile");
+          const result = await getInstalledRelaunchOptions();
+          if (result.success) {
+            await withPruneLease(
+              result.prune_lease_token,
+              "Startup reconcile",
+              (signal) => batchConfirmLaunchOptions(result.items, "startup_reconcile", signal),
+              "Startup reconcile",
+              pluginAdmission,
+            );
+          }
         } catch (e) {
           logError(`startup_reconcile: failed to reconcile launch options: ${e}`);
         }
@@ -370,7 +504,9 @@ export default definePlugin(() => {
      * "restart Steam" nudge to the completion toast (#1383).
      */
     restart_recommended?: boolean;
+    prune_lease_token?: string;
   }) => {
+    const syncAdmission = capturePruneLeaseAdmission();
     logInfo(`sync_complete received: ${data.total_games} games, cancelled=${data.cancelled ?? false}`);
 
     const { body, duration } = buildSyncCompleteToast(data, getSyncDelta());
@@ -403,133 +539,94 @@ export default definePlugin(() => {
     registerAppIds(data.platform_app_ids);
     registerAppIds(data.romm_collection_app_ids ?? {});
 
-    // Re-confirm launch_options for every installed+bound ROM after a sync. A
-    // normal sync skips unchanged platforms (no per-unit sync_apply_unit emit),
-    // so a shortcut whose launch_options drifted on an unchanged platform is
-    // otherwise healed only on the next plugin reload (startup reconcile) or
-    // Play press — never by the sync itself (#1151). Reuse the startup-reconcile
-    // mechanism: idempotent + appId-safe, runs regardless of cancellation.
-    detach(
-      (async () => {
-        try {
-          const items = await getInstalledRelaunchOptions();
-          await batchConfirmLaunchOptions(items, "sync_reconcile");
-        } catch (e) {
-          logError(`sync_reconcile: failed to reconcile launch options: ${e}`);
+    const reconcileLaunchOptions = async (signal: AbortSignal): Promise<void> => {
+      try {
+        const result = await getInstalledRelaunchOptions();
+        if (result.success) {
+          await withPruneLease(
+            result.prune_lease_token,
+            "Installed reconcile",
+            (innerSignal) => {
+              if (isPruneLeaseCancelled(innerSignal)) return Promise.resolve();
+              return batchConfirmLaunchOptions(result.items, "sync_reconcile", signal);
+            },
+            "Installed reconcile",
+            syncAdmission,
+          );
         }
-      })(),
-    );
+      } catch (e) {
+        logError(`sync_reconcile: failed to reconcile launch options: ${e}`);
+      }
+    };
 
-    // Create/update platform and RomM Steam collections + clean stale ones
-    detach(
-      (async () => {
-        try {
-          // Create/update platform collections
-          if (Object.keys(data.platform_app_ids).length > 0) {
-            await createOrUpdateCollections(data.platform_app_ids);
-          }
-
-          if (data.romm_collection_app_ids && Object.keys(data.romm_collection_app_ids).length > 0) {
-            await createOrUpdateRomMCollections(data.romm_collection_app_ids);
-          }
-
-          // Stale-collection cleanup deletes any RomM collection not in
-          // data.platform_app_ids / romm_collection_app_ids. On a cancelled run
-          // those maps are PARTIAL (only the platforms reached before the cancel,
-          // empty if the cancel fired before unit 1), so treating them as the
-          // authoritative active-set would delete collections for unreached
-          // platforms — wiping library organization. Only run cleanup on a
-          // completed sync. The additive create/update above stays safe on a
-          // partial run. (#1040)
-          if (!data.cancelled && typeof collectionStore !== "undefined") {
-            const hostname = await getHostname();
-            const suffix = ` (${hostname})`;
-
-            // Clean stale platform collections. Name comparison is
-            // case-insensitive: Steam's collection identity is case-insensitive,
-            // so a case-variant that IS active must not be treated as stale and
-            // deleted (which would orphan its games, #1569).
-            const activePlatforms = new Set(Object.keys(data.platform_app_ids).map((n) => n.toLowerCase()));
-            const stalePlatform = collectionStore.userCollections.filter((c) => {
-              if (!c.displayName.startsWith("RomM: ")) return false;
-              const afterPrefix = c.displayName.slice(6);
-              if (afterPrefix.startsWith("[")) return false; // Skip RomM collections
-              if (!c.displayName.endsWith(suffix)) return false; // Only this machine
-              const platformName = afterPrefix.replace(/\s\([^)]+\)$/, "");
-              return !activePlatforms.has(platformName.toLowerCase());
-            });
-            for (const c of stalePlatform) {
-              const afterPrefix = c.displayName.slice(6);
-              const platformName = afterPrefix.replace(/\s\([^)]+\)$/, "");
-              logInfo(`Removing stale platform collection "${c.displayName}"`);
-              await clearPlatformCollection(platformName);
-            }
-
-            // Clean stale RomM collection-based collections. Name comparison is
-            // case-insensitive (Steam's case-insensitive collection identity), so a
-            // case-variant that IS active is kept, not deleted/orphaned (#1569).
-            const activeNames = new Set(Object.keys(data.romm_collection_app_ids ?? {}).map((n) => n.toLowerCase()));
-            const rommCollectionPattern = /^RomM: \[([^\]]+)\]/;
-            const staleRomm = collectionStore.userCollections.filter((c) => {
-              if (!c.displayName.startsWith("RomM: [")) return false;
-              if (!c.displayName.endsWith(suffix)) return false;
-              const match = rommCollectionPattern.exec(c.displayName);
-              return match ? !activeNames.has(match[1]!.toLowerCase()) : false; // group 1 present whenever match is non-null
-            });
-            for (const c of staleRomm) {
-              logInfo(`Removing stale RomM collection "${c.displayName}"`);
-              await c.Delete();
-            }
-          }
-        } catch (e) {
-          logError(`Failed to manage RomM collections: ${e}`);
+    const reconcileCollections = async (signal: AbortSignal): Promise<void> => {
+      try {
+        if (Object.keys(data.platform_app_ids).length > 0) {
+          await createOrUpdateCollections(data.platform_app_ids, undefined, signal);
         }
-      })(),
-    );
-
-    // Re-apply playtime to Steam UI (app IDs may have changed after re-sync)
-    detach(
-      (async () => {
-        try {
-          const [{ playtime }, appIdMap] = await Promise.all([getAllPlaytime(), getAppIdRomIdMap()]);
-          await applyAllPlaytime(playtime, appIdMap);
-        } catch (e) {
-          logError(`Failed to re-apply playtime after sync: ${e}`);
+        if (isPruneLeaseCancelled(signal)) return;
+        if (data.romm_collection_app_ids && Object.keys(data.romm_collection_app_ids).length > 0) {
+          await createOrUpdateRomMCollections(data.romm_collection_app_ids, undefined, signal);
         }
-      })(),
-    );
+        if (isPruneLeaseCancelled(signal)) return;
+        if (!data.cancelled && typeof collectionStore !== "undefined") {
+          await removeStaleCollections(
+            Object.keys(data.platform_app_ids),
+            Object.keys(data.romm_collection_app_ids ?? {}),
+            signal,
+          );
+        }
+      } catch (e) {
+        logError(`Failed to manage RomM collections: ${e}`);
+      }
+    };
 
-    // Re-apply overview metadata (controller badge / metacritic score / store
-    // categories) to the freshly-synced ROMs. Init runs this pass once on mount,
-    // but onSyncComplete otherwise never re-runs it or refreshes the module-level
-    // metadata cache — so a ROM synced this session misses those overview fields
-    // until the next plugin mount (#1207). Re-fetch the full paged cache + the
-    // appId map, re-register the patches with the fresh data (replacing the
-    // init-time state), and re-apply. Mirrors the playtime re-apply above and
-    // runs on EVERY sync_complete, cancelled included: a partial run's committed
-    // units still have fresh metadata and applyAllMetadata is idempotent.
-    // Detached with its own try/catch so a re-fetch failure never breaks the
-    // toast, collections, or playtime paths.
-    //
-    // Known last-writer-wins (deliberately no generation guard): if init is still
-    // on its #1206 retry ladder when a sync completes, a late init registration
-    // can land after this one and overwrite the fresher sync-time cache — a ROM
-    // synced this session then falls back to pre-fix behavior until the next
-    // sync_complete or mount. Self-healing and never below the old baseline, so
-    // it isn't worth the guard.
+    const reconcilePlaytime = async (signal: AbortSignal): Promise<void> => {
+      try {
+        const [{ playtime }, appIdMap] = await Promise.all([getAllPlaytime(), getAppIdRomIdMap()]);
+        if (isPruneLeaseCancelled(signal)) return;
+        await applyAllPlaytime(playtime, appIdMap, signal);
+      } catch (e) {
+        logError(`Failed to re-apply playtime after sync: ${e}`);
+      }
+    };
+
+    const reconcileMetadata = async (signal: AbortSignal): Promise<void> => {
+      try {
+        const [cache, appIdMap] = await Promise.all([
+          fetchMetadataCachePages(METADATA_PAGE_SIZE, CALLABLE_TIMEOUT),
+          getAppIdRomIdMap(),
+        ]);
+        if (isPruneLeaseCancelled(signal)) return;
+        registerMetadataPatches(cache, appIdMap);
+        await applyAllMetadata(signal);
+      } catch (e) {
+        logError(`Failed to re-apply metadata after sync: ${e}`);
+      }
+    };
+
+    const continuationController = syncContinuationController;
+    const staleRemovals = staleRemovalTail;
     detach(
-      (async () => {
+      withPruneLease(data.prune_lease_token, "Sync completion", async (leaseSignal) => {
+        const abort = () => continuationController.abort();
+        if (leaseSignal.aborted) abort();
+        else leaseSignal.addEventListener("abort", abort, { once: true });
         try {
-          const [cache, appIdMap] = await Promise.all([
-            fetchMetadataCachePages(METADATA_PAGE_SIZE, CALLABLE_TIMEOUT),
-            getAppIdRomIdMap(),
+          const signal = continuationController.signal;
+          // Settle semantics, not Promise.all: one rejecting sibling must not
+          // release this lease while the others are still writing to Steam.
+          await Promise.allSettled([
+            staleRemovals,
+            reconcileLaunchOptions(signal),
+            reconcileCollections(signal),
+            reconcilePlaytime(signal),
+            reconcileMetadata(signal),
           ]);
-          registerMetadataPatches(cache, appIdMap);
-          await applyAllMetadata();
-        } catch (e) {
-          logError(`Failed to re-apply metadata after sync: ${e}`);
+        } finally {
+          leaseSignal.removeEventListener("abort", abort);
         }
-      })(),
+      }),
     );
   };
 
@@ -549,6 +646,8 @@ export default definePlugin(() => {
   // ``sync_plan`` arrives once per run with the full work queue (info only
   // for now — future PR adds a per-platform progress view).
   const syncPlanListener = addEventListener<[SyncPlanData]>("sync_plan", (data: SyncPlanData) => {
+    syncContinuationController.abort();
+    syncContinuationController = new AbortController();
     // sync_plan fires once per run, before any unit — reset the per-run delta
     // so the terminal toast counts only this run's created/removed shortcuts.
     resetSyncDelta();
@@ -608,7 +707,7 @@ export default definePlugin(() => {
   // shortcut by the ``app_id`` the backend captured BEFORE unbinding the
   // row. Resolving rom_id→app_id here (via getExistingRomMShortcuts) would
   // race the backend unbind and find nothing, orphaning the shortcut.
-  const syncStaleListener = addEventListener<[SyncStaleData]>("sync_stale", async (data: SyncStaleData) => {
+  const syncStaleListener = addEventListener<[SyncStaleData]>("sync_stale", (data: SyncStaleData) => {
     if (!Array.isArray(data.remove) || data.remove.length === 0) return;
     // Collect the valid app_ids and record the "removed" delta for each UP FRONT —
     // synchronously, before the first paced breather. recordSyncRemoved is a cheap,
@@ -627,8 +726,25 @@ export default definePlugin(() => {
         recordSyncRemoved(app_id);
       }
     }
-    await removeShortcutsPaced(appIds);
-    logInfo(`sync_stale: removed ${data.remove.length} stale shortcuts`);
+    const continuationController = syncContinuationController;
+    const previousTail = staleRemovalTail;
+    // The tail is stored and awaited later by the sync-completion continuation, so
+    // it carries its own catch: an unhandled rejection would otherwise sit on it
+    // for the whole window, and a rejected tail must not abort its awaiters.
+    staleRemovalTail = withPruneLease(data.prune_lease_token, "Sync stale removal", async (leaseSignal) => {
+      const abort = () => continuationController.abort();
+      if (leaseSignal.aborted) abort();
+      else leaseSignal.addEventListener("abort", abort, { once: true });
+      try {
+        await previousTail;
+        const signal = continuationController.signal;
+        if (isPruneLeaseCancelled(signal)) return;
+        await removeShortcutsPaced(appIds, undefined, signal);
+        if (!isPruneLeaseCancelled(signal)) logInfo(`sync_stale: removed ${data.remove.length} stale shortcuts`);
+      } finally {
+        leaseSignal.removeEventListener("abort", abort);
+      }
+    }).catch((e: unknown) => logError(`sync_stale: stale shortcut removal failed: ${e}`));
   });
 
   // ``sync_collections`` arrives at the end of the per-unit run with the
@@ -712,7 +828,10 @@ export default definePlugin(() => {
         detach(
           (async () => {
             try {
-              const ok = await setLaunchOptionsConfirmed(appId, data.launch_options);
+              const ok = await withPruneLease(data.prune_lease_token, "Download completion", async (signal) => {
+                if (isPruneLeaseCancelled(signal)) return false;
+                return setLaunchOptionsConfirmed(appId, data.launch_options);
+              });
               if (!ok) {
                 logError(`download_complete: failed to confirm launch options for rom ${data.rom_id} (appId ${appId})`);
               }
@@ -773,12 +892,15 @@ export default definePlugin(() => {
   // After a RetroDECK-home migration the backend rewrites each installed ROM's
   // launch command to the new path and emits the new command per shortcut.
   // Confirm-set each so existing shortcuts launch from the migrated location.
-  const migrationRelaunchListener = addEventListener<[{ items: { app_id: number; launch_options: string }[] }]>(
-    "migration_relaunch_options",
-    (data) => {
-      detach(batchConfirmLaunchOptions(data.items, "migration_relaunch_options"));
-    },
-  );
+  const migrationRelaunchListener = addEventListener<
+    [{ items: { app_id: number; launch_options: string }[]; prune_lease_token?: string }]
+  >("migration_relaunch_options", (data) => {
+    detach(
+      withPruneLease(data.prune_lease_token, "RetroDECK migration", (signal) =>
+        batchConfirmLaunchOptions(data.items, "migration_relaunch_options", signal),
+      ),
+    );
+  });
 
   // Server retry-ladder progress (#1345): the backend emits one frame per HTTP
   // retry so the saves surfaces can show "Connecting to RomM… (attempt N/M)".
@@ -791,12 +913,101 @@ export default definePlugin(() => {
     },
   );
 
+  // Destructive cleanup actions must keep running even when the Danger Zone or
+  // game-detail picker unmounts. The backend emits one tokenized action at a
+  // time; this root handler owns every Steam API mutation and reports the exact
+  // token outcome before backend filesystem/SQLite finalization can proceed.
+  const publishPruneSwitches = async (
+    runId: string,
+    pending: Array<{ appId: number; romId: number }>,
+    leaseToken: string | undefined,
+  ): Promise<void> => {
+    if (!leaseToken) {
+      logError("Cleanup publication was skipped because its continuation lease was missing.");
+      return;
+    }
+    await withPruneLease(
+      leaseToken,
+      "Cleanup repoint publication",
+      async (signal) => {
+        let lastMessage = "Cleanup claim release was not confirmed.";
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const released = await withTimeout(waitForPruneRelease(runId), 6000);
+            if (released.success) {
+              await publishSwitchesUntilCancelled(pending, signal);
+              return;
+            }
+            lastMessage = released.message;
+          } catch (e) {
+            lastMessage = e instanceof Error ? e.message : String(e);
+          }
+          if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+        }
+        logError(`Cleanup publication could not confirm claim release: ${lastMessage}`);
+      },
+      "root",
+      pluginAdmission,
+    );
+  };
+
+  const pruneActionListener = addEventListener<[PruneActionRequired]>(
+    "prune_action_required",
+    (action: PruneActionRequired) => {
+      if (!admitPruneFrame(action.preview_id, action.run_id)) return;
+      detach(handlePruneAction(action));
+    },
+  );
+
+  const pruneProgressListener = addEventListener<[PruneProgress]>("prune_progress", (progress: PruneProgress) =>
+    setPruneProgress(progress),
+  );
+
+  const pruneCompleteListener = addEventListener<[PruneComplete]>("prune_complete", (result: PruneComplete) => {
+    const completed = setPruneComplete(result);
+    if (!completed) return;
+    for (const appId of completed.affected_app_ids) invalidateCachedGameDetail(appId);
+    for (const appId of completed.removed_app_ids ?? []) unregisterRomMAppId(appId);
+    globalThis.dispatchEvent(
+      new CustomEvent("romm_data_changed", {
+        detail: {
+          type: "rom_pruned",
+          app_ids: completed.affected_app_ids,
+          rom_ids: completed.removed_rom_ids,
+        },
+      }),
+    );
+    cancelPruneActions();
+    const publications: Array<{ appId: number; romId: number }> = [];
+    for (const item of completed.results) {
+      if (
+        item.committed_action === "repoint_shortcut" &&
+        !item.action_ambiguous &&
+        item.app_id !== undefined &&
+        item.target_rom_id !== undefined
+      ) {
+        publications.push({ appId: item.app_id, romId: item.target_rom_id });
+      }
+    }
+    if (publications.length) {
+      detach(publishPruneSwitches(completed.run_id, publications, completed.prune_lease_token));
+    } else if (completed.prune_lease_token) {
+      // The terminal frame carried a continuation lease but committed no repoint
+      // to publish, so nothing downstream will ever release it. Handing it back
+      // now keeps it from pinning the admission gate until its TTL and refusing
+      // every conflicting callable in the meantime (#1570 F13).
+      detach(releasePruneLease(completed.prune_lease_token, "Cleanup completion with nothing to publish"));
+    }
+    toaster.toast({ title: "RomM Sync", ...buildPruneCompleteToast(completed) });
+  });
+
   return {
     name: "RomM Sync",
     icon: <FaGamepad />,
     content: <QAMPanel />,
     alwaysRender: true,
     onDismount() {
+      syncContinuationController.abort();
       destroySessionManager();
       unregisterLaunchInterceptor();
       unregisterGameDetailPatch();
@@ -815,6 +1026,11 @@ export default definePlugin(() => {
       removeEventListener("save_status_updated", saveStatusListener);
       removeEventListener("migration_relaunch_options", migrationRelaunchListener);
       removeEventListener("server_retry_progress", serverRetryListener);
+      removeEventListener("prune_action_required", pruneActionListener);
+      cancelPruneActions();
+      detach(releaseAllPruneLeases());
+      removeEventListener("prune_progress", pruneProgressListener);
+      removeEventListener("prune_complete", pruneCompleteListener);
     },
   };
 });

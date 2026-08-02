@@ -16,7 +16,6 @@ import {
   deletePlatformBios,
   setSystemCore,
   debugLog,
-  logError,
 } from "../api/backend";
 import type { FirmwarePlatformExt } from "../types";
 import { scrollToTop } from "../utils/scrollHelpers";
@@ -24,7 +23,13 @@ import { biosColorForLevel } from "../utils/biosColor";
 import { detach } from "../utils/detach";
 import { getEventTarget } from "../utils/events";
 import { buildEmulatorMenu } from "../utils/emulatorMenu";
-import { setLaunchOptionsConfirmed } from "../utils/steamShortcuts";
+import {
+  capturePruneLeaseAdmission,
+  mountPruneLeaseOwner,
+  releasePruneLeasesByOwner,
+  withPruneLease,
+} from "../utils/pruneLease";
+import { batchConfirmLaunchOptions } from "../utils/launchOptionsReconcile";
 
 /**
  * Build the per-platform summary label/description from the backend BIOS
@@ -97,6 +102,7 @@ interface SystemPageProps {
  * one call.
  */
 export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
+  const leaseOwner = "system-page";
   const [biosPlatforms, setBiosPlatforms] = useState<FirmwarePlatformExt[]>([]);
   const [biosLoading, setBiosLoading] = useState(true);
   const [biosError, setBiosError] = useState("");
@@ -124,8 +130,12 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
 
   // Load System data (core + BIOS) on mount — this page IS the System view.
   useEffect(() => {
+    mountPruneLeaseOwner(leaseOwner);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial async data loads on mount are the standard React pattern; the rule is overzealous here
     detach(refreshSystem());
+    return () => {
+      detach(releasePruneLeasesByOwner(leaseOwner));
+    };
   }, []);
 
   const handleDownloadAll = async (platformSlug: string) => {
@@ -206,6 +216,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
     const label = pickedLabel === defaultEmulator?.label ? "" : pickedLabel;
     detach(debugLog(`setSystemCore: slug=${platform.platform_slug} label=${label} (selected=${pickedLabel})`));
     try {
+      const admission = capturePruneLeaseAdmission(leaseOwner);
       const result = await setSystemCore(platform.platform_slug, label);
       detach(debugLog(`setSystemCore: result success=${result.success}`));
       if (result.success) {
@@ -215,23 +226,13 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
         // Mirrors the migration_relaunch_options fan-out in index.tsx
         // (bounded-concurrency batches so a platform with many ROMs doesn't
         // serialize worst-case per-shortcut confirm-poll timeouts).
-        const items = result.rebake_items ?? [];
-        const CONCURRENCY = 10;
-        for (let i = 0; i < items.length; i += CONCURRENCY) {
-          const batch = items.slice(i, i + CONCURRENCY);
-          await Promise.all(
-            batch.map(async (item) => {
-              try {
-                const ok = await setLaunchOptionsConfirmed(item.app_id, item.launch_options);
-                if (!ok) {
-                  logError(`setSystemCore: failed to confirm launch options for appId ${item.app_id}`);
-                }
-              } catch (e) {
-                logError(`setSystemCore: failed to set launch options for appId ${item.app_id}: ${e}`);
-              }
-            }),
-          );
-        }
+        await withPruneLease(
+          result.prune_lease_token,
+          "setSystemCore",
+          (signal) => batchConfirmLaunchOptions(result.rebake_items ?? [], "setSystemCore", signal),
+          leaseOwner,
+          admission,
+        );
         await refreshSystem();
         globalThis.dispatchEvent(
           new CustomEvent("romm_data_changed", {

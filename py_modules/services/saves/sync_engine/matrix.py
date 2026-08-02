@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any
 from domain.emulator_tag import build_emulator_tag
 from domain.iso_time import parse_iso_to_epoch
 from domain.rom_save_sync_state import FileSyncState, RomSaveSyncState
-from domain.save_backup import backup_name, select_backups_to_prune
-from domain.save_slot import save_in_slot
+from domain.save_backup import BACKUP_DIR_NAME, backup_name, select_backups_to_prune
+from domain.save_slot import filter_saves_to_slot
 from domain.sync_action import (
     Conflict,
     Download,
@@ -332,7 +332,9 @@ class MatrixExecutor:
         local_path = os.path.join(saves_dir, filename)
         if not self._save_file_store.is_file(local_path):
             return False
-        backup_dir = os.path.join(saves_dir, ".romm-backup")
+        backup_dir = os.path.join(saves_dir, BACKUP_DIR_NAME)
+        if self._save_file_store.is_symlink(backup_dir) or not self._save_file_store.is_within(backup_dir, saves_dir):
+            raise ValueError(f"Unsafe save backup directory: {backup_dir}")
         self._save_file_store.make_dirs(backup_dir)
         ts = self._clock.now().strftime("%Y%m%d_%H%M%S")
         existing = set(self._save_file_store.listdir(backup_dir))
@@ -516,21 +518,6 @@ class MatrixExecutor:
         with contextlib.suppress(OSError):
             self._save_file_store.remove_file(tmp)
 
-    @staticmethod
-    def filter_server_saves_to_slot(
-        server_saves: list[dict[str, Any]], active_slot: str | None
-    ) -> list[dict[str, Any]]:
-        """Filter server saves to the active slot by exact slot membership.
-
-        A legacy (``slot:null`` / ``""``) save belongs ONLY to the legacy slot —
-        it is never surfaced under a named slot. Sharing
-        :func:`domain.save_slot.save_in_slot` keeps the sync matrix, the status
-        display, and rollback consistent with the per-slot read/delete paths
-        (#1061): the legacy save is visible and syncable only in legacy mode, so
-        it can't bleed into a named slot's status or get downloaded into it.
-        """
-        return [ss for ss in server_saves if save_in_slot(ss, active_slot)]
-
     def _build_local_input(self, local_path: str, filename: str) -> dict[str, Any]:
         """Build the dict shape consumed by ``compute_sync_action``."""
         exists = self._save_file_store.is_file(local_path)
@@ -685,7 +672,7 @@ class MatrixExecutor:
         (empty regroup or surfaced conflict — nothing transferred).
         """
         server_saves = self._retry.with_retry(lambda: self._romm_api.list_saves(ctx.rom_id, device_id=ctx.device_id))
-        server_in_slot = self.filter_server_saves_to_slot(server_saves, ctx.save_state.active_slot)
+        server_in_slot = filter_saves_to_slot(server_saves, ctx.save_state.active_slot)
         group = [ss for ss in server_in_slot if local_save_target(ss, ctx.rom_name) == filename]
         if not group:
             self._logger.warning(
@@ -935,7 +922,7 @@ class MatrixExecutor:
         self._log_debug(f"[TIMING] do_sync_rom_saves({rom_id}): list_saves {self._clock.time() - t0:.3f}s")
 
         active_slot = save_state.active_slot
-        server_in_slot = self.filter_server_saves_to_slot(server_saves, active_slot)
+        server_in_slot = filter_saves_to_slot(server_saves, active_slot)
 
         self._log_debug(
             f"do_sync_rom_saves({rom_id}): system={system}, rom_name={info['rom_name']}, "

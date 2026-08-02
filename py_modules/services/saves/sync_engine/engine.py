@@ -367,13 +367,6 @@ class SyncEngine:
         """Record ``local_hash`` as the file's ``last_sync_hash`` baseline."""
         self._matrix.adopt_baseline_hash(save_state, filename, local_hash)
 
-    @staticmethod
-    def filter_server_saves_to_slot(
-        server_saves: list[dict[str, Any]], active_slot: str | None
-    ) -> list[dict[str, Any]]:
-        """Filter server saves to the active slot."""
-        return MatrixExecutor.filter_server_saves_to_slot(server_saves, active_slot)
-
     def build_sync_conflict_entry(
         self,
         rom_id: int,

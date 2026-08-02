@@ -18,6 +18,16 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
 
+    from models.prune import (
+        MutationOutcome,
+        RecoveryArtifact,
+        SealedSourceClaims,
+        SourceClaim,
+        SteamRecoverySnapshot,
+    )
+
+    from domain.prune import BundleReadmeContext
+
 
 class DirectoryFileListerFn(Protocol):
     """Recursively list the absolute paths of every file under a directory.
@@ -361,6 +371,14 @@ class RomFileStore(Protocol):
         """Recursively delete *path* and all contents."""
         ...
 
+    def claim_source(self, path: str, safe_root: str) -> SourceClaim:
+        """Capture the current no-follow source and complete subtree identity."""
+        ...
+
+    def remove_claimed(self, path: str, safe_root: str, claim: SourceClaim) -> MutationOutcome:
+        """Remove only the complete claimed source tree and report durable progress."""
+        ...
+
 
 class SaveFileStore(Protocol):
     """Filesystem seam for local save file operations.
@@ -388,6 +406,18 @@ class SaveFileStore(Protocol):
         """Return True when *path* exists and is a directory."""
         ...
 
+    def is_symlink(self, path: str) -> bool:
+        """Return True when *path* is a symbolic link, including dangling links."""
+        ...
+
+    def canonical_path(self, path: str) -> str:
+        """Return the canonical real path used for exact ownership comparison."""
+        ...
+
+    def is_within(self, path: str, root: str) -> bool:
+        """Return whether canonical *path* is contained by canonical *root*."""
+        ...
+
     def make_dirs(self, path: str) -> None:
         """Create *path* and any missing parents. Idempotent."""
         ...
@@ -405,6 +435,18 @@ class SaveFileStore(Protocol):
 
         Uses ``os.replace`` semantics — same-filesystem only.
         """
+        ...
+
+    def claim_source(self, path: str, safe_root: str) -> SourceClaim:
+        """Capture the current no-follow source and complete subtree identity."""
+        ...
+
+    def ensure_directory(self, path: str, safe_root: str) -> None:
+        """Create a directory through anchored no-follow parents and fsync each creation."""
+        ...
+
+    def rename_claimed(self, src: str, dst: str, safe_root: str, claim: SourceClaim) -> MutationOutcome:
+        """Rename only the complete claimed source and report durable progress."""
         ...
 
     def get_mtime(self, path: str) -> float:
@@ -506,3 +548,42 @@ class SgdbArtworkCache(Protocol):
     def read_bytes(self, path: str) -> bytes:
         """Return the contents of *path* as raw bytes."""
         ...
+
+
+class RecoveryBundleStore(Protocol):
+    """Build and seal verified recovery bundles under the plugin recovery root."""
+
+    def root(self) -> str: ...
+    def free_bytes(self) -> int: ...
+    def measure_path(self, path: str, safe_root: str) -> int: ...
+    def validate_sources(self, bundle_path: str, bundle_digest: str | None = None) -> bool: ...
+    def source_claims(self, bundle_path: str) -> SealedSourceClaims: ...
+    def seal_bundle(
+        self,
+        bundle_id: str,
+        snapshot: dict[str, object],
+        artifacts: list[RecoveryArtifact],
+        readme_context: BundleReadmeContext,
+        playtime_text: str,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> str: ...
+
+
+class PruneArtifactStore(Protocol):
+    """Own per-ROM cover and SteamGridDB cache artifacts during cleanup."""
+
+    def recovery_artifacts(self, rom_ids: list[int]) -> list[RecoveryArtifact]: ...
+    def remove(self, rom_ids: list[int], claims: dict[str, SourceClaim] | None = None) -> MutationOutcome: ...
+
+
+class SteamRecoveryStore(Protocol):
+    """Own per-shortcut Steam Input/grid recovery files and controller state."""
+
+    def snapshot(self, app_id: int) -> SteamRecoverySnapshot: ...
+    def validate_state(self, app_id: int, snapshot: SteamRecoverySnapshot) -> bool: ...
+    def remove_state(
+        self,
+        app_id: int,
+        snapshot: SteamRecoverySnapshot,
+        claims: dict[str, SourceClaim],
+    ) -> MutationOutcome: ...

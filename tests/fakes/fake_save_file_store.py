@@ -13,6 +13,8 @@ from domain.save_hash import combine_zip_entry_hashes
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from models.prune import MutationOutcome, SourceClaim
+
 
 class FakeSaveFileStore:
     """In-memory ``SaveFileStore`` for tests.
@@ -72,6 +74,16 @@ class FakeSaveFileStore:
         prefix = path.rstrip("/") + "/"
         return any(stored.startswith(prefix) for stored in self.files)
 
+    def is_symlink(self, path: str) -> bool:
+        del path
+        return False
+
+    def canonical_path(self, path: str) -> str:
+        return path
+
+    def is_within(self, path: str, root: str) -> bool:
+        return path == root or path.startswith(root.rstrip("/") + "/")
+
     def make_dirs(self, path: str) -> None:
         self.dirs.add(path)
 
@@ -101,6 +113,38 @@ class FakeSaveFileStore:
             self.mtimes[dst] = self.mtimes.pop(src)
         else:
             self._ensure_mtime(dst)
+
+    def claim_source(self, path: str, safe_root: str) -> SourceClaim:
+        exists = path in self.files
+        return {
+            "source_path": path,
+            "safe_root": safe_root,
+            "source_identity": {
+                "exists": exists,
+                "mount_id": 1 if exists else 0,
+                "device": 1 if exists else 0,
+                "inode": 1 if exists else 0,
+                "mode": 1 if exists else 0,
+                "size": len(self.files.get(path, b"")),
+                "mtime_ns": 0,
+                "ctime_ns": 0,
+            },
+            "sha256": hashlib.sha256(self.files[path]).hexdigest() if exists else None,
+            "entries": {},
+        }
+
+    def ensure_directory(self, path: str, safe_root: str) -> None:
+        del safe_root
+        self.make_dirs(path)
+
+    def rename_claimed(self, src: str, dst: str, safe_root: str, claim: SourceClaim) -> MutationOutcome:
+        if not claim["source_identity"]["exists"]:
+            if src in self.files:
+                raise RuntimeError(f"Recovery source appeared after sealing: {src}")
+            return {"success": True, "changed": False, "ambiguous": False, "message": "Source was already absent"}
+        del safe_root
+        self.rename(src, dst)
+        return {"success": True, "changed": True, "ambiguous": False, "message": "Source renamed"}
 
     def get_mtime(self, path: str) -> float:
         if path not in self.files:

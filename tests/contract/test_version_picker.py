@@ -234,11 +234,11 @@ async def test_get_version_list_solo_group_not_multi(harness):
     _seed_rom(harness, rom_id=1, app_id=_APP_ID)
     harness.romm.roms[1] = {"id": 1, "sibling_roms": []}
     result = await harness.plugin.get_version_list(_APP_ID)
-    assert result == {
-        "multi_version": False,
-        "server_query_failed": False,
-        "bound_vanished": False,
-    }
+    assert result["multi_version"] is False
+    assert result["server_query_failed"] is False
+    assert result["bound_vanished"] is False
+    assert result["bound_version"]["rom_id"] == 1
+    assert result["bound_version"]["active"] is True
 
 
 async def test_get_version_list_unknown_app_not_multi(harness):
@@ -291,11 +291,14 @@ async def test_get_version_list_single_bound_404_preserves_non_multi_verdict(har
 
     result = await harness.plugin.get_version_list(_APP_ID)
 
-    assert result == {
-        "multi_version": False,
-        "server_query_failed": False,
-        "bound_vanished": True,
-    }
+    assert set(result) == {"multi_version", "server_query_failed", "bound_vanished", "bound_version"}
+    assert result["multi_version"] is False
+    assert result["server_query_failed"] is False
+    assert result["bound_vanished"] is True
+    assert result["bound_version"]["rom_id"] == 1
+    assert result["bound_version"]["synced"] is True
+    assert result["bound_version"]["active"] is True
+    assert result["bound_version"]["vanished"] is True
 
 
 # ── switch_version ───────────────────────────────────────────────────────
@@ -325,6 +328,8 @@ async def test_switch_version_happy_moves_binding(harness):
     harness.romm.roms[1] = {"id": 1, "sibling_roms": [{"id": 2}]}
 
     result = await harness.plugin.switch_version(_APP_ID, 2, False)
+    lease_token = result.pop("prune_lease_token")
+    assert lease_token.startswith("version_switch:")
     assert result == {
         "success": True,
         "rom_id": 2,

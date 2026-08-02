@@ -37,6 +37,19 @@ import { formatUninstallStatus } from "../utils/formatters";
 import type { RegistryPlatform } from "../types";
 import { detach } from "../utils/detach";
 import { fuzzyMatch } from "../utils/fuzzyMatch";
+import { RemovedGamesCleanupSection } from "./RemovedGamesCleanup";
+import {
+  capturePruneLeaseAdmission,
+  isPruneLeaseCancelled,
+  isPruneLeaseCancellation,
+  mountPruneLeaseOwner,
+  releasePruneLeasesByOwner,
+  withPruneLease,
+} from "../utils/pruneLease";
+import { withTimeout } from "../utils/withTimeout";
+
+const REMOVAL_REPORT_TIMEOUT_MS = 15000;
+const DANGER_ZONE_LEASE_OWNER = "danger-zone";
 
 const DEFAULT_WHITELIST_PATTERNS: string[] = [
   "retrodeck",
@@ -198,6 +211,7 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
   const handleRemoveShortcuts = (p: RegistryPlatform) =>
     runRemoval(async (onProgress) => {
       setActionStatus(`Removing ${p.name} shortcuts...`);
+      const admission = capturePruneLeaseAdmission(DANGER_ZONE_LEASE_OWNER);
       try {
         const result = await removePlatformShortcuts(p.slug);
         // The @migration_blocked / @sync_active_blocked gates short-circuit to
@@ -207,15 +221,34 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
           setActionStatus(result.message ?? "Failed to remove shortcuts");
           return;
         }
-        await removeShortcutsPaced(result.app_ids ?? [], onProgress);
-        if (result.rom_ids?.length) {
-          await reportRemovalResults(result.rom_ids);
-        }
-        await clearPlatformCollection(result.platform_name || p.name);
+        await withPruneLease(
+          result.prune_lease_token,
+          "Platform shortcut removal",
+          async (signal) => {
+            await removeShortcutsPaced(result.app_ids ?? [], onProgress, signal);
+            if (isPruneLeaseCancelled(signal)) return;
+            await clearPlatformCollection(result.platform_name || p.name, signal);
+            if (isPruneLeaseCancelled(signal)) return;
+            if (result.rom_ids?.length || result.prune_lease_token) {
+              await withTimeout(
+                reportRemovalResults(result.rom_ids ?? [], result.prune_lease_token ?? null),
+                REMOVAL_REPORT_TIMEOUT_MS,
+              );
+            }
+          },
+          DANGER_ZONE_LEASE_OWNER,
+          admission,
+        );
         setActionStatus(`Removed ${p.count} ${p.name} game${p.count === 1 ? "" : "s"}`);
         await refreshPlatforms();
         loadNonSteamApps();
-      } catch {
+      } catch (e) {
+        // Leaving the Danger Zone cancels the removal continuation — the backend
+        // removal already committed, so this is teardown, not a failed removal.
+        if (isPruneLeaseCancellation(e, admission)) {
+          logWarn(`Platform shortcut removal continuation was cancelled: ${e}`);
+          return;
+        }
         setActionStatus("Failed to remove shortcuts");
       }
     });
@@ -272,6 +305,7 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
     await runRemoval(async (onProgress) => {
       setStatus("Removing all shortcuts...");
       let removedCount = 0;
+      const admission = capturePruneLeaseAdmission(DANGER_ZONE_LEASE_OWNER);
       try {
         const result = await removeAllShortcuts();
         if (!result.success) {
@@ -285,33 +319,56 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
           // so the backend never returns them. The live exe-ownership scan sees
           // them; remove the UNION so no orphan is left behind (#1381).
           const backendAppIds = result.app_ids ?? [];
-          await removeShortcutsPaced(backendAppIds, onProgress);
           const removed = new Set<number>(backendAppIds);
-          const liveAppIds = await getLiveRomMShortcutAppIds();
-          if (liveAppIds === null) {
-            // The scan could not run (Steam's shortcut store was unreadable) —
-            // fall back to the backend-bound list alone rather than skip removal.
-            logWarn("Live RomM shortcut scan unavailable — removed backend-bound shortcuts only.");
-          } else {
-            const orphans = liveAppIds.filter((appId) => !removed.has(appId));
-            logInfo(`Remove-all: ${orphans.length} live-scanned RomM shortcut(s) were not in the backend list.`);
-            // Continue the counter across the orphan sweep: offset by the backend
-            // count so "removed of total" stays cumulative (orphans are usually none).
-            await removeShortcutsPaced(orphans, (done, orphanTotal) =>
-              onProgress(backendAppIds.length + done, backendAppIds.length + orphanTotal),
-            );
-            for (const appId of orphans) removed.add(appId);
-          }
-          removedCount = removed.size;
-          // rom_ids are backend DB rows — orphans have none, so report only the
-          // backend set exactly as before.
-          if (result.rom_ids?.length) {
-            await reportRemovalResults(result.rom_ids);
-          }
-          await clearAllRomMCollections();
+          await withPruneLease(
+            result.prune_lease_token,
+            "All-shortcut removal",
+            async (signal) => {
+              await removeShortcutsPaced(backendAppIds, onProgress, signal);
+              if (isPruneLeaseCancelled(signal)) return;
+              const liveAppIds = await getLiveRomMShortcutAppIds();
+              if (isPruneLeaseCancelled(signal)) return;
+              if (liveAppIds === null) {
+                // The scan could not run (Steam's shortcut store was unreadable) —
+                // fall back to the backend-bound list alone rather than skip removal.
+                logWarn("Live RomM shortcut scan unavailable — removed backend-bound shortcuts only.");
+              } else {
+                const orphans = liveAppIds.filter((appId) => !removed.has(appId));
+                logInfo(`Remove-all: ${orphans.length} live-scanned RomM shortcut(s) were not in the backend list.`);
+                // Continue the counter across the orphan sweep: offset by the backend
+                // count so "removed of total" stays cumulative (orphans are usually none).
+                await removeShortcutsPaced(
+                  orphans,
+                  (done, orphanTotal) => onProgress(backendAppIds.length + done, backendAppIds.length + orphanTotal),
+                  signal,
+                );
+                if (isPruneLeaseCancelled(signal)) return;
+                for (const appId of orphans) removed.add(appId);
+              }
+              removedCount = removed.size;
+              await clearAllRomMCollections(signal);
+              if (isPruneLeaseCancelled(signal)) return;
+              // rom_ids are backend DB rows — orphans have none, so report only the
+              // backend set exactly as before.
+              if (result.rom_ids?.length || result.prune_lease_token) {
+                await withTimeout(
+                  reportRemovalResults(result.rom_ids ?? [], result.prune_lease_token ?? null),
+                  REMOVAL_REPORT_TIMEOUT_MS,
+                );
+              }
+            },
+            DANGER_ZONE_LEASE_OWNER,
+            admission,
+          );
           setStatus(result.message ?? "All shortcuts removed");
         }
-      } catch {
+      } catch (e) {
+        // Teardown cancellation, not a failed removal — the backend work already
+        // committed and there is no panel left to refresh or report into.
+        if (isPruneLeaseCancellation(e, admission)) {
+          logWarn(`All-shortcut removal continuation was cancelled: ${e}`);
+          return;
+        }
         setStatus("Failed to remove shortcuts");
       }
       await refreshPlatforms();
@@ -326,6 +383,7 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
     }
     try {
       setUninstallStatus("Uninstalling...");
+      const admission = capturePruneLeaseAdmission(DANGER_ZONE_LEASE_OWNER);
       const result = await uninstallAllRoms();
       if (!result.success && result.app_ids === undefined) {
         // A gate refusal (@sync_active_blocked / @migration_blocked) carries no
@@ -339,9 +397,17 @@ const ShortcutRemovalSection: FC<ShortcutRemovalSectionProps> = ({
         // `flatpak run … "<deleted path>"` into a deleted path (#1146, mirrors the
         // single-ROM fix in #1051). Batched to avoid serializing the per-shortcut
         // confirm-poll timeouts; best-effort — a failed confirm is logged, not fatal.
-        await batchConfirmLaunchOptions(
-          (result.app_ids ?? []).map((appId) => ({ app_id: appId, launch_options: "" })),
-          "uninstall-all",
+        await withPruneLease(
+          result.prune_lease_token,
+          "Bulk uninstall",
+          (signal) =>
+            batchConfirmLaunchOptions(
+              (result.app_ids ?? []).map((appId) => ({ app_id: appId, launch_options: "" })),
+              "uninstall-all",
+              signal,
+            ),
+          DANGER_ZONE_LEASE_OWNER,
+          admission,
         );
         setUninstallStatus(formatUninstallStatus(result.removed_count ?? 0, (result.errors ?? []).length));
       }
@@ -891,6 +957,7 @@ export const DangerZone: FC<DangerZoneProps> = ({ onBack }) => {
   };
 
   useEffect(() => {
+    mountPruneLeaseOwner(DANGER_ZONE_LEASE_OWNER);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial async data loads on mount are the standard React pattern; the rule is overzealous here
     refreshPlatforms().catch((e) => logError(`Failed to refresh platforms: ${e}`));
     loadNonSteamApps();
@@ -901,6 +968,9 @@ export const DangerZone: FC<DangerZoneProps> = ({ onBack }) => {
         setSettingsLoaded(true);
       })
       .catch((e) => logError(`Failed to load whitelist settings: ${e}`));
+    return () => {
+      detach(releasePruneLeasesByOwner(DANGER_ZONE_LEASE_OWNER));
+    };
   }, []);
 
   const persistWhitelist = (newDisabled: string[], newCustom: string[]) => {
@@ -933,6 +1003,8 @@ export const DangerZone: FC<DangerZoneProps> = ({ onBack }) => {
           />
         </PanelSection>
       )}
+
+      <RemovedGamesCleanupSection />
 
       <ShortcutRemovalSection
         platforms={platforms}

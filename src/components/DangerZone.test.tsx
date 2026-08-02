@@ -355,6 +355,7 @@ describe("DangerZone", () => {
         app_ids: [11, 12],
         rom_ids: [1, 2],
         platform_name: "Super Nintendo",
+        prune_lease_token: "platform-removal-lease",
       });
       const { getByText } = render(<DangerZone onBack={vi.fn()} />);
       await flushAsync();
@@ -371,8 +372,11 @@ describe("DangerZone", () => {
       expect(vi.mocked(backend.removePlatformShortcuts)).toHaveBeenCalledWith("snes");
       expect(vi.mocked(removeShortcut)).toHaveBeenCalledWith(11);
       expect(vi.mocked(removeShortcut)).toHaveBeenCalledWith(12);
-      expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([1, 2]);
-      expect(vi.mocked(clearPlatformCollection)).toHaveBeenCalledWith("Super Nintendo");
+      expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([1, 2], "platform-removal-lease");
+      expect(vi.mocked(clearPlatformCollection)).toHaveBeenCalledWith("Super Nintendo", expect.any(AbortSignal));
+      expect(vi.mocked(clearPlatformCollection).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(backend.reportRemovalResults).mock.invocationCallOrder[0]!,
+      );
     });
 
     it("falls back to p.name for clearPlatformCollection when platform_name is empty", async () => {
@@ -394,7 +398,77 @@ describe("DangerZone", () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      expect(vi.mocked(clearPlatformCollection)).toHaveBeenCalledWith("Super Nintendo");
+      expect(vi.mocked(clearPlatformCollection)).toHaveBeenCalledWith("Super Nintendo", expect.any(AbortSignal));
+    });
+
+    it("unmount aborts future removal work but retains the backend lease until the started Steam call settles", async () => {
+      vi.mocked(backend.getRegistryPlatforms).mockResolvedValue({
+        platforms: [{ slug: "snes", name: "Super Nintendo", count: 1 }],
+      });
+      vi.mocked(backend.removePlatformShortcuts).mockResolvedValue({
+        success: true,
+        app_ids: [11],
+        rom_ids: [1],
+        platform_name: "Super Nintendo",
+        prune_lease_token: "danger-zone-lease",
+      });
+      vi.mocked(backend.releasePruneConflictLease).mockResolvedValue({ success: true, message: "released" });
+      let settle!: () => void;
+      const pendingCollection = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      vi.mocked(clearPlatformCollection).mockReturnValueOnce(pendingCollection);
+      const view = render(<DangerZone onBack={vi.fn()} />);
+      await flushAsync();
+      fireEvent.click(view.getByText("Super Nintendo (1)"));
+      lastShownModalProps<{ onRemoveShortcuts?: () => void }>()?.onRemoveShortcuts?.();
+      await waitFor(() => expect(clearPlatformCollection).toHaveBeenCalled());
+
+      view.unmount();
+      await Promise.resolve();
+      expect(backend.releasePruneConflictLease).not.toHaveBeenCalledWith("danger-zone-lease");
+
+      settle();
+      await waitFor(() => expect(backend.releasePruneConflictLease).toHaveBeenCalledWith("danger-zone-lease"));
+      expect(clearPlatformCollection).toHaveBeenCalledTimes(1);
+      expect(backend.reportRemovalResults).not.toHaveBeenCalled();
+    });
+
+    it("releases a late backend token without mutating Steam after unmount", async () => {
+      setupOnePlatform();
+      let resolveRemoval!: (value: {
+        success: true;
+        app_ids: number[];
+        rom_ids: number[];
+        platform_name: string;
+        prune_lease_token: string;
+      }) => void;
+      vi.mocked(backend.removePlatformShortcuts).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRemoval = resolve;
+          }),
+      );
+      vi.mocked(backend.releasePruneConflictLease).mockResolvedValue({ success: true, message: "released" });
+      const view = render(<DangerZone onBack={vi.fn()} />);
+      await flushAsync();
+      fireEvent.click(view.getByText("Super Nintendo (2)"));
+      lastShownModalProps<{ onRemoveShortcuts?: () => void }>()?.onRemoveShortcuts?.();
+      await waitFor(() => expect(backend.removePlatformShortcuts).toHaveBeenCalledWith("snes"));
+
+      view.unmount();
+      resolveRemoval({
+        success: true,
+        app_ids: [11],
+        rom_ids: [1],
+        platform_name: "Super Nintendo",
+        prune_lease_token: "late-danger-zone-lease",
+      });
+
+      await waitFor(() => expect(backend.releasePruneConflictLease).toHaveBeenCalledWith("late-danger-zone-lease"));
+      expect(removeShortcut).not.toHaveBeenCalled();
+      expect(clearPlatformCollection).not.toHaveBeenCalled();
+      expect(backend.reportRemovalResults).not.toHaveBeenCalled();
     });
 
     it("skips reportRemovalResults when rom_ids is empty", async () => {
@@ -677,6 +751,7 @@ describe("DangerZone", () => {
         message: "Removed 5",
         app_ids: [10, 20],
         rom_ids: [1, 2],
+        prune_lease_token: "all-removal-lease",
       });
       const { getByText, container } = render(<DangerZone onBack={vi.fn()} />);
       await flushAsync();
@@ -695,8 +770,11 @@ describe("DangerZone", () => {
       expect(vi.mocked(backend.removeAllShortcuts)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(removeShortcut)).toHaveBeenCalledWith(10);
       expect(vi.mocked(removeShortcut)).toHaveBeenCalledWith(20);
-      expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([1, 2]);
+      expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([1, 2], "all-removal-lease");
       expect(vi.mocked(clearAllRomMCollections)).toHaveBeenCalled();
+      expect(vi.mocked(clearAllRomMCollections).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(backend.reportRemovalResults).mock.invocationCallOrder[0]!,
+      );
       expect(container.textContent).toContain("Removed 5");
     });
 
@@ -748,7 +826,7 @@ describe("DangerZone", () => {
       // 2 is in both lists → removed once, not twice: three calls total.
       expect(vi.mocked(removeShortcut)).toHaveBeenCalledTimes(3);
       // rom_ids stay the backend set exactly — orphans have no DB row.
-      expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([50, 51]);
+      expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([50, 51], null);
       // Non-vacuous: the one orphan not in the backend list is logged.
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("1 live-scanned RomM shortcut"));
       logSpy.mockRestore();
@@ -946,7 +1024,7 @@ describe("DangerZone", () => {
         });
         // The breather elapsed → the last removal ran, THEN the post-removal steps.
         expect(vi.mocked(removeShortcut)).toHaveBeenCalledTimes(26);
-        expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([1, 2]);
+        expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([1, 2], null);
         expect(vi.mocked(clearPlatformCollection)).toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
@@ -985,7 +1063,7 @@ describe("DangerZone", () => {
         });
         expect(vi.mocked(removeShortcut)).toHaveBeenCalledTimes(26);
         expect(vi.mocked(getLiveRomMShortcutAppIds)).toHaveBeenCalled();
-        expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([7]);
+        expect(vi.mocked(backend.reportRemovalResults)).toHaveBeenCalledWith([7], null);
         expect(vi.mocked(clearAllRomMCollections)).toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
@@ -1813,8 +1891,8 @@ describe("DangerZone", () => {
       expect(getByText("Remove All RomM Shortcuts")).toBeDisabled();
       expect(getByText("Uninstall All Installed ROMs")).toBeDisabled();
       expect(getByText("Remove Orphaned Grid Images")).toBeDisabled();
-      // All three disabled buttons carry the hint description.
-      expect(getAllByText(HINT)).toHaveLength(3);
+      // All four destructive actions carry the hint description.
+      expect(getAllByText(HINT)).toHaveLength(4);
       // Clicking the disabled buttons must not arm the confirm flow.
       fireEvent.click(getByText("Remove All RomM Shortcuts"));
       fireEvent.click(getByText("Uninstall All Installed ROMs"));

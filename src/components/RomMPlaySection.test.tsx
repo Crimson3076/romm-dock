@@ -1186,6 +1186,21 @@ describe("RomMPlaySection", () => {
       expect(vi.mocked(updatePlaytimeDisplay)).not.toHaveBeenCalled();
     });
 
+    it("a resolved prune gate failure never writes a playtime payload", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 78 });
+      vi.mocked(backend.reconcilePlaytime).mockResolvedValue({
+        success: false,
+        reason: "prune_active",
+        message: "Cleanup is active.",
+      });
+
+      render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+
+      expect(vi.mocked(updatePlaytimeDisplay)).not.toHaveBeenCalled();
+      expect(vi.mocked(backend.debugLog)).toHaveBeenCalledWith(expect.stringContaining("playtime reconcile deferred"));
+    });
+
     it("#869 — a romm_playtime_changed event refreshes PLAYTIME on the same mount (no remount)", async () => {
       useDistinctPlaytimeFormatter();
       // Mount with a stale local total of 10 minutes.
@@ -1395,6 +1410,31 @@ describe("RomMPlaySection", () => {
         expect.objectContaining({ status: "synced", label: "from-fetch" }),
         fetchedSaveStatus,
       );
+    });
+
+    it("save_sync_settings: prune-active status leaves the existing display untouched", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 55 });
+      render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+      vi.mocked(playSectionUtils.applySaveSyncDisplay).mockClear();
+      vi.mocked(backend.getSaveStatus).mockResolvedValue({
+        success: false,
+        reason: "prune_active",
+        message: "Cleanup is active.",
+      });
+
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "save_sync_settings", save_sync_enabled: true },
+          }),
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(backend.getSaveStatus).toHaveBeenCalledWith(55);
+      expect(playSectionUtils.applySaveSyncDisplay).not.toHaveBeenCalled();
     });
 
     it("save_sync_settings: enabled=true with no rom_id → skips getSaveStatus", async () => {
@@ -2306,7 +2346,10 @@ describe("RomMPlaySection", () => {
       vi.mocked(backend.removeRom).mockResolvedValue({
         success: true,
         message: "removed",
+        prune_lease_token: "uninstall-lease",
       });
+      vi.mocked(backend.releasePruneConflictLease).mockResolvedValue({ success: true, message: "released" });
+      vi.mocked(setLaunchOptionsConfirmed).mockClear();
       vi.mocked(toaster.toast).mockClear();
       const listener = vi.fn();
       globalThis.addEventListener("romm_rom_uninstalled", listener);
@@ -2322,6 +2365,11 @@ describe("RomMPlaySection", () => {
           await uninstall.props.onClick?.();
         });
         expect(vi.mocked(backend.removeRom)).toHaveBeenCalledWith(42);
+        expect(setLaunchOptionsConfirmed).toHaveBeenCalledWith(testAppId, "");
+        expect(backend.releasePruneConflictLease).toHaveBeenCalledWith("uninstall-lease");
+        expect(vi.mocked(setLaunchOptionsConfirmed).mock.invocationCallOrder[0]).toBeLessThan(
+          vi.mocked(backend.releasePruneConflictLease).mock.invocationCallOrder[0]!,
+        );
         const ev = listener.mock.calls[0]?.[0] as CustomEvent;
         expect(ev.detail).toEqual({ rom_id: 42 });
         expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(expect.objectContaining({ body: "Mario uninstalled" }));
@@ -2377,6 +2425,44 @@ describe("RomMPlaySection", () => {
         await items[items.length - 1]!.props.onClick?.();
       });
       expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(expect.objectContaining({ body: "Uninstall failed" }));
+    });
+
+    it("throw caused by unmount → no toast, debug-logged instead (non-vacuous catch)", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 42,
+        rom_name: "Mario",
+      });
+      const view = render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+      const items = await openRomMMenuAndGetItems(testAppId);
+
+      let rejectRemove!: (error: unknown) => void;
+      vi.mocked(backend.removeRom).mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectRemove = reject;
+          }),
+      );
+      const uninstall = items[items.length - 1]!.props.onClick?.();
+      await flushAsync();
+
+      // The user leaves the game page while the uninstall is still in flight.
+      view.unmount();
+      vi.mocked(toaster.toast).mockClear();
+      vi.mocked(backend.debugLog).mockClear();
+      await act(async () => {
+        rejectRemove(new Error("teardown cancelled the callable"));
+        await uninstall;
+        for (let i = 0; i < 6; i++) await Promise.resolve();
+      });
+
+      // Post-catch state: no user-facing failure for work that already committed,
+      // and the cancellation is recorded on the debug channel instead.
+      expect(vi.mocked(toaster.toast)).not.toHaveBeenCalled();
+      expect(vi.mocked(backend.debugLog)).toHaveBeenCalledWith(
+        expect.stringContaining("handleUninstall: continuation was cancelled"),
+      );
     });
   });
 

@@ -26,6 +26,7 @@ import {
   debugLog,
   preLaunchSync,
   getSaveStatus,
+  isCallableFailure,
   logError,
   isSaveTrackingConfigured,
   getSaveSetupInfo,
@@ -37,6 +38,7 @@ import {
   stopRunningGame,
 } from "../api/backend";
 import { getRommConnectionState, onRommConnectionChange, reportServerReachable } from "../utils/connectionState";
+import { isBoundVanished, onBoundVanishedChange } from "../utils/vanishedBinding";
 import { scrollToTop } from "../utils/scrollHelpers";
 import { getEventTarget } from "../utils/events";
 import { applyLaunchGateSetupOutcome, resolveSaveSetupOutcome } from "../utils/saveSetup";
@@ -55,6 +57,14 @@ import type { DownloadProgressEvent, DownloadCompleteEvent, DownloadFailedEvent 
 import { SAVEFILES_IN_CONTENT_DIR_REASON } from "../types";
 import { detach } from "../utils/detach";
 import { setLaunchOptionsConfirmed } from "../utils/steamShortcuts";
+import {
+  capturePruneLeaseAdmission,
+  isPruneLeaseAdmissionCurrent,
+  mountPruneLeaseOwner,
+  releasePruneLeasesByOwner,
+  withPruneLease,
+  type PruneLeaseAdmission,
+} from "../utils/pruneLease";
 import { reconfirmLaunchOptions } from "../utils/launchOptionsReconcile";
 import { saveSyncToastBody } from "../utils/saveSyncToast";
 
@@ -108,12 +118,16 @@ interface CustomPlayButtonProps {
 // Prettier from relocating the trailing comment into the body (which would break the suppression).
 // prettier-ignore
 export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // NOSONAR(typescript:S3776) — remaining cc is the per-state render branching (download/dl_complete/uninstalling/launching/syncing/conflict/play each return a distinct button shape); the gate chain now lives in runLaunchGate, not here.
+  const leaseOwner = `custom-play-button:${appId}`;
   const [state, setState] = useState<PlayButtonState>("loading");
   const [romId, setRomId] = useState<number | null>(null);
   const [romName, setRomName] = useState<string>("");
   const [actionPending, setActionPending] = useState(false);
   const [dlProgress, setDlProgress] = useState<DownloadProgress | null>(null);
   const [isOffline, setIsOffline] = useState(getRommConnectionState() === "offline");
+  // Positive-knowledge only: set solely when RomM 404s the bound id, so an
+  // unreachable server never reaches this state (#1570 F20).
+  const [boundVanished, setBoundVanished] = useState(() => isBoundVanished(appId));
   // Running overlay (#1313): when the game is already running, the button shows
   // Resume (top precedence over install/conflict/download) and brings the game to
   // front instead of running the launch funnel. Seeded synchronously at init and
@@ -128,6 +142,13 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   const romIdRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    mountPruneLeaseOwner(leaseOwner);
+    return () => {
+      detach(releasePruneLeasesByOwner(leaseOwner));
+    };
+  }, [leaseOwner]);
 
   // Hide the native PlaySection via CSS while this component is mounted
   useEffect(() => {
@@ -361,6 +382,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     // recovery probe reconnects, so Download/Play re-enable without a page
     // re-entry (the device symptom of Download staying blocked after reconnect).
     const unsubscribeConnection = onRommConnectionChange((s) => setIsOffline(s === "offline"));
+    const unsubscribeVanished = onBoundVanishedChange(() => setBoundVanished(isBoundVanished(appId)));
 
     // Session start/stop (#1313) — flip the running overlay so the button shows
     // Resume for the live session and returns to Play when it ends. Matches on
@@ -386,6 +408,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       globalThis.removeEventListener("romm_rom_uninstalled", onUninstall);
       globalThis.removeEventListener("romm_data_changed", onDataChanged);
       unsubscribeConnection();
+      unsubscribeVanished();
       globalThis.removeEventListener("romm_session_changed", onSessionChanged);
     };
   }, [appId]);
@@ -522,12 +545,20 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // shared skip-set immediately before RunGame so this RunGame does NOT re-enter
   // the global watcher and re-gate a launch that already ran the funnel (the
   // double-gate fix C1).
-  const dispatchLaunch = async (gameId: string) => {
+  const dispatchLaunch = async (gameId: string, admission: PruneLeaseAdmission) => {
+    if (!isPruneLeaseAdmissionCurrent(admission)) return;
     setState("launching");
     // Heal any mid-session launch_options drift on this shortcut before launch
-    // (#1150) via the shared bounded-race re-confirm. Best-effort: a hang, a
-    // null item, or a failure still launches — no worse than today.
-    if (romId) await reconfirmLaunchOptions(romId, appId, "CustomPlayButton");
+    // (#1150) via the shared bounded-race re-confirm. Ordinary I/O failures stay
+    // best-effort; timeout or plugin teardown cancels this launch.
+    if (romId) {
+      const reconfirm = await reconfirmLaunchOptions(romId, appId, "CustomPlayButton", admission);
+      if (reconfirm.status === "cancelled") return;
+      if (reconfirm.status === "timeout") {
+        setState("play");
+        return;
+      }
+    }
     markLaunchSkipped(appId);
     SteamClient.Apps.RunGame(gameId, "", -1, 100);
   };
@@ -573,11 +604,12 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     if (state === "syncing" || state === "launching") return; // debounce
     const overview = appStore.GetAppOverviewByAppID(appId);
     const gameId = overview?.GetGameID?.() ?? String(appId);
+    const admission = capturePruneLeaseAdmission(leaseOwner);
     detach(debugLog(`CustomPlayButton: handlePlay appId=${appId} gameId=${gameId}`));
 
     // Non-RomM / unresolved ROM — nothing to gate, launch straight through.
     if (!romId) {
-      await dispatchLaunch(gameId);
+      await dispatchLaunch(gameId, admission);
       return;
     }
 
@@ -591,7 +623,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     // resulting RunGame doesn't re-enter the interceptor and re-gate either.
     if (isSessionActive(romId) || isAppRunning(appId)) {
       detach(debugLog(`CustomPlayButton: appId=${appId} already running — skipping pre-launch sync`));
-      await dispatchLaunch(gameId);
+      await dispatchLaunch(gameId, admission);
       return;
     }
 
@@ -606,7 +638,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     // fast reachability check), and `actOnVerdict` signals back "retry".
     try {
       let verdict = await runLaunchGate(appId, romId, makePlayButtonOps(romId));
-      while ((await actOnVerdict(verdict, gameId, romId)) === "retry") {
+      while ((await actOnVerdict(verdict, gameId, romId, admission)) === "retry") {
         verdict = await runLaunchGate(appId, romId, makePlayButtonOps(romId));
       }
     } catch (e) {
@@ -621,10 +653,15 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // Returns "retry" only from the offline-drift branch when the user asks to
   // re-probe — `handlePlay` loops on that and re-runs the gate; every other
   // outcome returns "done".
-  const actOnVerdict = async (verdict: GateVerdict, gameId: string, rid: number): Promise<"done" | "retry"> => {
+  const actOnVerdict = async (
+    verdict: GateVerdict,
+    gameId: string,
+    rid: number,
+    admission: PruneLeaseAdmission,
+  ): Promise<"done" | "retry"> => {
     switch (verdict.decision) {
       case "allow":
-        await dispatchLaunch(gameId);
+        await dispatchLaunch(gameId, admission);
         return "done";
       case "abort":
       case "block":
@@ -641,13 +678,13 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         }
         // Conflicts resolved — notify sibling components to refresh, then launch.
         globalThis.dispatchEvent(new CustomEvent("romm_data_changed", { detail: { type: "save_sync", rom_id: rid } }));
-        await dispatchLaunch(gameId);
+        await dispatchLaunch(gameId, admission);
         return "done";
       }
       case "offline_drift": {
         const choice = await showOfflineDriftModal();
         if (choice === "start_anyway") {
-          await dispatchLaunch(gameId);
+          await dispatchLaunch(gameId, admission);
           return "done";
         }
         if (choice === "retry") {
@@ -663,7 +700,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       case "sync_failed": {
         const proceed = await showFallbackLaunchModal(verdict.message);
         if (proceed) {
-          await dispatchLaunch(gameId);
+          await dispatchLaunch(gameId, admission);
           return "done";
         }
         setState("play");
@@ -857,6 +894,13 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 15000)),
       ]);
 
+      if (isCallableFailure(result)) {
+        detach(debugLog(`CustomPlayButton: resolve conflict deferred: ${result.message}`));
+        toaster.toast({ title: "RomM Sync", body: result.message });
+        setState("conflict");
+        return;
+      }
+
       // A failed status read leaves every file "unknown" and an empty server
       // list; treating that as "resolved" would drop the user back to Play
       // believing the conflict was cleared. Surface it and stay in conflict,
@@ -943,13 +987,23 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     if (!romId) return;
     detach(debugLog(`CustomPlayButton: uninstalling romId=${romId}`));
     try {
+      const admission = capturePruneLeaseAdmission(leaseOwner);
       const result = await removeRom(romId);
       if (result.success) {
         // Reset the now-stale launch command to the uninstalled "" placeholder so a
         // raced-past not_installed launch execs `bin/rom-launcher` with no args (clean
         // exit 1) instead of a stale `flatpak run … "<deleted path>"` (#1051). Best-effort:
         // a launch-options hiccup must not turn a successful uninstall into an error.
-        await setLaunchOptionsConfirmed(appId, "").catch(() => false);
+        await withPruneLease(
+          result.prune_lease_token,
+          "ROM uninstall",
+          async (signal) => {
+            if (signal.aborted) return;
+            await setLaunchOptionsConfirmed(appId, "").catch(() => false);
+          },
+          leaseOwner,
+          admission,
+        );
         globalThis.dispatchEvent(new CustomEvent("romm_rom_uninstalled", { detail: { rom_id: romId } }));
         toaster.toast({ title: "RomM Sync", body: `${romName || "ROM"} uninstalled` });
         // Dark pulse transition before showing Download button
@@ -1195,6 +1249,12 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     // section; idle/starting keeps the full pill radius. The pulse animation
     // lives on the container (romm-dl-active-group) so it spans the whole
     // control — button + action — as one cohesive pulsing group.
+    // Only the idle Download action is blocked: a vanished bound ROM cannot be
+    // fetched, so offering it can only produce the not_found toast. The button
+    // stays visible rather than disappearing, matching how the picker shows a
+    // vanished version dimmed instead of hiding it. An in-flight download keeps
+    // its controls — that is a different action and out of scope.
+    const downloadBlockedByVanished = boundVanished && !downloading && !paused && !extracting;
     const downloadBtn = (
       <DialogButton
         // romm-btn-download-idle carries the blue hover/focus highlight, which is
@@ -1212,7 +1272,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         onClick={() => {
           detach(handleDownload());
         }}
-        disabled={actionPending || isOffline}
+        disabled={actionPending || isOffline || downloadBlockedByVanished}
       >
         {/* Progress fill bar — kept at its frozen width while paused. */}
         {downloading && (

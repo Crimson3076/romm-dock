@@ -30,6 +30,8 @@ is invisible at the citation site), so reach it through the page that owns the t
 - Save-file sync — slots, conflict resolution, negotiate transport, version history —
   [save-file-sync-architecture.md](docs/architecture/save-file-sync-architecture.md)
 - Save-sync coverage matrix — [save-sync-coverage.md](docs/architecture/save-sync-coverage.md)
+- Removed-game cleanup — deletion authority, admission/leases, claims, recovery bundles —
+  [removed-game-cleanup.md](docs/architecture/removed-game-cleanup.md)
 - Services, adapters, wiring; connection/token and settings-persistence internals —
   [backend-architecture.md](docs/architecture/backend-architecture.md)
 - SQLite schema, aggregate roots, migrations — [database-design.md](docs/architecture/database-design.md)
@@ -192,8 +194,12 @@ Format: **invariant** — tier — enforced by.
 - **No sentinel objects on the wire — explicit JSON-representable tagged values only** — prompt-only — mechanizable once
   tagged values have replaced the sentinels
 - **Every destructive op has backup-or-confirm; never delete data that exists nowhere else** — prompt-only — save-file
-  removals route through `MatrixExecutor.quarantine_local_file` (the `.romm-backup` funnel); every other delete path
-  carries the rule unmechanized
+  removals route through the `.romm-backup` funnel (`MatrixExecutor.quarantine_local_file`; the removed-game cleanup's
+  claimed variant is `PruneSaveSupport.quarantine_prune_saves`); every other delete path carries the rule unmechanized.
+  Removed-game cleanup takes the **confirm** leg for one case deliberately: installed ROM content the user did not
+  select for the recovery bundle is deleted with its row. The ROM is re-downloadable from RomM where a save is not, the
+  per-candidate opt-in and its consequence are stated in the confirmation dialog and the user guide, and the row cannot
+  be removed at all without a fresh 404 — so this is a disclosed choice, not an exception that drifted in
 - **Every read-mutate-write of a `RomSaveSyncState` runs under `SyncEngine.rom_lock(rom_id)`** — prompt-only — sync
   paths, `get_save_status`, and the four slot mutations hold the lock; mechanize via a `rom_save_sync_states.save`
   call-site audit
@@ -215,6 +221,23 @@ Format: **invariant** — tier — enforced by.
   is never mutated while the stash is pending (box IDLE) — every run-entry path passes `try_begin_run`, which clears the
   stash before any staging write** — prompt-only — the invariant holds today rather than being aspirational; mechanize
   via a staging-writer call-site audit
+- **A prune run's claim reservation and its refusal of every conflicting callable happen in one atomic gate hold (the
+  preview rebuild does not), and frontend-owned Steam work holds a heartbeated, generation-tombstoned lease through
+  every continuation's final write** — test + prompt-only — prune service/gate race tests + contract callable-entry
+  matrix; new conflicting entry points are prompt-only
+- **A prune frontend action mutates Steam only after atomically claiming its exact run/token/discriminant/binding;
+  repeats are idempotent and an outcome lost in transit is ambiguous, never success** — test + prompt-only — prune
+  service claim tests + `src/utils/pruneActions.test.ts`; new action kinds are prompt-only
+- **Every prune mutation is authorized by a descriptor-relative no-follow claim (root identity, descendant identities,
+  regular-file hashes) revalidated immediately before it, never by a path re-lookup; refusal and ambiguity are reported,
+  never rewritten into success** — test + prompt-only — descriptor-path, recovery-adapter, real RomRemovalService, and
+  prune contract tests; new mutation adapters are prompt-only
+- **Every prune frame carries its originating preview ID; only a matching pending preview may adopt a run, and an
+  accepted contiguous terminal result seals it against every later frame** — test + prompt-only — prune service frame
+  tests + `src/utils/pruneStore.test.ts`; new prune frame types are prompt-only
+- **Every destructive RomM proof is bound to one canonical server-origin/token-origin/user namespace from preview
+  through every exact-ID request; a namespace change is uncertainty, never a 404 deletion authority** — test +
+  prompt-only — prune service namespace-race tests; new destructive RomM proof paths are prompt-only
 
 When a change applies a guard / sanitize / backup / grouping pattern, sweep for sibling sites of the same pattern — the
 register is what that sweep checks against.

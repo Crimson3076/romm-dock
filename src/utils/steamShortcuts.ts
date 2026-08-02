@@ -10,6 +10,13 @@ import { delay } from "./pacedOps";
  */
 const ROM_LAUNCHER_SUFFIX = "/bin/rom-launcher";
 
+export function isRomMShortcutDetails(details: SteamAppDetails | null): details is SteamAppDetails {
+  return (
+    typeof details?.strShortcutExe === "string" &&
+    details.strShortcutExe.replace(/^"|"$/g, "").endsWith(ROM_LAUNCHER_SUFFIX)
+  );
+}
+
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
 /**
@@ -19,7 +26,7 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
  * details before the app's data loads — those early ``undefined`` fires are
  * ignored).
  */
-function getAppDetails(appId: number, timeoutMs = 2000): Promise<SteamAppDetails | null> {
+export function getAppDetails(appId: number, timeoutMs = 2000): Promise<SteamAppDetails | null> {
   return new Promise((resolve) => {
     let resolved = false;
     // Declared with `let` BEFORE RegisterForAppDetails so a (hypothetical)
@@ -252,5 +259,42 @@ export function removeShortcut(appId: number): void {
     SteamClient.Apps.RemoveShortcut(appId);
   } catch (e) {
     logError(`Failed to remove shortcut ${appId}: ${e}`);
+  }
+}
+
+/** Steam's live non-Steam shortcut map, or `null` when it can't be read. */
+function readDesktopAppStore(): Map<number, unknown> | null {
+  if (typeof collectionStore === "undefined") return null;
+  return collectionStore.deckDesktopApps?.apps ?? null;
+}
+
+export interface ShortcutRemovalOutcome {
+  status: "confirmed" | "not_attempted" | "attempted_unconfirmed";
+}
+
+/** Distinguish a pre-mutation refusal from an unconfirmed mutation attempt. */
+export async function removeShortcutConfirmedOutcome(
+  appId: number,
+  timeoutMs = 3000,
+  ownershipAlreadyChecked = false,
+): Promise<ShortcutRemovalOutcome> {
+  const store = readDesktopAppStore();
+  if (!store?.has(appId)) return { status: "not_attempted" };
+  if (!ownershipAlreadyChecked && !isRomMShortcutDetails(await getAppDetails(appId))) {
+    return { status: "not_attempted" };
+  }
+  try {
+    SteamClient.Apps.RemoveShortcut(appId);
+  } catch (e) {
+    logError(`Failed to remove shortcut ${appId}: ${e}`);
+    return { status: "not_attempted" };
+  }
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const apps = readDesktopAppStore();
+    if (!apps) return { status: "attempted_unconfirmed" };
+    if (!apps.has(appId)) return { status: "confirmed" };
+    if (Date.now() >= deadline) return { status: "attempted_unconfirmed" };
+    await delay(100);
   }
 }

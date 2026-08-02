@@ -12,6 +12,12 @@
  * #1346), so each version shows its own art rather than the group's shared grid
  * cover; a not-yet-synced sibling downloads its cover once.
  *
+ * A version RomM no longer serves stays listed as retained context, dimmed and
+ * unswitchable. When local data for it exists, that row carries a trash
+ * affordance and activating it opens the removed-game cleanup confirmation
+ * scoped to that ROM — the row is the menu's focusable unit, so the action has
+ * to live on it rather than in a nested button or a row of its own.
+ *
  * Selecting a version while the game is not downloaded rebinds the group's Steam
  * shortcut to it (appId-safe: the name/appId stay sticky) so the Download button
  * fetches exactly that version. Switching a *downloaded* game rebinds it too and
@@ -24,14 +30,13 @@
 import { useState, useEffect, useRef, FC, ReactNode } from "react";
 import { toaster, addEventListener, removeEventListener } from "@decky/api";
 import { Menu, MenuItem, showContextMenu, DialogButton } from "@decky/ui";
-import { FaChevronDown, FaCompactDisc, FaLayerGroup } from "react-icons/fa";
+import { FaChevronDown, FaCompactDisc, FaLayerGroup, FaTrash } from "react-icons/fa";
 import {
   getVersionList,
   switchVersion,
   syncRomSaves,
   refreshSaveStatus,
   fetchCoverBase64,
-  invalidateCachedGameDetail,
   logError,
   logWarn,
 } from "../api/backend";
@@ -43,12 +48,22 @@ import type {
   SwitchVersionUnsyncedSaves,
 } from "../api/backend";
 import { reportServerReachable } from "../utils/connectionState";
-import { setLaunchOptionsConfirmed } from "../utils/steamShortcuts";
+import { applyCommittedVersionSwitch } from "../utils/versionSwitchApplication";
 import { showUnsyncedSavesModal } from "./UnsyncedSavesSwitchModal";
 import { getEventTarget } from "../utils/events";
+import { setBoundVanished } from "../utils/vanishedBinding";
 import { detach } from "../utils/detach";
+import {
+  capturePruneLeaseAdmission,
+  isPruneLeaseAdmissionCurrent,
+  isPruneLeaseCancellation,
+  mountPruneLeaseOwner,
+  releasePruneLeasesByOwner,
+  type PruneLeaseAdmission,
+} from "../utils/pruneLease";
 import type { RommDataChangedDetail, RommRomUninstalledDetail } from "../types/events";
 import type { DownloadCompleteEvent, DownloadFailedEvent } from "../types";
+import { openRemovedGamesCleanupModal } from "./RemovedGamesCleanup";
 
 interface VersionPickerProps {
   appId: number;
@@ -73,6 +88,38 @@ const BADGE_COLORS: Record<"accent" | "muted" | "good", { bg: string; fg: string
   muted: { bg: "rgba(255, 255, 255, 0.10)", fg: "rgba(255, 255, 255, 0.55)" },
 };
 
+/** The label a row (or a singleton binding) carries once RomM 404s its exact id. */
+const VANISHED_HINT = "No longer available on RomM";
+
+/** Accessible name of the trash affordance that opens the cleanup confirmation. */
+const REMOVE_LOCAL_DATA_LABEL = "Remove local data";
+
+/**
+ * The cleanup affordance, shown on a vanished row and on a vanished singleton
+ * binding. Icon-only: it sits at the right edge of a row that already says why
+ * the version is unusable, so a text label would only repeat that hint.
+ *
+ * Colour comes from the injected stylesheet, never a `color` prop: Steam
+ * repaints a focused destructive MenuItem red, and an inline colour would
+ * survive that and leave a red icon on a red row. `onMenuRow` opts into the
+ * focused-state flip, which must not reach the singleton button (its focus
+ * background stays dark).
+ */
+const RemoveLocalDataIcon: FC<{ onMenuRow?: boolean; style?: React.CSSProperties }> = ({ onMenuRow, style }) => (
+  <FaTrash
+    size={14}
+    role="img"
+    aria-label={REMOVE_LOCAL_DATA_LABEL}
+    className={onMenuRow ? "romm-vanished-trash romm-vanished-trash-row" : "romm-vanished-trash"}
+    style={style}
+  />
+);
+
+/** The italic inline hint that explains why a version can't be selected. */
+const AvailabilityHint: FC<{ text: string }> = ({ text }) => (
+  <span style={{ marginLeft: "8px", fontSize: "11px", fontStyle: "italic", color: NEUTRAL_GREY }}>{text}</span>
+);
+
 /** A small pill badge (Default / Downloaded / not synced) shown after a row's label. */
 const Badge: FC<{ text: string; tone: "accent" | "muted" | "good" }> = ({ text, tone }) => {
   const { bg, fg } = BADGE_COLORS[tone];
@@ -94,6 +141,7 @@ const Badge: FC<{ text: string; tone: "accent" | "muted" | "good" }> = ({ text, 
 };
 
 export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
+  const leaseOwner = `version-picker:${appId}`;
   const [versionList, setVersionList] = useState<VersionList | null>(null);
   // In-flight switch guard (#1345 round-2 / E): a switch rebinds the shortcut and
   // then relies on the version_switched re-fetch to refresh the (now stale) list.
@@ -117,6 +165,7 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
   // effect owns the loader lifetime for this appId. All request sources share one
   // generation so only the latest completion can publish list/reachability state.
   useEffect(() => {
+    mountPruneLeaseOwner(leaseOwner);
     let cancelled = false;
     const load = async (source: "normal" | "vanished_refusal" = "normal"): Promise<void> => {
       const requestId = ++listRequestIdRef.current;
@@ -131,6 +180,11 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
         // direction into the global store. A single/unbound group carries no
         // reachability signal.
         reportVersionListReachability(result);
+        // Publish the bound-id verdict for the play button, which sits beside
+        // this picker and cannot see its state. Only a positive `bound_vanished`
+        // is knowledge — a failed query reports false, so an offline session
+        // never disables the download (#1570 F20).
+        setBoundVanished(appId, result.bound_vanished);
         memberIdsRef.current = new Set((result.versions ?? []).map((v) => v.rom_id));
         setVersionList(result);
       } catch (e) {
@@ -154,9 +208,11 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
 
     const onDataChanged = (e: Event) => {
       const detail = (e as CustomEvent<RommDataChangedDetail>).detail;
-      if (detail.type === "version_switched" && detail.app_id === appId) {
-        detach(load());
-      }
+      const switched = detail.type === "version_switched" && detail.app_id === appId;
+      const pruned =
+        detail.type === "rom_pruned" &&
+        (detail.app_ids.includes(appId) || detail.rom_ids.some((romId) => memberIdsRef.current.has(romId)));
+      if (switched || pruned) detach(load());
     };
     globalThis.addEventListener("romm_data_changed", onDataChanged);
 
@@ -177,13 +233,14 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
 
     return () => {
       cancelled = true;
+      detach(releasePruneLeasesByOwner(leaseOwner));
       if (loadVersionListRef.current?.load === load) loadVersionListRef.current = null;
       globalThis.removeEventListener("romm_data_changed", onDataChanged);
       removeEventListener("download_complete", dlComplete);
       removeEventListener("download_failed", dlFailed);
       globalThis.removeEventListener("romm_rom_uninstalled", onUninstalled);
     };
-  }, [appId]);
+  }, [appId, leaseOwner]);
 
   // Lazily fetch a cover for every version once the list is known, via the
   // cache-first fetchCoverBase64 (#1346): a synced version resolves from the
@@ -223,36 +280,15 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
   // write fails or throws. A missed confirm only leaves the shortcut on a stale
   // command; it self-heals at the next startup/sync reconcile, so we warn and
   // nudge the user rather than reporting the whole switch as failed.
-  const applySwitchSuccess = async (result: SwitchVersionSuccess): Promise<void> => {
-    let confirmed = false;
-    try {
-      confirmed = await setLaunchOptionsConfirmed(result.app_id, result.launch_options);
-    } catch (e) {
-      logError(`VersionPicker: launch-options confirm threw for rom ${result.rom_id} (appId ${result.app_id}): ${e}`);
-    }
+  const applySwitchSuccess = async (result: SwitchVersionSuccess, admission: PruneLeaseAdmission): Promise<void> => {
+    const confirmed = await applyCommittedVersionSwitch(
+      result,
+      (romId, cover) => setCovers((prev) => ({ ...prev, [romId]: cover })),
+      admission,
+    );
     if (!confirmed) {
-      logError(`VersionPicker: could not confirm launch options for rom ${result.rom_id} (appId ${result.app_id})`);
       toaster.toast({ title: "RomM Sync", body: "Switched — re-switch if launch fails" });
     }
-    // Publish the newly active version's cover onto the Steam shortcut so the
-    // grid art tracks the binding (#1346). Cache-first and best-effort — a
-    // missing/unfetchable cover leaves the old art in place and never disturbs
-    // the already-committed switch.
-    try {
-      const cover = await fetchCoverBase64(result.rom_id);
-      if (cover.base64) {
-        setCovers((prev) => ({ ...prev, [result.rom_id]: cover.base64! }));
-        await SteamClient.Apps.SetCustomArtworkForApp(result.app_id, cover.base64, "png", 0);
-      }
-    } catch (e) {
-      logWarn(`VersionPicker: cover apply after switch failed for rom ${result.rom_id}: ${e}`);
-    }
-    invalidateCachedGameDetail(appId);
-    globalThis.dispatchEvent(
-      new CustomEvent("romm_data_changed", {
-        detail: { type: "version_switched", app_id: appId, rom_id: result.rom_id },
-      }),
-    );
   };
 
   const refreshAfterVanishedRefusal = (): Promise<void> => {
@@ -272,7 +308,11 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
   // sync failed, sync surfaced conflicts, or the retry blocked again — aborts
   // with a short toast and re-runs the save-status refresh so the conflict UI
   // surfaces through the normal save_status_updated loop.
-  const syncThenSwitch = async (unsyncedRomId: number, target: VersionInfo): Promise<void> => {
+  const syncThenSwitch = async (
+    unsyncedRomId: number,
+    target: VersionInfo,
+    admission: PruneLeaseAdmission,
+  ): Promise<void> => {
     const abort = (body: string): void => {
       // Every sync-then-switch failure is terminal for this attempt — release the
       // in-flight guard so the trigger re-enables (it never reaches a reload).
@@ -284,8 +324,10 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
         ),
       );
     };
+    if (!isPruneLeaseAdmissionCurrent(admission)) return;
     try {
       const sync = await syncRomSaves(unsyncedRomId);
+      if (!isPruneLeaseAdmissionCurrent(admission)) return;
       if (!sync.success) {
         abort("Couldn't sync saves — try again");
         return;
@@ -294,9 +336,10 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
         abort("Resolve save conflicts first");
         return;
       }
+      if (!isPruneLeaseAdmissionCurrent(admission)) return;
       const retry = await switchVersion(appId, target.rom_id, false);
       if (retry.success) {
-        await applySwitchSuccess(retry);
+        await applySwitchSuccess(retry, admission);
       } else if (retry.reason === "unsynced_saves") {
         // The sync ran but the version still reports drift (a partial upload or a
         // race) — say so instead of the generic "couldn't switch".
@@ -305,6 +348,7 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
         handleSwitchFailure(retry);
       }
     } catch (e) {
+      if (!isPruneLeaseAdmissionCurrent(admission)) return;
       logError(`VersionPicker: sync-then-switch failed: ${e}`);
       abort("Couldn't sync saves — try again");
     }
@@ -315,6 +359,40 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
   // always broadcasts version_switched, and the resulting list reload clears the
   // guard once the fresh list lands — so the trigger never re-enables against a
   // stale list.
+  /** Ask what to do about the saves the switch would strand, then do it. */
+  const resolveUnsyncedSaves = async (
+    result: SwitchVersionUnsyncedSaves,
+    target: VersionInfo,
+    admission: PruneLeaseAdmission,
+  ): Promise<void> => {
+    // The soft-block response carries a definitive reachability verdict (#1345).
+    reportServerReachable(result.server_reachable);
+    const choice = await showUnsyncedSavesModal({
+      versionName: result.unsynced_version_name,
+      serverReachable: result.server_reachable,
+    });
+    if (!isPruneLeaseAdmissionCurrent(admission)) return;
+    if (choice === "cancel") {
+      setSwitching(false);
+      return;
+    }
+    if (choice === "sync_and_switch") {
+      // syncThenSwitch owns the guard from here: it clears on abort and leaves
+      // it set on its own success (its reload clears it).
+      await syncThenSwitch(result.unsynced_rom_id, target, admission);
+      return;
+    }
+    // "Switch anyway" — the override skips the stranding gate; strand the
+    // saves on disk (they stay recoverable, they just won't sync until the
+    // user switches back).
+    const forced = await switchVersion(appId, target.rom_id, true);
+    if (forced.success) {
+      await applySwitchSuccess(forced, admission);
+    } else {
+      handleSwitchFailure(forced);
+    }
+  };
+
   const handleSwitch = async (target: VersionInfo): Promise<void> => {
     if (target.active || target.vanished) return;
     // A non-switchable row is a RomM sibling that lives in a different local group
@@ -322,52 +400,68 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
     // (defense-in-depth), so switch_version's rejection can never reach a toast.
     if (!target.switchable) return;
     setSwitching(true);
+    const admission = capturePruneLeaseAdmission(leaseOwner);
     try {
       const result = await switchVersion(appId, target.rom_id, false);
       if (result.success) {
-        await applySwitchSuccess(result);
+        await applySwitchSuccess(result, admission);
         return;
       }
       if (result.reason === "unsynced_saves") {
-        // The soft-block response carries a definitive reachability verdict (#1345).
-        reportServerReachable(result.server_reachable);
-        const choice = await showUnsyncedSavesModal({
-          versionName: result.unsynced_version_name,
-          serverReachable: result.server_reachable,
-        });
-        if (choice === "cancel") {
-          setSwitching(false);
-          return;
-        }
-        if (choice === "sync_and_switch") {
-          // syncThenSwitch owns the guard from here: it clears on abort and leaves
-          // it set on its own success (its reload clears it).
-          await syncThenSwitch(result.unsynced_rom_id, target);
-          return;
-        }
-        // "Switch anyway" — the override skips the stranding gate; strand the
-        // saves on disk (they stay recoverable, they just won't sync until the
-        // user switches back).
-        const forced = await switchVersion(appId, target.rom_id, true);
-        if (forced.success) {
-          await applySwitchSuccess(forced);
-        } else {
-          handleSwitchFailure(forced);
-        }
+        await resolveUnsyncedSaves(result, target, admission);
         return;
       }
       // Keep the toast body short (Steam truncates it to one line) and put the
       // backend detail in the subtext so the reason is readable (#1359).
       handleSwitchFailure(result);
     } catch (e) {
+      // A teardown-cancelled continuation is not a switch failure: the backend
+      // rebind either committed or was never attempted, and this picker is gone.
+      // Stay silent (and touch no state) rather than toast at the next surface.
+      if (isPruneLeaseCancellation(e, admission)) {
+        logWarn(`VersionPicker: version switch continuation was cancelled: ${e}`);
+        return;
+      }
       setSwitching(false);
       logError(`VersionPicker: switchVersion failed: ${e}`);
       toaster.toast({ title: "RomM Sync", body: "Could not switch version" });
     }
   };
 
-  // Single-version / unknown / unbound → render nothing (zero footprint).
-  if (!versionList?.multi_version || !versionList.versions || versionList.versions.length === 0) return null;
+  const openCleanup = (romId: number): void => {
+    detach(
+      openRemovedGamesCleanupModal(romId)
+        .then((opened) => {
+          if (!opened) toaster.toast({ title: "RomM Sync", body: "This local entry already changed." });
+        })
+        .catch((error) => {
+          logError(`VersionPicker: cleanup preview failed for rom ${romId}: ${error}`);
+          toaster.toast({ title: "RomM Sync", body: "Could not prepare local cleanup." });
+        }),
+    );
+  };
+
+  if (!versionList?.multi_version) {
+    const bound = versionList?.bound_version;
+    if (!versionList?.bound_vanished || !bound?.synced) return null;
+    // A single-member group has nothing to pick between, so it renders no menu —
+    // but its vanished binding still has to SAY why the game is unusable, next to
+    // the inline cleanup that is the only action left for it.
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center" }}>
+        <DialogButton
+          className="romm-disc-btn"
+          onClick={() => openCleanup(bound.rom_id)}
+          aria-label={REMOVE_LOCAL_DATA_LABEL}
+          title={REMOVE_LOCAL_DATA_LABEL}
+        >
+          <RemoveLocalDataIcon />
+        </DialogButton>
+        <AvailabilityHint text={VANISHED_HINT} />
+      </span>
+    );
+  }
+  if (!versionList.versions || versionList.versions.length === 0) return null;
 
   const versions = versionList.versions;
   const active = versions.find((v) => v.active);
@@ -391,17 +485,9 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
   };
 
   const rowAvailabilityHint = (v: VersionInfo): ReactNode => {
-    let text: string;
-    if (v.vanished) {
-      text = "No longer available on RomM";
-    } else if (!v.switchable) {
-      text = "conflicting metadata match in RomM";
-    } else {
-      return null;
-    }
-    return (
-      <span style={{ marginLeft: "8px", fontSize: "11px", fontStyle: "italic", color: NEUTRAL_GREY }}>{text}</span>
-    );
+    if (v.vanished) return <AvailabilityHint text={VANISHED_HINT} />;
+    if (!v.switchable) return <AvailabilityHint text="conflicting metadata match in RomM" />;
+    return null;
   };
 
   const openMenu = (e: MouseEvent): void => {
@@ -410,29 +496,46 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
     if (switching) return;
     showContextMenu(
       <Menu label="Version">
-        {versions.map((v) => (
-          <MenuItem key={v.rom_id} disabled={v.vanished || !v.switchable} onClick={() => detach(handleSwitch(v))}>
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "10px",
-                color: v.active ? ACTIVE_ACCENT : undefined,
-                // Unavailable/conflicting rows stay visible as retained context,
-                // but are dimmed and disabled until RomM offers a usable target.
-                opacity: v.vanished || !v.switchable ? 0.55 : undefined,
-              }}
+        {versions.map((v) => {
+          // A synced vanished row has exactly one thing left to offer, so the row
+          // IS that offer: it carries the trash affordance and activates the
+          // cleanup confirmation. The action has to sit on the row itself — a
+          // MenuItem is the menu's focusable unit, so a nested button would be
+          // unreachable by gamepad and a row of its own belongs to no version
+          // visually. Switching stays impossible either way: handleSwitch
+          // refuses a vanished target.
+          const removable = v.vanished && v.synced;
+          return (
+            <MenuItem
+              key={v.rom_id}
+              disabled={!removable && (v.vanished || !v.switchable)}
+              {...(removable ? { tone: "destructive" as const } : {})}
+              onClick={() => (removable ? openCleanup(v.rom_id) : detach(handleSwitch(v)))}
             >
-              {rowCover(v)}
-              <span>{v.label || v.name || String(v.rom_id)}</span>
-              {v.is_default ? <Badge text="Default" tone="accent" /> : null}
-              {v.installed ? <Badge text="Downloaded" tone="good" /> : null}
-              {v.switchable && !v.synced ? <Badge text="not synced" tone="muted" /> : null}
-              {rowAvailabilityHint(v)}
-              {v.active ? <span style={{ marginLeft: "6px", fontWeight: 700 }}>✓</span> : null}
-            </span>
-          </MenuItem>
-        ))}
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  width: "100%",
+                  color: v.active ? ACTIVE_ACCENT : undefined,
+                  // Unavailable/conflicting rows stay visible as retained context,
+                  // but are dimmed until RomM offers a usable target.
+                  opacity: v.vanished || !v.switchable ? 0.55 : undefined,
+                }}
+              >
+                {rowCover(v)}
+                <span>{v.label || v.name || String(v.rom_id)}</span>
+                {v.is_default ? <Badge text="Default" tone="accent" /> : null}
+                {v.installed ? <Badge text="Downloaded" tone="good" /> : null}
+                {v.switchable && !v.synced ? <Badge text="not synced" tone="muted" /> : null}
+                {rowAvailabilityHint(v)}
+                {v.active ? <span style={{ marginLeft: "6px", fontWeight: 700 }}>✓</span> : null}
+                {removable ? <RemoveLocalDataIcon onMenuRow style={{ marginLeft: "auto", flexShrink: 0 }} /> : null}
+              </span>
+            </MenuItem>
+          );
+        })}
       </Menu>,
       getEventTarget(e),
     );
