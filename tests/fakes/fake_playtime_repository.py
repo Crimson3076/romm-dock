@@ -28,6 +28,9 @@ class FakePlaytimeRepository:
         self._playtime[rom_id] = copy.deepcopy(playtime)
 
     def delete(self, rom_id: int) -> None:
+        # Not on PlaytimeRepository — SQLite reaps this row through the roms
+        # cascade. FakeUnitOfWork has no FKs, so it models that cascade by
+        # calling this after deleting the parent.
         self._playtime.pop(rom_id, None)
 
     def iter_all(self) -> Iterator[tuple[int, Playtime]]:
@@ -53,6 +56,14 @@ class FakePlaytimeRepository:
         ]
         rows.sort(key=lambda r: (r.rom_id, r.start_time))
         return rows[:limit]
+
+    def rom_ids_with_pending_device(self, device_id: str) -> list[int]:
+        """Mirror the adapter's DISTINCT projection of outbox rows by device id."""
+        return sorted(
+            rom_id
+            for rom_id, playtime in self._playtime.items()
+            if any(session.device_id == device_id for session in playtime.pending_sessions.values())
+        )
 
     def _snapshot(self) -> dict[int, Playtime]:
         return copy.deepcopy(self._playtime)

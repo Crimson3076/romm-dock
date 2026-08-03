@@ -1,4 +1,4 @@
-"""Unit tests for the ``Playtime`` aggregate."""
+"""Unit tests for the ``Playtime`` aggregate and the pure play-session kernels."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ import pytest
 from domain.playtime import (
     PendingPlaySession,
     Playtime,
+    coerce_duration_ms,
     is_ingestable_session,
+    latest_end_time,
     rejected_session_indices,
 )
 
@@ -101,6 +103,77 @@ class TestRejectedSessionIndices:
     def test_missing_loc_is_skipped(self):
         detail = [{"msg": "no loc here"}, {"loc": ["body", "sessions", 3]}]
         assert rejected_session_indices(detail, 10) == [3]
+
+
+class TestCoerceDurationMs:
+    def test_real_int_returns_value(self):
+        assert coerce_duration_ms({"duration_ms": 5000}) == 5000
+
+    def test_float_is_truncated_to_int(self):
+        assert coerce_duration_ms({"duration_ms": 1999.9}) == 1999
+
+    def test_none_returns_zero(self):
+        assert coerce_duration_ms({"duration_ms": None}) == 0
+
+    def test_string_returns_zero(self):
+        assert coerce_duration_ms({"duration_ms": "nope"}) == 0
+
+    def test_missing_key_returns_zero(self):
+        assert coerce_duration_ms({"id": 1}) == 0
+
+    def test_non_dict_row_returns_zero(self):
+        assert coerce_duration_ms("not-a-dict") == 0
+        assert coerce_duration_ms(None) == 0
+        assert coerce_duration_ms([1, 2]) == 0
+
+    def test_bool_is_not_counted(self):
+        # bool is an int subclass — must NOT count True as 1ms.
+        assert coerce_duration_ms({"duration_ms": True}) == 0
+
+
+class TestLatestEndTime:
+    def test_newest_end_time_wins_regardless_of_order(self):
+        sessions = [
+            {"end_time": "2026-07-04T10:00:00Z"},
+            {"end_time": "2026-07-04T12:00:00Z"},
+            {"end_time": "2026-07-04T11:00:00Z"},
+        ]
+        assert latest_end_time(sessions) == "2026-07-04T12:00:00Z"
+
+    def test_offsets_are_compared_as_instants_not_as_text(self):
+        # 13:00+05:00 is 08:00Z — earlier than 10:00Z, but the larger string.
+        sessions = [{"end_time": "2026-07-04T13:00:00+05:00"}, {"end_time": "2026-07-04T10:00:00Z"}]
+        assert latest_end_time(sessions) == "2026-07-04T10:00:00Z"
+
+    def test_returns_the_servers_string_verbatim(self):
+        # The newest instant is the +02:00 row; its original string is kept so the
+        # stored last_played carries the server's format, not a normalized one.
+        sessions = [{"end_time": "2026-07-04T10:00:00Z"}, {"end_time": "2026-07-04T13:00:00+02:00"}]
+        assert latest_end_time(sessions) == "2026-07-04T13:00:00+02:00"
+
+    def test_empty_list_yields_none(self):
+        assert latest_end_time([]) is None
+
+    def test_non_dict_rows_are_skipped(self):
+        sessions = ["oops", None, 42, {"end_time": "2026-07-04T10:00:00Z"}]
+        assert latest_end_time(sessions) == "2026-07-04T10:00:00Z"
+
+    def test_missing_or_non_string_end_time_is_skipped(self):
+        sessions = [{"id": 1}, {"end_time": None}, {"end_time": 17}, {"end_time": "2026-07-04T10:00:00Z"}]
+        assert latest_end_time(sessions) == "2026-07-04T10:00:00Z"
+
+    def test_unparseable_end_time_is_skipped(self):
+        sessions = [{"end_time": "garbage"}, {"end_time": "2026-07-04T10:00:00Z"}]
+        assert latest_end_time(sessions) == "2026-07-04T10:00:00Z"
+
+    def test_all_rows_unusable_yields_none(self):
+        assert latest_end_time([{"end_time": "garbage"}, {"id": 2}, "oops"]) is None
+
+    def test_naive_aware_mismatch_keeps_the_current_newest(self):
+        # The naive row cannot be ordered against the aware one — skip the outlier
+        # rather than raise, so one odd row never crashes the reconcile.
+        sessions = [{"end_time": "2026-07-04T10:00:00Z"}, {"end_time": "2026-07-04T12:00:00"}]
+        assert latest_end_time(sessions) == "2026-07-04T10:00:00Z"
 
 
 class TestBeginSession:
@@ -289,6 +362,65 @@ class TestEnqueueSession:
             duration_ms=(playtime.last_session_duration_sec or 0) * 1000,
         )
         assert playtime.pending_sessions["2026-05-28T10:00:00"].duration_ms == 1_800_000
+
+
+class TestReassignPendingDevice:
+    """A device heal re-addresses queued sessions to the id the server now knows."""
+
+    def test_matching_rows_move_to_the_new_device(self):
+        playtime = Playtime()
+        playtime.enqueue_session(device_id="dead", start_time="s1", end_time="e1", duration_ms=100)
+        playtime.enqueue_session(device_id="dead", start_time="s2", end_time="e2", duration_ms=200)
+
+        moved = playtime.reassign_pending_device("dead", "fresh")
+
+        assert moved == 2
+        assert {s.device_id for s in playtime.pending_sessions.values()} == {"fresh"}
+
+    def test_session_payload_survives_the_move(self):
+        """Only the addressee changes — the window and its duration are untouched."""
+        playtime = Playtime()
+        playtime.enqueue_session(device_id="dead", start_time="s1", end_time="e1", duration_ms=1234)
+
+        playtime.reassign_pending_device("dead", "fresh")
+
+        assert playtime.pending_sessions == {
+            "s1": PendingPlaySession(device_id="fresh", end_time="e1", duration_ms=1234)
+        }
+
+    def test_attempts_are_preserved(self):
+        """The quarantine ceiling must survive a re-address, or the outbox loses its bound."""
+        playtime = Playtime()
+        playtime.enqueue_session(device_id="dead", start_time="s1", end_time="e1", duration_ms=100)
+        playtime.record_ingest_failure(["s1"])
+        playtime.record_ingest_failure(["s1"])
+
+        playtime.reassign_pending_device("dead", "fresh")
+
+        assert playtime.pending_sessions["s1"].attempts == 2
+
+    def test_rows_on_other_devices_are_left_alone(self):
+        playtime = Playtime()
+        playtime.enqueue_session(device_id="dead", start_time="s1", end_time="e1", duration_ms=100)
+        playtime.enqueue_session(device_id="other", start_time="s2", end_time="e2", duration_ms=200)
+
+        moved = playtime.reassign_pending_device("dead", "fresh")
+
+        assert moved == 1
+        assert playtime.pending_sessions["s1"].device_id == "fresh"
+        assert playtime.pending_sessions["s2"].device_id == "other"
+
+    def test_no_match_is_a_no_op(self):
+        playtime = Playtime()
+        playtime.enqueue_session(device_id="other", start_time="s1", end_time="e1", duration_ms=100)
+
+        assert playtime.reassign_pending_device("dead", "fresh") == 0
+        assert playtime.pending_sessions["s1"].device_id == "other"
+
+    def test_empty_outbox_is_a_no_op(self):
+        playtime = Playtime()
+        assert playtime.reassign_pending_device("dead", "fresh") == 0
+        assert playtime.pending_sessions == {}
 
 
 class TestMarkSessionsSent:

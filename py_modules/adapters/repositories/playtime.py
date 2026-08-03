@@ -87,10 +87,6 @@ class SqlitePlaytimeRepository(BaseRepository):
             ],
         )
 
-    def delete(self, rom_id: int) -> None:
-        self._conn.execute("DELETE FROM rom_playtime_sessions WHERE rom_id = ?", (rom_id,))
-        self._conn.execute("DELETE FROM rom_playtime WHERE rom_id = ?", (rom_id,))
-
     def iter_all(self) -> Iterator[tuple[int, Playtime]]:
         rom_ids = [row["rom_id"] for row in self._conn.execute("SELECT rom_id FROM rom_playtime")]
         for rom_id in rom_ids:
@@ -120,4 +116,18 @@ class SqlitePlaytimeRepository(BaseRepository):
                 attempts=row["attempts"],
             )
             for row in rows
+        ]
+
+    def rom_ids_with_pending_device(self, device_id: str) -> list[int]:
+        """Return the rom_ids holding outbox rows addressed to *device_id*.
+
+        A flat DISTINCT over the child table so a device re-address touches only
+        the affected aggregates — never a full-library rebuild.
+        """
+        return [
+            row["rom_id"]
+            for row in self._conn.execute(
+                "SELECT DISTINCT rom_id FROM rom_playtime_sessions WHERE device_id = ? ORDER BY rom_id",
+                (device_id,),
+            )
         ]

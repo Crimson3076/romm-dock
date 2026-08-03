@@ -212,16 +212,20 @@ class PlaytimeRepository(Protocol):
         """Upsert *playtime* under *rom_id*. (playtime.py session start/end)"""
         ...
 
-    def delete(self, rom_id: int) -> None:
-        """Remove playtime for *rom_id*. Idempotent. (saves/state.py orphan prune)"""
-        ...
-
     def iter_all(self) -> Iterator[tuple[int, Playtime]]:
-        """Iterate ``(rom_id, playtime)`` for every ROM. (playtime.py get_all_playtime, saves/state.py)"""
+        """Iterate ``(rom_id, playtime)`` for every ROM. (playtime.py get_all_playtime)"""
         ...
 
     def iter_pending_sessions(self, limit: int) -> list[PendingSessionRow]:
         """Return up to *limit* outbox rows directly (cheapest-first). (playtime.py flush)"""
+        ...
+
+    def rom_ids_with_pending_device(self, device_id: str) -> list[int]:
+        """Return the rom_ids holding outbox rows addressed to *device_id*.
+
+        Narrows the re-address after a device re-registration to the affected
+        aggregates. (saves/sync_engine/devices.py device heal)
+        """
         ...
 
 
@@ -234,19 +238,15 @@ class RomSaveSyncStateRepository(Protocol):
     """
 
     def get(self, rom_id: int) -> RomSaveSyncState | None:
-        """Return the save-sync state for *rom_id*, or ``None``. (saves/state.py, saves/sync_engine)"""
+        """Return the save-sync state for *rom_id*, or ``None``."""
         ...
 
     def save(self, rom_id: int, state: RomSaveSyncState) -> None:
-        """Upsert *state* under *rom_id*, replacing its child file rows. (saves/state.py, saves/sync_engine)"""
-        ...
-
-    def delete(self, rom_id: int) -> None:
-        """Remove the save-sync state for *rom_id*. Idempotent. (saves/state.py orphan prune)"""
+        """Upsert *state* under *rom_id*, replacing its child file rows."""
         ...
 
     def iter_all(self) -> Iterator[tuple[int, RomSaveSyncState]]:
-        """Iterate ``(rom_id, state)`` for every ROM. (saves/state.py orphan scan)"""
+        """Iterate ``(rom_id, state)`` for every ROM. (saves/service.py save-inventory scan)"""
         ...
 
 
