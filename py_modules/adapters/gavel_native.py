@@ -28,9 +28,9 @@ measured is a real case the decision must keep apart from a missing one.
 
 There is no fallback: if the library cannot load, :class:`GavelNativeLoadError`
 propagates so bootstrap aborts and the plugin stays inert — the same
-"fatal until the environment is fixed" posture as the SQLite migration
-gate. The in-tree :mod:`domain.sync_action` kernels are not a runtime fallback;
-they survive only as the differential oracle in tests.
+"fatal until the environment is fixed" posture as the SQLite migration gate.
+Nothing in-tree stands in for the core; :mod:`domain.sync_action` holds only the
+vocabulary the answer comes back in.
 """
 
 from __future__ import annotations
@@ -240,9 +240,8 @@ def _encode(value: str | None) -> bytes | None:
 def _optional_timestamp(value: object) -> tuple[float, int]:
     """Marshal an optional epoch-seconds value to the core's ``(mtime, has_mtime)`` pair.
 
-    A number is present; anything else — an absent key, ``None``, a string —
-    reads as absent, mirroring the in-tree kernel's ``isinstance(x, int | float)``
-    guard on ``mtime``.
+    A number is present; anything that is not one — an absent key, ``None``, a
+    string — is absent, never a coerced or substitute instant.
     """
     if isinstance(value, int | float):
         return float(value), 1
@@ -281,9 +280,9 @@ def _build_local_file(local_file: dict[str, Any] | None) -> Any:
 def _build_bookkeeping(files_state: dict[str, Any], keepalive: list[object]) -> Any:
     """Marshal the recorded per-file sync state to a struct pointer.
 
-    An empty ``files_state`` is still a record, not an absent one — the in-tree
-    kernel reads missing keys as ``None``, and a struct of unknowns says exactly
-    that.
+    An empty ``files_state`` is still a record, not an absent one: a missing key
+    is a value this device never recorded, and a struct whose every field reads
+    as unknown says exactly that.
     """
     last_sync_hash = _encode(files_state.get("last_sync_hash"))
     last_sync_server_hash = _encode(files_state.get("last_sync_server_hash"))
