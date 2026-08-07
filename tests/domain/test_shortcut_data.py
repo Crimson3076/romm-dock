@@ -148,8 +148,13 @@ class TestBuildLaunchOptions:
         result = build_launch_options(RETRODECK_INVOCATION, "/roms/dc/My Game.chd")
         assert result == 'flatpak run net.retrodeck.retrodeck "/roms/dc/My Game.chd"'
 
-    def test_empty_path_still_quoted(self):
-        assert build_launch_options(RETRODECK_INVOCATION, "") == 'flatpak run net.retrodeck.retrodeck ""'
+    def test_empty_path_yields_no_launch_command(self):
+        # An empty path is the "no launch target" signal — not downloaded, or
+        # downloaded with nothing the system can boot. Quoting it would hand the
+        # emulator a bare "" argument, which is the failure #1652 exists to
+        # prevent; the shortcut gets the same empty command an uninstalled ROM's
+        # carries instead.
+        assert build_launch_options(RETRODECK_INVOCATION, "") == ""
 
     def test_folder_boot_direct_composes_full_mgs4_command(self):
         # End-to-end: the direct invocation + the quoted game folder reproduce the
@@ -292,6 +297,23 @@ class TestBuildShortcutsData:
         result = build_shortcuts_data(roms, "/plugin", {1: "/roms/snes/installed.sfc"}, {})
         assert result[0]["launch_options"] == 'flatpak run net.retrodeck.retrodeck "/roms/snes/installed.sfc"'
         assert result[1]["launch_options"] == ""
+
+    def test_installed_rom_with_no_launch_target_gets_empty_launch_options(self):
+        # The install resolved to the empty path (launchable is False, #1652). It
+        # is still IN the map — it IS downloaded — but its shortcut carries the
+        # same empty launch command an un-downloaded ROM's does, never a command
+        # composed around a bare "".
+        roms = [{"id": 1, "name": "Sealed In A PKG"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: ""}, {})
+        assert result[0]["launch_options"] == ""
+
+    def test_no_launch_target_beats_a_core_override(self):
+        # An emulator override cannot resurrect a launch command for content the
+        # system cannot boot — no ``-e`` form is composed either.
+        roms = [{"id": 1, "name": "Sealed In A PKG"}]
+        overrides = {1: EmulatorInvocation.libretro("pcsx_rearmed_libretro")}
+        result = build_shortcuts_data(roms, "/plugin", {1: ""}, overrides)
+        assert result[0]["launch_options"] == ""
 
     def test_installed_rom_with_core_override_bakes_e_form(self):
         # A rom_id present in core_overrides bakes the -e override into its launch.

@@ -142,6 +142,26 @@ def _direct_launch_args(command: str) -> str:
 def build_launch_options(invocation: str, path: str) -> str:
     """Compose the Steam shortcut launch command from *invocation* and ROM *path*.
 
+    An empty *path* means the ROM has **no launch target**, and yields the empty
+    launch command. Composing one anyway would hand the emulator a bare ``""``
+    argument — the silent failure this rule exists to prevent.
+
+    **An empty launch command means two different things, and nothing may infer
+    which.** A ROM that is *not downloaded* and one that is *downloaded but not
+    launchable* (``RomInstall.launchable is False``, resolved to ``""`` by the
+    disc-resolver seam every bake site draws its path from) produce the same
+    empty string, and at the Steam-shortcut layer the two are indistinguishable:
+    the shortcut holds ``""`` either way. Only the data layer separates them —
+    no ``rom_installs`` row versus a row with ``launchable = 0``. Never read
+    emptiness as "not downloaded"; ask the install record.
+
+    Empty is the established uninstalled state, not a new one invented here:
+    ``addShortcut`` leaves a new shortcut's options untouched when the command
+    is ``""`` (``src/utils/steamShortcuts.ts``), the sync update/adoption path
+    writes ``""`` explicitly (``rewriteShortcutIdentity`` in
+    ``src/utils/syncManager.ts``), and an uninstall records ``""`` as the ROM's
+    ``applied_launch_options`` (``services/rom_removal.py``).
+
     The path is double-quoted so paths with spaces survive the launcher's
     ``exec "$@"``. Embedded ``\\`` and ``"`` in the path are backslash-escaped
     (backslash first, then quote) so a server-controlled ROM filename cannot
@@ -149,6 +169,8 @@ def build_launch_options(invocation: str, path: str) -> str:
     emulator invocation. Only the path is escaped — *invocation* is trusted
     build-time text whose own ``-e "..."`` quoting must survive verbatim.
     """
+    if not path:
+        return ""
     escaped = path.replace("\\", "\\\\").replace('"', '\\"')
     return f'{invocation} "{escaped}"'
 
@@ -188,7 +210,11 @@ def build_shortcuts_data(
 
     *installed_paths* maps ``rom_id`` to the resolved on-disk launch path. An
     installed ROM gets a full launch command in ``launch_options``; a ROM absent
-    from the map gets ``""`` (empty placeholder) until it is downloaded.
+    from the map gets ``""`` (empty placeholder) until it is downloaded. An
+    installed ROM the system cannot launch (``RomInstall.launchable is False``)
+    stays IN the map — it is downloaded, and the sibling-group representative
+    choice reads the key set — but maps to the empty path, which
+    :func:`build_launch_options` renders as the same empty placeholder.
 
     *core_overrides* maps ``rom_id`` to the **already-resolved**
     :class:`EmulatorInvocation` the ROM launches with (its full active emulator —
