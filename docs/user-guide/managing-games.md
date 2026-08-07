@@ -335,6 +335,14 @@ To remove a downloaded ROM file:
 
 This only removes the ROM file — the Steam shortcut, artwork, and metadata are preserved.
 
+The button switches to **Uninstalling…** as soon as you tap it, and a game made of many files counts them down as they
+go. Pressing it again while that is on screen does nothing — the removal already running is the one that finishes, and
+the plugin refuses a second one for the same game rather than letting two run against the same folder. That holds across
+both entry points: **Uninstall All ROMs** in the Danger Zone claims every game it is about to remove, so it is refused
+while a single uninstall is running, and a single uninstall is refused while the bulk run holds that game. If the plugin
+is reloaded or the Deck shuts down mid-removal, the next uninstall of that game picks up where the interrupted one
+stopped.
+
 ## Refreshing Artwork and Metadata
 
 Tap **Refresh Metadata** in the game detail panel to:

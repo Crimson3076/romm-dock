@@ -11,6 +11,7 @@ from fakes.fake_download_queue_cleanup import FakeDownloadQueueCleanup
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_rom_file_store import FakeRomFileStore
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.system_time import FakeClock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -47,12 +48,32 @@ def uow() -> FakeUnitOfWork:
     return FakeUnitOfWork()
 
 
+class RecordingEmitter:
+    """Records every ``(event, payload)`` a service emits."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, object]] = []
+
+    async def __call__(self, event: str, /, *args: object) -> None:
+        self.events.append((event, args[0] if args else None))
+
+    def payloads(self, event: str) -> list[object]:
+        return [payload for name, payload in self.events if name == event]
+
+
 @pytest.fixture
-def service(logger, queue_cleanup, rom_files, uow):
+def emitter() -> RecordingEmitter:
+    return RecordingEmitter()
+
+
+@pytest.fixture
+def service(logger, queue_cleanup, rom_files, uow, emitter):
     return RomRemovalService(
         config=RomRemovalServiceConfig(
             logger=logger,
             loop=asyncio.new_event_loop(),
+            clock=FakeClock(),
+            emit=emitter,
             rom_file_store=rom_files,
             retrodeck_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
             download_queue_cleanup=queue_cleanup,
@@ -92,6 +113,13 @@ def _make_install(rom_id: int, *, file_path: str, rom_dir: str | None = None, sy
         system=system,
         installed_at="2025-01-01T00:00:00",
     )
+
+
+def _installed(uow: FakeUnitOfWork, rom_id: int) -> RomInstall:
+    """Read a seeded install record back, failing the test if the seed did not commit."""
+    install = uow.rom_installs.get(rom_id)
+    assert install is not None
+    return install
 
 
 def _seed_install(uow: FakeUnitOfWork, install: RomInstall, *, platform_slug: str = "n64") -> None:
@@ -230,6 +258,8 @@ class TestDeleteRomFiles:
             config=RomRemovalServiceConfig(
                 logger=logger,
                 loop=asyncio.new_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
                 retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
@@ -254,6 +284,8 @@ class TestDeleteRomFiles:
             config=RomRemovalServiceConfig(
                 logger=logger,
                 loop=asyncio.new_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
                 retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
@@ -297,6 +329,8 @@ class TestDeleteRomFiles:
             config=RomRemovalServiceConfig(
                 logger=logger,
                 loop=asyncio.new_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
                 retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
@@ -310,7 +344,9 @@ class TestDeleteRomFiles:
         assert "subtree changed" in result["message"]
         assert child.read_bytes() == b"replacement"
 
-    def test_unselected_directory_replacement_after_final_claim_is_retained(self, tmp_path, logger, monkeypatch):
+    @pytest.mark.parametrize("claims", [None, {}], ids=["no-bundle", "bundle-without-this-source"])
+    def test_directory_replacement_after_a_final_claim_is_retained(self, tmp_path, logger, monkeypatch, claims):
+        """Either discipline refuses a source swapped out between its final claim and the mutation."""
         roms = tmp_path / "roms"
         rom_dir = roms / "psx" / "Game"
         rom_dir.mkdir(parents=True)
@@ -321,8 +357,8 @@ class TestDeleteRomFiles:
         store = RomFileAdapter()
         original_claim = store.claim_source
 
-        def claim_then_replace(path: str, safe_root: str):
-            claim = original_claim(path, safe_root)
+        def claim_then_replace(path: str, safe_root: str, *, digest: bool = True):
+            claim = original_claim(path, safe_root, digest=digest)
             shutil.rmtree(path)
             replacement.rename(path)
             return claim
@@ -337,6 +373,8 @@ class TestDeleteRomFiles:
             config=RomRemovalServiceConfig(
                 logger=logger,
                 loop=asyncio.new_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
                 rom_file_store=store,
                 retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
@@ -344,7 +382,7 @@ class TestDeleteRomFiles:
             )
         )
 
-        result = real_service.delete_rom_files(1)
+        result = real_service.delete_rom_files(1, claims)
 
         assert result["success"] is False
         assert "identity changed" in result["message"]
@@ -822,6 +860,8 @@ class TestDownloadQueueCleanup:
             config=RomRemovalServiceConfig(
                 logger=logger,
                 loop=asyncio.get_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
                 rom_file_store=rom_files,
                 retrodeck_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
                 download_queue_cleanup=None,
@@ -859,3 +899,387 @@ class TestBadPathRemoveRom:
         assert uow.rom_installs.get(42) is not None
         # No queue eviction on failure.
         assert queue_cleanup.evicted == []
+
+
+class TestClaimDiscipline:
+    """Which claim discipline authorizes which removal."""
+
+    def test_uninstall_claims_identity_only(self, service, uow, rom_files):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(1, file_path=rom_path))
+
+        service._remove_rom_io(1, _installed(uow, 1))
+
+        assert rom_files.claim_digests == [False]
+
+    def test_bulk_uninstall_claims_identity_only(self, service, uow, rom_files):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(1, file_path=rom_path))
+
+        service._uninstall_all_roms_io([_installed(uow, 1)])
+
+        assert rom_files.claim_digests == [False]
+
+    def test_a_source_a_sealed_bundle_did_not_capture_stays_content_bound(self, service, uow, rom_files):
+        """The bundle exists, so the hashes still have a copy to bind this deletion to."""
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(1, file_path=rom_path))
+
+        # A run that sealed a bundle but captured no installed ROM content.
+        service.delete_rom_files(1, {})
+
+        assert rom_files.claim_digests == [True]
+
+    def test_a_cleanup_run_with_no_bundle_at_all_claims_identity_only(self, service, uow, rom_files):
+        """Recovery off means no copy anywhere, so there is nothing for a hash to bind to."""
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(1, file_path=rom_path))
+
+        service.delete_rom_files(1)
+
+        assert rom_files.claim_digests == [False]
+
+    def test_a_handed_in_claim_is_not_re_claimed(self, service, uow, rom_files):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(1, file_path=rom_path))
+        claim = rom_files.claim_source(rom_path, _ROMS_BASE)
+        rom_files.claim_digests.clear()
+
+        service.delete_rom_files(1, {rom_path: claim})
+
+        assert rom_files.claim_digests == []
+
+    def test_self_claimed_uninstall_reads_no_file_content(self, tmp_path, logger):
+        """Regression seam (#1664): a self-claimed removal hashes nothing at all."""
+        import adapters.descriptor_paths as descriptor_paths
+
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        (rom_dir / "sub").mkdir(parents=True)
+        (rom_dir / "disc.bin").write_bytes(b"\x00" * 4096)
+        (rom_dir / "sub" / "data.bin").write_bytes(b"\x01" * 4096)
+        uow = FakeUnitOfWork()
+        _seed_install(
+            uow,
+            _make_install(1, file_path=str(rom_dir / "disc.bin"), rom_dir=str(rom_dir), system="psx"),
+            platform_slug="psx",
+        )
+        real_service = RomRemovalService(
+            config=RomRemovalServiceConfig(
+                logger=logger,
+                loop=asyncio.new_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
+                rom_file_store=RomFileAdapter(),
+                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                download_queue_cleanup=None,
+                uow_factory=FakeUnitOfWorkFactory(uow),
+            )
+        )
+        original = descriptor_paths._sha256_fd
+        calls = []
+        descriptor_paths._sha256_fd = lambda fd, should_abort=None: calls.append(fd) or original(fd, should_abort)
+        try:
+            real_service._remove_rom_io(1, _installed(uow, 1))
+        finally:
+            descriptor_paths._sha256_fd = original
+
+        assert calls == []
+        assert not rom_dir.exists()
+        assert uow.rom_installs.get(1) is None
+
+
+class TestInterruptedStagingRecovery:
+    """A removal interrupted between the staging rename and the last unlink (#1664)."""
+
+    @staticmethod
+    def _service(tmp_path, logger, uow, roms):
+        return RomRemovalService(
+            config=RomRemovalServiceConfig(
+                logger=logger,
+                loop=asyncio.new_event_loop(),
+                clock=FakeClock(),
+                emit=RecordingEmitter(),
+                rom_file_store=RomFileAdapter(),
+                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                download_queue_cleanup=None,
+                uow_factory=FakeUnitOfWorkFactory(uow),
+            )
+        )
+
+    def test_a_retry_over_a_staged_away_source_recovers(self, tmp_path, logger):
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        rom_dir.mkdir(parents=True)
+        (rom_dir / "disc.bin").write_bytes(b"\x00" * 64)
+        staged = rom_dir.parent / f".Game.romm-prune-{rom_dir.stat().st_ino}"
+        rom_dir.rename(staged)
+        uow = FakeUnitOfWork()
+        _seed_install(
+            uow,
+            _make_install(1, file_path=str(rom_dir / "disc.bin"), rom_dir=str(rom_dir), system="psx"),
+            platform_slug="psx",
+        )
+        service = self._service(tmp_path, logger, uow, roms)
+
+        result = service._delete_rom_files(_installed(uow, 1))
+
+        assert result["success"] is True
+        assert result["changed"] is True
+        assert not staged.exists()
+        assert not rom_dir.exists()
+
+    def test_a_retry_drops_the_install_row_and_reports_success(self, tmp_path, logger):
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        rom_dir.mkdir(parents=True)
+        (rom_dir / "disc.bin").write_bytes(b"\x00" * 64)
+        staged = rom_dir.parent / f".Game.romm-prune-{rom_dir.stat().st_ino}"
+        rom_dir.rename(staged)
+        uow = FakeUnitOfWork()
+        _seed_install(
+            uow,
+            _make_install(1, file_path=str(rom_dir / "disc.bin"), rom_dir=str(rom_dir), system="psx"),
+            platform_slug="psx",
+        )
+        service = self._service(tmp_path, logger, uow, roms)
+
+        service._remove_rom_io(1, _installed(uow, 1))
+
+        assert not staged.exists()
+        assert uow.rom_installs.get(1) is None
+
+    def test_a_bundle_backed_run_never_adopts_staging_debris(self, tmp_path, logger):
+        """Its authority came from a seal that a partially consumed source no longer matches."""
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        rom_dir.mkdir(parents=True)
+        (rom_dir / "disc.bin").write_bytes(b"\x00" * 64)
+        staged = rom_dir.parent / f".Game.romm-prune-{rom_dir.stat().st_ino}"
+        rom_dir.rename(staged)
+        uow = FakeUnitOfWork()
+        _seed_install(
+            uow,
+            _make_install(1, file_path=str(rom_dir / "disc.bin"), rom_dir=str(rom_dir), system="psx"),
+            platform_slug="psx",
+        )
+        service = self._service(tmp_path, logger, uow, roms)
+
+        # A run that sealed a bundle but captured no installed ROM content.
+        result = service.delete_rom_files(1, {})
+
+        assert result["success"] is True
+        assert result["changed"] is False
+        assert staged.is_dir()
+
+    def test_a_cleanup_run_with_no_bundle_adopts_debris_like_an_uninstall(self, tmp_path, logger):
+        """Recovery off self-seals its claim, so the same re-seal authorizes finishing the removal."""
+        roms = tmp_path / "roms"
+        rom_dir = roms / "psx" / "Game"
+        rom_dir.mkdir(parents=True)
+        (rom_dir / "disc.bin").write_bytes(b"\x00" * 64)
+        staged = rom_dir.parent / f".Game.romm-prune-{rom_dir.stat().st_ino}"
+        rom_dir.rename(staged)
+        uow = FakeUnitOfWork()
+        _seed_install(
+            uow,
+            _make_install(1, file_path=str(rom_dir / "disc.bin"), rom_dir=str(rom_dir), system="psx"),
+            platform_slug="psx",
+        )
+        service = self._service(tmp_path, logger, uow, roms)
+
+        result = service.delete_rom_files(1)
+
+        assert result["success"] is True
+        assert result["changed"] is True
+        assert not staged.exists()
+
+
+class TestBulkAndSingleExclusion:
+    """A bulk uninstall owns every tree, so it and a single removal exclude each other (#1664)."""
+
+    @pytest.mark.asyncio
+    async def test_a_bulk_run_is_refused_while_a_single_removal_is_in_flight(self, service, uow, rom_files):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(42, file_path=rom_path))
+        bulk: dict[str, object] = {}
+        entered: list[bool] = []
+
+        original = service._delete_rom_files
+
+        def run_a_bulk_uninstall_mid_removal(*args, **kwargs):
+            # The sentinel is set *before* the nested call, not after it: were
+            # the guard to regress, the bulk run would re-enter this hook while
+            # `bulk` was still empty and recurse without bound. A lost guard has
+            # to fail the assertion below, not hang the suite.
+            if not entered:
+                entered.append(True)
+                bulk.update(asyncio.run_coroutine_threadsafe(service.uninstall_all_roms(), service._loop).result())
+            return original(*args, **kwargs)
+
+        service._delete_rom_files = run_a_bulk_uninstall_mid_removal
+        result = await service.remove_rom(42)
+
+        assert result["success"] is True
+        assert bulk == {
+            "success": False,
+            "reason": "in_progress",
+            "message": "A ROM is already being uninstalled",
+        }
+        # No removal payload: that absence is the frontend's refusal discriminant.
+        assert "app_ids" not in bulk
+
+    @pytest.mark.asyncio
+    async def test_a_single_removal_is_refused_while_a_bulk_run_holds_that_rom(self, service, uow, rom_files):
+        """The bulk run claims each ROM it will remove, so the per-ROM guard is what refuses."""
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(42, file_path=rom_path))
+        single: dict[str, object] = {}
+        entered: list[bool] = []
+
+        original = service._delete_rom_files
+
+        def press_uninstall_mid_bulk(*args, **kwargs):
+            # Sentinel set before the nested call — see the sibling test.
+            if not entered:
+                entered.append(True)
+                single.update(asyncio.run_coroutine_threadsafe(service.remove_rom(42), service._loop).result())
+            return original(*args, **kwargs)
+
+        service._delete_rom_files = press_uninstall_mid_bulk
+        result = await service.uninstall_all_roms()
+
+        assert result["success"] is True
+        assert single == {
+            "success": False,
+            "reason": "in_progress",
+            "message": "This ROM is already being uninstalled",
+        }
+
+    @pytest.mark.asyncio
+    async def test_both_run_again_once_the_other_has_finished(self, service, uow, rom_files):
+        """Edge: the guards are released, so neither entry point stays locked out."""
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(42, file_path=rom_path))
+
+        first = await service.remove_rom(42)
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(42, file_path=rom_path))
+        second = await service.uninstall_all_roms()
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert second["removed_count"] == 1
+
+
+class TestConcurrentUninstall:
+    """The per-ROM in-flight guard (#1664)."""
+
+    @pytest.mark.asyncio
+    async def test_a_second_press_for_the_same_rom_is_refused(self, service, uow, rom_files):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(42, file_path=rom_path))
+        second: dict[str, object] = {}
+
+        original = service._delete_rom_files
+
+        def remove_while_a_second_press_arrives(*args, **kwargs):
+            second.update(asyncio.run_coroutine_threadsafe(service.remove_rom(42), service._loop).result())
+            return original(*args, **kwargs)
+
+        service._delete_rom_files = remove_while_a_second_press_arrives
+        result = await service.remove_rom(42)
+
+        assert result["success"] is True
+        assert second == {
+            "success": False,
+            "reason": "in_progress",
+            "message": "This ROM is already being uninstalled",
+        }
+        assert rom_path not in rom_files.files
+
+    @pytest.mark.asyncio
+    async def test_a_later_press_for_the_same_rom_is_accepted_again(self, service, uow, rom_files):
+        """Edge: the guard is released, so a retry after a failure is not locked out."""
+        rom_dir = f"{_ROMS_BASE}/psx/FF7"
+        rom_files.files[f"{rom_dir}/disc1.bin"] = b"\x00" * 100
+        rom_files.remove_tree_failures.add(rom_dir)
+        _seed_install(
+            uow,
+            _make_install(42, file_path=f"{rom_dir}/FF7.m3u", rom_dir=rom_dir, system="psx"),
+            platform_slug="psx",
+        )
+
+        first = await service.remove_rom(42)
+        rom_files.remove_tree_failures.clear()
+        second = await service.remove_rom(42)
+
+        assert first["success"] is False
+        assert second["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_different_rom_is_not_blocked(self, service, uow, rom_files):
+        path_a = f"{_ROMS_BASE}/n64/a.z64"
+        path_b = f"{_ROMS_BASE}/n64/b.z64"
+        rom_files.files[path_a] = b"a"
+        rom_files.files[path_b] = b"b"
+        _seed_install(uow, _make_install(1, file_path=path_a))
+        _seed_install(uow, _make_install(2, file_path=path_b))
+        other: dict[str, object] = {}
+
+        original = service._delete_rom_files
+
+        def remove_while_another_rom_is_pressed(*args, **kwargs):
+            if not other:
+                other.update(asyncio.run_coroutine_threadsafe(service.remove_rom(2), service._loop).result())
+            return original(*args, **kwargs)
+
+        service._delete_rom_files = remove_while_another_rom_is_pressed
+        result = await service.remove_rom(1)
+
+        assert result["success"] is True
+        assert other["success"] is True
+
+
+class TestRemovalProgressFrames:
+    """``uninstall_progress`` visibility for a removal long enough to look dead (#1664)."""
+
+    @pytest.mark.asyncio
+    async def test_a_multi_file_removal_emits_a_terminal_frame(self, service, uow, rom_files, emitter):
+        rom_dir = f"{_ROMS_BASE}/psx/FF7"
+        rom_files.files[f"{rom_dir}/disc1.bin"] = b"\x00" * 100
+        rom_files.files[f"{rom_dir}/disc2.bin"] = b"\x00" * 100
+        _seed_install(
+            uow,
+            _make_install(42, file_path=f"{rom_dir}/FF7.m3u", rom_dir=rom_dir, system="psx"),
+            platform_slug="psx",
+        )
+
+        await service.remove_rom(42)
+        await asyncio.sleep(0)
+
+        assert emitter.payloads("uninstall_progress")[-1] == {
+            "rom_id": 42,
+            "files_removed": 2,
+            "files_total": 2,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_single_file_removal_emits_nothing(self, service, uow, rom_files, emitter):
+        rom_path = f"{_ROMS_BASE}/n64/game.z64"
+        rom_files.files[rom_path] = b"rom"
+        _seed_install(uow, _make_install(42, file_path=rom_path))
+
+        await service.remove_rom(42)
+        await asyncio.sleep(0)
+
+        assert emitter.payloads("uninstall_progress") == []

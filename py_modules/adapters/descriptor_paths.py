@@ -66,33 +66,47 @@ def raise_if_aborted(should_abort: Callable[[], bool] | None) -> None:
         raise OperationAbortedError("The operation was cancelled before it committed anything.")
 
 
-def claim_source(path: str, safe_root: str, should_abort: Callable[[], bool] | None = None) -> SourceClaim:
+def claim_source(
+    path: str,
+    safe_root: str,
+    should_abort: Callable[[], bool] | None = None,
+    *,
+    digest: bool = True,
+) -> SourceClaim:
     """Capture a complete no-follow identity claim for one source tree.
 
     *should_abort* makes claiming a large tree interruptible: it is polled per
     directory entry and per hashed chunk, and a true answer raises
     :class:`OperationAbortedError` rather than finishing the walk.
+
+    *digest* decides whether every regular file is also content-hashed. A hash
+    binds the claim to bytes held somewhere else — a recovery bundle's copy —
+    and costs one full read of the tree per validation pass. A claim sealed and
+    consumed by the same caller has no such second copy to bind to, so it takes
+    the identity-only form and the claim records which discipline authorized it.
     """
     try:
         parent_fd, name = _open_parent(path, safe_root)
     except FileNotFoundError:
-        return _claim(path, safe_root, missing_identity(), None, {})
+        return _claim(path, safe_root, missing_identity(), None, {}, digest)
     try:
         current = _stat_name(parent_fd, name)
         if current is None:
-            return _claim(path, safe_root, missing_identity(), None, {})
+            return _claim(path, safe_root, missing_identity(), None, {}, digest)
         if stat.S_ISREG(current.st_mode):
             file_fd = _open_child_regular(parent_fd, name)
             try:
                 _require_same_mount(parent_fd, file_fd, path)
                 identity = _identity_for_fd(file_fd)
                 _require_entry_matches_fd(path, current, identity)
-                digest = _sha256_fd(file_fd, should_abort)
-                if _identity_for_fd(file_fd) != identity:
-                    raise RuntimeError(f"Recovery source changed while it was claimed: {path}")
+                sha256 = None
+                if digest:
+                    sha256 = _sha256_fd(file_fd, should_abort)
+                    if _identity_for_fd(file_fd) != identity:
+                        raise RuntimeError(f"Recovery source changed while it was claimed: {path}")
             finally:
                 os.close(file_fd)
-            return _claim(path, safe_root, identity, digest, {})
+            return _claim(path, safe_root, identity, sha256, {}, digest)
         if stat.S_ISLNK(current.st_mode):
             raise ValueError(f"Recovery source may not be a symlink: {path}")
         if not stat.S_ISDIR(current.st_mode):
@@ -102,12 +116,21 @@ def claim_source(path: str, safe_root: str, should_abort: Callable[[], bool] | N
             _require_same_mount(parent_fd, directory_fd, path)
             identity = _identity_for_fd(directory_fd)
             _require_entry_matches_fd(path, current, identity)
-            entries = _inventory_directory(directory_fd, identity["mount_id"], should_abort=should_abort)
+            entries = _inventory_directory(directory_fd, identity["mount_id"], should_abort=should_abort, digest=digest)
         finally:
             os.close(directory_fd)
-        return _claim(path, safe_root, identity, None, entries)
+        return _claim(path, safe_root, identity, None, entries, digest)
     finally:
         os.close(parent_fd)
+
+
+def staging_prefix(name: str) -> str:
+    """Return the prefix a staged-away *name* is renamed to before it is unlinked.
+
+    An interrupted removal leaves such an entry under the source's own parent,
+    so the reclaim path needs the same format the mutation writes.
+    """
+    return f".{name}.romm-prune-"
 
 
 def measure_tree(path: str, safe_root: str) -> int:
@@ -146,8 +169,17 @@ def measure_tree(path: str, safe_root: str) -> int:
         os.close(parent_fd)
 
 
-def remove_claimed(path: str, safe_root: str, claim: SourceClaim) -> MutationOutcome:
-    """Claim, revalidate, and durably remove exactly one source tree."""
+def remove_claimed(
+    path: str,
+    safe_root: str,
+    claim: SourceClaim,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> MutationOutcome:
+    """Claim, revalidate, and durably remove exactly one source tree.
+
+    *on_progress* is called after each regular file's unlink with the number
+    removed so far and the claim's total, on the calling thread.
+    """
     _require_claim_shape(path, safe_root, claim)
     expected = claim["source_identity"]
     try:
@@ -161,13 +193,14 @@ def remove_claimed(path: str, safe_root: str, claim: SourceClaim) -> MutationOut
         _require_identity(path, current, expected)
         if current is None:
             return _outcome(success=True, changed=False, ambiguous=False, message=_ALREADY_ABSENT)
-        temporary = f".{name}.romm-prune-{current.st_ino}"
+        temporary = f"{staging_prefix(name)}{current.st_ino}"
         if _stat_name(parent_fd, temporary) is not None:
             raise FileExistsError(f"Prune staging entry already exists: {temporary}")
         rename_noreplace_at(parent_fd, name, parent_fd, temporary)
         claimed = _stat_name(parent_fd, temporary)
         lease_stack = contextlib.ExitStack()
         leased_files: dict[str, int] = {}
+        progress = _RemovalProgress(_claimed_file_count(claim), on_progress)
         try:
             _require_claimed_identity(path, claimed, expected)
             _lease_claimed_source(path, parent_fd, temporary, current, claim, lease_stack, leased_files)
@@ -178,7 +211,7 @@ def remove_claimed(path: str, safe_root: str, claim: SourceClaim) -> MutationOut
             raise
         removal_error: BaseException | None = None
         try:
-            _unlink_claimed_source(path, parent_fd, temporary, current, claim, leased_files)
+            _unlink_claimed_source(path, parent_fd, temporary, current, claim, leased_files, progress)
         except Exception as exc:
             removal_error = exc
         try:
@@ -195,7 +228,7 @@ def remove_claimed(path: str, safe_root: str, claim: SourceClaim) -> MutationOut
                 success=False,
                 changed=True,
                 ambiguous=True,
-                message=f"Source removal stopped after the source was claimed: {removal_error}",
+                message=f"Source removal stopped after {progress.summary()}: {removal_error}",
             )
         try:
             os.fsync(parent_fd)
@@ -443,6 +476,7 @@ def _inventory_directory(
     prefix: str = "",
     *,
     should_abort: Callable[[], bool] | None = None,
+    digest: bool = True,
 ) -> dict[str, SourceEntry]:
     entries: dict[str, SourceEntry] = {}
     for name in sorted(os.listdir(directory_fd)):
@@ -456,7 +490,9 @@ def _inventory_directory(
                 identity = _identity_for_fd(child_fd)
                 _require_entry_matches_fd(relative, current, identity)
                 entries[relative] = {"identity": identity}
-                entries.update(_inventory_directory(child_fd, mount_id, relative, should_abort=should_abort))
+                entries.update(
+                    _inventory_directory(child_fd, mount_id, relative, should_abort=should_abort, digest=digest)
+                )
             finally:
                 os.close(child_fd)
         elif stat.S_ISREG(current.st_mode):
@@ -465,10 +501,12 @@ def _inventory_directory(
                 _require_mount_id(file_fd, mount_id, relative)
                 identity = _identity_for_fd(file_fd)
                 _require_entry_matches_fd(relative, current, identity)
-                digest = _sha256_fd(file_fd, should_abort)
-                if _identity_for_fd(file_fd) != identity:
-                    raise RuntimeError(f"Recovery source changed while inventorying: {relative}")
-                entries[relative] = {"identity": identity, "sha256": digest}
+                entry: SourceEntry = {"identity": identity}
+                if digest:
+                    entry["sha256"] = _sha256_fd(file_fd, should_abort)
+                    if _identity_for_fd(file_fd) != identity:
+                        raise RuntimeError(f"Recovery source changed while inventorying: {relative}")
+                entries[relative] = entry
             finally:
                 os.close(file_fd)
         else:
@@ -515,6 +553,7 @@ def _claim(
     identity: SourceIdentity,
     sha256: str | None,
     entries: dict[str, SourceEntry],
+    content_bound: bool,
 ) -> SourceClaim:
     return {
         "source_path": path,
@@ -522,7 +561,37 @@ def _claim(
         "source_identity": identity,
         "sha256": sha256,
         "entries": entries,
+        "content_bound": content_bound,
     }
+
+
+class _RemovalProgress:
+    """Counts unlinked regular files and reports each one to an optional observer."""
+
+    def __init__(self, total: int, on_progress: Callable[[int, int], None] | None) -> None:
+        self._total = total
+        self._on_progress = on_progress
+        self._removed = 0
+
+    def tick(self) -> None:
+        self._removed += 1
+        if self._on_progress is not None:
+            self._on_progress(self._removed, self._total)
+
+    def summary(self) -> str:
+        """How far the removal got, for a stopped removal's report."""
+        if self._removed == 0:
+            return "the source was claimed and no file was removed"
+        return f"{self._removed} of {self._total} files were removed"
+
+
+def _claimed_file_count(claim: SourceClaim) -> int:
+    """Count the regular files one claim authorizes removing."""
+    if not claim["source_identity"]["exists"]:
+        return 0
+    if stat.S_ISDIR(claim["source_identity"]["mode"]):
+        return sum(1 for entry in claim["entries"].values() if stat.S_ISREG(entry["identity"]["mode"]))
+    return 1
 
 
 def _require_claim_shape(path: str, safe_root: str, claim: SourceClaim) -> None:
@@ -546,31 +615,42 @@ def _lease_claimed_source(
     lease_stack: contextlib.ExitStack,
     leased_files: dict[str, int],
 ) -> None:
-    """Hold writer exclusion over the claimed source and refuse any drift since sealing."""
+    """Hold writer exclusion over the claimed source and refuse any drift since sealing.
+
+    A content-bound claim holds every descendant's lease from here through the
+    whole tree's unlink, so the removal is all-or-nothing. An identity-only
+    directory cannot: a tree of tens of thousands of files would exhaust the
+    process's descriptor limit and become impossible to remove at all. It proves
+    the same thing one file at a time instead — *leased_files* stays empty and
+    each file is leased again for its own unlink.
+    """
     expected = claim["source_identity"]
+    content_bound = claim["content_bound"]
     if stat.S_ISDIR(current.st_mode):
         directory_fd = _open_child_directory(parent_fd, temporary)
         try:
             _require_same_mount(parent_fd, directory_fd, path)
-            actual_entries = _inventory_directory(directory_fd, expected["mount_id"])
+            actual_entries = _inventory_directory(directory_fd, expected["mount_id"], digest=content_bound)
         finally:
             os.close(directory_fd)
         if actual_entries != claim["entries"]:
             raise RuntimeError(f"Recovery source subtree changed after sealing: {path}")
         directory_fd = _open_child_directory(parent_fd, temporary)
         try:
-            _acquire_directory_leases(
-                directory_fd,
-                claim["entries"],
-                expected["mount_id"],
-                lease_stack,
-                leased_files,
-            )
+            if content_bound:
+                _acquire_directory_leases(
+                    directory_fd,
+                    claim["entries"],
+                    expected["mount_id"],
+                    lease_stack,
+                    leased_files,
+                )
             _validate_claimed_directory(
                 directory_fd,
                 claim["entries"],
                 expected["mount_id"],
                 leased_files=leased_files,
+                content_bound=content_bound,
             )
         finally:
             os.close(directory_fd)
@@ -580,7 +660,7 @@ def _lease_claimed_source(
         file_fd = lease_stack.enter_context(_leased_regular(parent_fd, temporary, path))
         leased_files[""] = file_fd
         _require_same_mount(parent_fd, file_fd, path)
-        _require_file_claim(path, file_fd, expected, claim["sha256"], claimed=True)
+        _require_file_claim(path, file_fd, expected, claim["sha256"], claimed=True, content_bound=content_bound)
 
 
 def _unlink_claimed_source(
@@ -590,6 +670,7 @@ def _unlink_claimed_source(
     current: os.stat_result,
     claim: SourceClaim,
     leased_files: dict[str, int],
+    progress: _RemovalProgress,
 ) -> None:
     """Delete the claimed source, each regular file re-proved immediately before its unlink."""
     expected = claim["source_identity"]
@@ -601,16 +682,21 @@ def _unlink_claimed_source(
                 claim["entries"],
                 expected["mount_id"],
                 leased_files=leased_files,
+                content_bound=claim["content_bound"],
+                progress=progress,
             )
         finally:
             os.close(directory_fd)
         os.rmdir(temporary, dir_fd=parent_fd)
     else:
         file_fd = leased_files[""]
-        _require_file_claim(path, file_fd, expected, claim["sha256"], claimed=True)
+        _require_file_claim(
+            path, file_fd, expected, claim["sha256"], claimed=True, content_bound=claim["content_bound"]
+        )
         current_claim = os.stat(temporary, dir_fd=parent_fd, follow_symlinks=False)
         _require_entry_matches_fd(path, current_claim, _identity_for_fd(file_fd))
         os.unlink(temporary, dir_fd=parent_fd)
+        progress.tick()
 
 
 def _require_claim_before_rename(
@@ -622,11 +708,12 @@ def _require_claim_before_rename(
 ) -> None:
     """Refuse a rename whose source drifted from the sealed claim."""
     expected = claim["source_identity"]
+    content_bound = claim["content_bound"]
     if stat.S_ISDIR(current.st_mode):
         directory_fd = _open_child_directory(source_fd, source_name)
         try:
             _require_same_mount(source_fd, directory_fd, src)
-            if _inventory_directory(directory_fd, expected["mount_id"]) != claim["entries"]:
+            if _inventory_directory(directory_fd, expected["mount_id"], digest=content_bound) != claim["entries"]:
                 raise RuntimeError(f"Recovery source subtree changed after sealing: {src}")
         finally:
             os.close(directory_fd)
@@ -636,7 +723,7 @@ def _require_claim_before_rename(
         file_fd = _open_child_regular(source_fd, source_name)
         try:
             _require_same_mount(source_fd, file_fd, src)
-            _require_file_claim(src, file_fd, expected, claim["sha256"], claimed=False)
+            _require_file_claim(src, file_fd, expected, claim["sha256"], claimed=False, content_bound=content_bound)
         finally:
             os.close(file_fd)
 
@@ -650,11 +737,12 @@ def _require_claim_after_rename(
 ) -> None:
     """Refuse a rename whose source drifted while it was moved."""
     expected = claim["source_identity"]
+    content_bound = claim["content_bound"]
     if stat.S_ISDIR(current.st_mode):
         directory_fd = _open_child_directory(destination_fd, destination_name)
         try:
             _require_same_mount(destination_fd, directory_fd, src)
-            if _inventory_directory(directory_fd, expected["mount_id"]) != claim["entries"]:
+            if _inventory_directory(directory_fd, expected["mount_id"], digest=content_bound) != claim["entries"]:
                 raise RuntimeError(f"Recovery source subtree changed while it was renamed: {src}")
         finally:
             os.close(directory_fd)
@@ -662,7 +750,7 @@ def _require_claim_after_rename(
         file_fd = _open_child_regular(destination_fd, destination_name)
         try:
             _require_same_mount(destination_fd, file_fd, src)
-            _require_file_claim(src, file_fd, expected, claim["sha256"], claimed=True)
+            _require_file_claim(src, file_fd, expected, claim["sha256"], claimed=True, content_bound=content_bound)
         finally:
             os.close(file_fd)
 
@@ -798,13 +886,16 @@ def _require_file_claim(
     expected_hash: str | None,
     *,
     claimed: bool,
+    content_bound: bool = True,
 ) -> None:
-    if expected_hash is None:
+    if content_bound and expected_hash is None:
         raise ValueError(f"Regular-file recovery claim has no content hash: {path}")
     before = _identity_for_fd(fd)
     stable_fields = ("mount_id", "device", "inode", "mode", "size", "mtime_ns") if claimed else tuple(expected)
     if any(before[field] != expected[field] for field in stable_fields if field != "exists"):
         raise RuntimeError(f"Recovery source identity changed after sealing: {path}")
+    if expected_hash is None:
+        return
     if _sha256_fd(fd) != expected_hash or _identity_for_fd(fd) != before:
         raise RuntimeError(f"Recovery source content changed after sealing: {path}")
 
@@ -845,6 +936,11 @@ def _acquire_directory_leases(
     leased_files: dict[str, int],
     prefix: str = "",
 ) -> None:
+    """Hold every descendant file's lease on *lease_stack* until the whole tree is gone.
+
+    Only a content-bound claim takes this route, so every file has a hash here;
+    an identity-only one is leased per unlink instead.
+    """
     for name, relative, expected, current in _claimed_children(directory_fd, entries, prefix, _EXCLUSION_DRIFT):
         if stat.S_ISDIR(current.st_mode):
             child_fd = _open_child_directory(directory_fd, name)
@@ -859,7 +955,14 @@ def _acquire_directory_leases(
             file_fd = lease_stack.enter_context(_leased_regular(directory_fd, name, relative))
             _require_mount_id(file_fd, mount_id, relative)
             _require_entry_matches_fd(relative, current, _identity_for_fd(file_fd))
-            _require_file_claim(relative, file_fd, expected["identity"], expected.get("sha256"), claimed=False)
+            _require_file_claim(
+                relative,
+                file_fd,
+                expected["identity"],
+                expected.get("sha256"),
+                claimed=False,
+                content_bound=True,
+            )
             leased_files[relative] = file_fd
         else:
             raise ValueError(f"Recovery source contains unsupported entry: {relative}")
@@ -872,7 +975,16 @@ def _delete_claimed_directory(
     prefix: str = "",
     *,
     leased_files: dict[str, int],
+    content_bound: bool,
+    progress: _RemovalProgress,
 ) -> None:
+    """Unlink every claimed file, each re-proved under writer exclusion held across its own unlink.
+
+    Under a content-bound claim that exclusion was taken over the whole tree
+    before this pass began; under an identity-only one each file is leased here
+    and released once it is gone, which is what lets a tree larger than the
+    descriptor limit be removed at all.
+    """
     for name, relative, expected, current in _claimed_children(directory_fd, entries, prefix, _CONSUMED_DRIFT):
         if stat.S_ISDIR(current.st_mode):
             child_fd = _open_child_directory(directory_fd, name)
@@ -886,16 +998,31 @@ def _delete_claimed_directory(
                     mount_id,
                     relative,
                     leased_files=leased_files,
+                    content_bound=content_bound,
+                    progress=progress,
                 )
             finally:
                 os.close(child_fd)
             os.rmdir(name, dir_fd=directory_fd)
         elif stat.S_ISREG(current.st_mode):
-            file_fd = leased_files[relative]
-            _require_mount_id(file_fd, mount_id, relative)
-            _require_entry_matches_fd(relative, current, _identity_for_fd(file_fd))
-            _require_file_claim(relative, file_fd, expected["identity"], expected.get("sha256"), claimed=False)
-            os.unlink(name, dir_fd=directory_fd)
+            with contextlib.ExitStack() as unlink_stack:
+                file_fd = (
+                    leased_files[relative]
+                    if content_bound
+                    else unlink_stack.enter_context(_leased_regular(directory_fd, name, relative))
+                )
+                _require_mount_id(file_fd, mount_id, relative)
+                _require_entry_matches_fd(relative, current, _identity_for_fd(file_fd))
+                _require_file_claim(
+                    relative,
+                    file_fd,
+                    expected["identity"],
+                    expected.get("sha256"),
+                    claimed=False,
+                    content_bound=content_bound,
+                )
+                os.unlink(name, dir_fd=directory_fd)
+            progress.tick()
         else:
             raise ValueError(f"Recovery source contains unsupported entry: {relative}")
 
@@ -907,15 +1034,22 @@ def _validate_claimed_directory(
     prefix: str = "",
     *,
     leased_files: dict[str, int],
+    content_bound: bool,
 ) -> None:
-    """Refuse the whole subtree before any unlink if it changed since leasing.
+    """Refuse the whole subtree before any unlink if it drifted since it was claimed.
 
-    Every regular file is already held under writer exclusion and was hashed
-    while its lease was taken, so the only remaining change this pass can see is
-    a directory-entry level one — a rename, unlink, or create at a claimed name.
-    Content is re-hashed once more per file immediately before its unlink in
-    :func:`_delete_claimed_directory`, which is the authoritative pre-mutation
-    validation.
+    Under a content-bound claim every regular file is already held under writer
+    exclusion and was hashed while its lease was taken, so the only remaining
+    change this pass can see is a directory-entry level one — a rename, unlink,
+    or create at a claimed name. Content is re-hashed once more per file
+    immediately before its unlink in :func:`_delete_claimed_directory`, which is
+    the authoritative pre-mutation validation.
+
+    Under an identity-only claim nothing is leased yet, so this pass takes and
+    drops each file's lease in turn. That keeps the guarantee that matters most:
+    a writer holding any file in the tree, or any identity drift, refuses the
+    whole subtree with nothing deleted. Only a writer that arrives *during* the
+    unlink loop can reach a partial removal, and that is reported as one.
     """
     for name, relative, expected, current in _claimed_children(directory_fd, entries, prefix, _CONSUMED_DRIFT):
         if stat.S_ISDIR(current.st_mode):
@@ -924,14 +1058,26 @@ def _validate_claimed_directory(
                 _require_mount_id(child_fd, mount_id, relative)
                 if _identity_for_fd(child_fd) != expected["identity"]:
                     raise RuntimeError(f"Recovery source changed while it was consumed: {relative}")
-                _validate_claimed_directory(child_fd, entries, mount_id, relative, leased_files=leased_files)
+                _validate_claimed_directory(
+                    child_fd,
+                    entries,
+                    mount_id,
+                    relative,
+                    leased_files=leased_files,
+                    content_bound=content_bound,
+                )
             finally:
                 os.close(child_fd)
         elif stat.S_ISREG(current.st_mode):
-            file_fd = leased_files[relative]
-            _require_mount_id(file_fd, mount_id, relative)
-            _require_entry_matches_fd(relative, current, _identity_for_fd(file_fd))
-            if _identity_for_fd(file_fd) != expected["identity"]:
-                raise RuntimeError(f"Recovery source changed while it was consumed: {relative}")
+            with contextlib.ExitStack() as probe:
+                file_fd = (
+                    leased_files[relative]
+                    if content_bound
+                    else probe.enter_context(_leased_regular(directory_fd, name, relative))
+                )
+                _require_mount_id(file_fd, mount_id, relative)
+                _require_entry_matches_fd(relative, current, _identity_for_fd(file_fd))
+                if _identity_for_fd(file_fd) != expected["identity"]:
+                    raise RuntimeError(f"Recovery source changed while it was consumed: {relative}")
         else:
             raise ValueError(f"Recovery source contains unsupported entry: {relative}")
