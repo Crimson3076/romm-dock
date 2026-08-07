@@ -65,7 +65,6 @@ import { formatBytes, formatLastPlayed, formatPlaytime } from "../utils/formatte
 import { biosColorForLevel } from "../utils/biosColor";
 import { timeoutMs } from "../utils/playSection";
 import {
-  getGameDetail,
   noteSaveSyncDisplay,
   refreshBiosStatus,
   refreshCoreAndBios,
@@ -77,6 +76,23 @@ import {
  *  on the pair, not the appId alone: a version switch re-binds the appId to a
  *  new rom_id whose artwork has to be applied afresh (#1298 item 3). */
 const artworkApplied = new Map<number, number>();
+
+/** How long the authoritative connection check may run before the wait itself is
+ *  worth a log line. It is NOT a deadline after which the server counts as
+ *  unreachable — see the check below. */
+const CONNECTION_CHECK_DEADLINE_MS = 5000;
+
+/** Source of connection-check ids, in start order. Ids are handed out at module
+ *  level rather than per component because the state they order is module-level
+ *  too — two play sections briefly overlap while Steam swaps game pages. */
+let connectionCheckSeq = 0;
+
+/** Id of the newest check that has WRITTEN a verdict. An older check must not
+ *  write over it — its answer is to a question a newer one has already answered.
+ *  Ordering on the write rather than on the start is what keeps a check that is
+ *  abandoned before it answers (its page closed while the server was still
+ *  thinking) from silencing the verdict of a page that is still open. */
+let lastSettledCheckId = 0;
 
 /** Resolve the LAST PLAYED display, preferring our restored cross-device
  *  `last_played` (ISO-8601, from `reconcile_playtime` / native play sessions,
@@ -111,7 +127,12 @@ interface PlaytimeState {
   playtime: string;
 }
 
-import { setRommConnectionState, setVersionError, useRommConnectionState } from "../utils/connectionState";
+import {
+  setRommConnectionState,
+  setVersionError,
+  useRommConnectionState,
+  type RommConnectionState,
+} from "../utils/connectionState";
 import { registerConnectionHeartbeat } from "../utils/connectionHeartbeat";
 import { useVersionError } from "./VersionErrorCard";
 import { useMigrationStatus } from "./MigrationBlockedPage";
@@ -146,8 +167,10 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
   const connectionState = useRommConnectionState();
   const [actionPending, setActionPending] = useState<string | null>(null);
 
-  // Drive the offline recovery probe while this game page is mounted (#1345).
-  // A module-level guard keeps the ~30s re-probe single-instance and offline-only.
+  // Drive the reachability heartbeat while this game page is mounted (#1345) —
+  // it reports in both directions, so the badge follows the server going away as
+  // well as coming back. A module-level guard keeps the ~30s re-probe
+  // single-instance however many pages register it.
   useEffect(() => registerConnectionHeartbeat(), []);
 
   useEffect(() => {
@@ -171,35 +194,33 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       .catch((e) => debugLog(`Auto-artwork error: ${e}`));
   }, [appId, detail.romId]);
 
-  // Background connection check — runs after initial cached render
-  // If connected + installed + save sync enabled, also runs background save status check
+  // Connection check — exactly one per mount, issued before this page's other
+  // RomM reads rather than behind them. Keyed on appId alone: the verdict is
+  // about the server, so nothing this page later learns about the ROM can change
+  // it, and re-running the check when a store field settled meant the FIRST
+  // (fast, idle-backend) answer was discarded as cancelled and the second one
+  // queued behind the mount's own calls until it missed its deadline (#1670).
   useEffect(() => {
+    const checkId = ++connectionCheckSeq;
     let cancelled = false;
-
-    // Background save-status check — detects new conflicts once the connection
-    // check confirms the server is reachable (save-sync only). The read itself
-    // and the state it produces belong to the store; what stays here is the
-    // conflict notification for the other save-sync surfaces. Playtime
-    // reconcile-on-view is a separate, connectivity-independent effect (#1345).
-    async function doSaveCheck(isCancelled: boolean) {
-      const { romId, saveSyncEnabled } = getGameDetail(appId);
-      if (!romId || !saveSyncEnabled) return;
-      try {
-        const saveStatus = await refreshSaveStatus(appId);
-        if (isCancelled || !saveStatus) return;
-        globalThis.dispatchEvent(
-          new CustomEvent("romm_data_changed", {
-            detail: { type: "save_sync", rom_id: romId, has_conflict: hasAnySaveConflict(saveStatus) },
-          }),
-        );
-      } catch (e) {
-        detach(debugLog(`RomMPlaySection: background save check error: ${e}`));
-      }
-    }
-
     // Once testConnection() lands an authoritative verdict, the fast probe must
     // not override it (avoids a late probe clobbering a "connected" badge).
     let settled = false;
+
+    /** An answer this check obtained is only still worth writing while nothing
+     *  newer has answered: after unmount, and after a later check wrote its own
+     *  verdict, writing it would put a stale verdict over a fresh one. A newer
+     *  check that has merely STARTED does not supersede — it may yet be
+     *  abandoned unanswered, and then this check's answer is the only one
+     *  anybody is going to get. */
+    const superseded = () => cancelled || checkId < lastSettledCheckId;
+
+    /** Write a verdict and record this check as the newest one to have answered.
+     *  The single place either happens, so the two cannot drift apart. */
+    const settleWith = (next: RommConnectionState, reason: string) => {
+      lastSettledCheckId = checkId;
+      setRommConnectionState(next, reason);
+    };
 
     // Fast offline-badge probe (ADR-0015): the slow `testConnection()` below
     // goes through the retrying heartbeat (3 attempts + backoff, up to ~90s on a
@@ -221,48 +242,105 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
         });
       // The fast probe is an EARLY hint, not the authority. Bail if testConnection
       // already settled an authoritative verdict (so a late probe can't clobber
-      // "connected"), or if cancelled / not offline. The shared store notifies
+      // "connected"), or if superseded / not offline. The shared store notifies
       // its subscribers on the change (#1345).
-      if (cancelled || settled || !offline) return;
-      setRommConnectionState("offline");
+      if (superseded() || settled || !offline) return;
+      settleWith("offline", "fast probe");
+    };
+
+    const applyVerdict = (result: Awaited<ReturnType<typeof testConnection>>) => {
+      if (superseded()) return;
+      settled = true; // authoritative verdict in hand — a late fast probe must not override it
+      if (result.reason === "version_error") {
+        setVersionError(result.message);
+        settleWith("offline", "version error");
+        return;
+      }
+      settleWith(result.success ? "connected" : "offline", "authoritative verdict");
+    };
+
+    /** Obtain the verdict and apply it. Declared async so a SYNCHRONOUS throw
+     *  out of the callable bridge arrives here as a rejection instead of
+     *  escaping into the fire-and-forget `check()` unlogged — a bridge that
+     *  cannot be called at all is as much a reachability signal as a rejected
+     *  promise. Only the CALL is guarded: a throw out of applyVerdict is a
+     *  subscriber's defect, not a verdict, and must not be reported as one. */
+    const runVerdict = async () => {
+      let result: Awaited<ReturnType<typeof testConnection>>;
+      try {
+        result = await testConnection();
+      } catch (e) {
+        if (superseded()) return;
+        settled = true;
+        detach(debugLog(`RomMPlaySection(${appId}): connection check failed: ${e}`));
+        settleWith("offline", "check failed");
+        return;
+      }
+      applyVerdict(result);
     };
 
     const check = async () => {
       // Reset stale connection state immediately so downstream consumers
       // (e.g. CustomPlayButton) don't stay stuck on a previous "offline"
-      setRommConnectionState("checking");
+      setRommConnectionState("checking", "connection check started");
 
       // Snappy offline badge — runs concurrently with the precise check below.
       detach(fastOfflineProbe());
 
-      try {
-        const result = await Promise.race([testConnection(), timeoutMs(5000)]);
-        if (cancelled) return;
-        settled = true; // authoritative verdict in hand — a late fast probe must not override it
-        if (result.reason === "version_error") {
-          setVersionError(result.message);
-          setRommConnectionState("offline");
-          return;
-        }
-        const connected = result.success;
-        setRommConnectionState(connected ? "connected" : "offline");
+      // The verdict is consumed by runVerdict, not by the race below, so an
+      // answer that arrives after the deadline is still applied.
+      const verdict = runVerdict();
 
-        if (connected) {
-          // Background save status check to detect new conflicts (save-sync only)
-          await doSaveCheck(cancelled);
-        }
-      } catch {
-        if (!cancelled) {
-          settled = true;
-          setRommConnectionState("offline");
-        }
-      }
+      // Missing the deadline means UNKNOWN, not unreachable: the badge stays at
+      // "checking" and the outstanding call above settles it whenever it lands.
+      // Reporting the deadline as a verdict is what put "RomM offline" on a page
+      // whose server answered seconds later (#1670).
+      await Promise.race([verdict, timeoutMs(CONNECTION_CHECK_DEADLINE_MS)]).catch(() => {
+        if (superseded() || settled) return;
+        detach(
+          debugLog(
+            `RomMPlaySection(${appId}): connection check unanswered after ${CONNECTION_CHECK_DEADLINE_MS}ms — holding "checking" until the verdict lands`,
+          ),
+        );
+      });
     };
     detach(check());
     return () => {
       cancelled = true;
     };
-  }, [detail.saveSyncEnabled, appId]);
+  }, [appId]);
+
+  // Background save-status check — detects new conflicts for a save-sync ROM.
+  // The read itself and the state it produces belong to the store; what stays
+  // here is the conflict notification for the other save-sync surfaces. Keyed on
+  // the ROM identity and the save-sync flag, which is all it consumes: it is not
+  // a reader of the connection verdict, and waiting behind one only meant the
+  // read landed after the store's own had settled, costing a second round-trip
+  // for the same answer. Playtime reconcile-on-view is a separate, equally
+  // connectivity-independent effect (#1345).
+  useEffect(() => {
+    const romId = detail.romId;
+    if (!romId || !detail.saveSyncEnabled) return;
+    let cancelled = false;
+
+    const doSaveCheck = async () => {
+      try {
+        const saveStatus = await refreshSaveStatus(appId);
+        if (cancelled || !saveStatus) return;
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "save_sync", rom_id: romId, has_conflict: hasAnySaveConflict(saveStatus) },
+          }),
+        );
+      } catch (e) {
+        detach(debugLog(`RomMPlaySection: background save check error: ${e}`));
+      }
+    };
+    detach(doSaveCheck());
+    return () => {
+      cancelled = true;
+    };
+  }, [appId, detail.romId, detail.saveSyncEnabled]);
 
   // Reconcile-on-view (#868) — pull-only: folds RomM's play-session history into
   // the local total so a session played on another device shows up the moment the
