@@ -79,11 +79,13 @@ vi.mock("../utils/formatters", () => ({
 }));
 vi.mock("../utils/playSection", () => ({
   applySaveSyncDisplay: vi.fn(() => ({ status: null, label: "" })),
-  extractBiosInfo: vi.fn(() => ({
-    biosNeeded: true,
-    biosStatus: "ok",
-    biosLabel: "OK",
-  })),
+  // Must stay in sync with the beforeEach re-stub (resetAllMocks wipes this impl) —
+  // a fixed return folds a BIOS need into every mount that resolves a rom.
+  extractBiosInfo: vi.fn((status: unknown) =>
+    status
+      ? { biosNeeded: true, biosStatus: "ok", biosLabel: "OK" }
+      : { biosNeeded: false, biosStatus: null, biosLabel: "" },
+  ),
   extractCoreInfo: vi.fn(
     (c: {
       active_core_label?: string | null;
@@ -298,11 +300,18 @@ describe("RomMPlaySection", () => {
       status: "synced",
       label: "synced label",
     });
-    vi.mocked(playSectionUtils.extractBiosInfo).mockReturnValue({
-      biosNeeded: true,
-      biosStatus: "ok",
-      biosLabel: "OK",
-    });
+    // MUST honour the requirement argument, the way the real helper does: an
+    // absent `bios_status` is the answer "no BIOS need" and yields the cleared
+    // shape (#1690). The store folds this in unconditionally, so a fixed return
+    // here would fold a BIOS need into EVERY mount — including the cached
+    // details below that carry no `bios_status` — and every test in this file
+    // that renders one would then be asserting against a row state production
+    // never produces.
+    vi.mocked(playSectionUtils.extractBiosInfo).mockImplementation((status) =>
+      status
+        ? { biosNeeded: true, biosStatus: "ok", biosLabel: "OK" }
+        : { biosNeeded: false, biosStatus: null, biosLabel: "" },
+    );
     vi.mocked(playSectionUtils.extractCoreInfo).mockReturnValue({
       activeCoreLabel: null,
       activeCoreIsDefault: true,
@@ -510,11 +519,16 @@ describe("RomMPlaySection", () => {
         expect.any(Function),
         expect.any(Function),
       );
-      // Assert exact arg shape: (cached.bios_level, cached.bios_label). The BIOS
-      // status dict is no longer passed — extractBiosInfo takes only the
-      // pre-computed level/label (#923). Catches arg-order regressions that a
-      // bare .toHaveBeenCalled() would miss.
-      expect(playSectionUtils.extractBiosInfo).toHaveBeenCalledWith("ok", "OK");
+      // Assert exact arg shape: (cached.bios_status, cached.bios_level,
+      // cached.bios_label). The requirement itself leads, so its absence can
+      // clear the row (#1690); the level and label stay pre-computed by the
+      // backend (#923). Catches arg-order regressions that a bare
+      // .toHaveBeenCalled() would miss.
+      expect(playSectionUtils.extractBiosInfo).toHaveBeenCalledWith(
+        expect.objectContaining({ platform_slug: "snes" }),
+        "ok",
+        "OK",
+      );
       // resolveSaveSyncLabel is called with the cached save_sync_display.
       expect(playSectionUtils.resolveSaveSyncLabel).toHaveBeenCalledWith(
         expect.objectContaining({ status: "synced", label: "label" }),
