@@ -299,7 +299,12 @@ class FirmwareService:
 
         TTL is checked against the wall-clock cache epoch so a cache
         restored from disk after a plugin restart still expires.
-        On HTTP error, falls back to cached data (if any) or empty list.
+
+        On HTTP error, falls back to cached data if there is any and RAISES
+        otherwise. Returning an empty list instead would be indistinguishable
+        from a server that genuinely holds no firmware, and ``check_platform_bios``
+        answers a confident "needs none" for that — so the raise is what lets a
+        failed fetch be reported as unknown rather than as a negative (#1693).
         """
         now = self._clock.time()
         if self._firmware_cache is not None and (now - self._firmware_cache_epoch) < _FIRMWARE_CACHE_TTL:
@@ -745,6 +750,12 @@ class FirmwareService:
         per-game game-detail path passes the ROM's resolved ``.so``. Core info
         reaches the frontend through the dedicated ``get_platform_core_info``
         path, not this payload (#923).
+
+        A failed firmware fetch degrades to the local registry, which still
+        answers the requirement for a covered platform. An uncovered platform has
+        nothing to degrade to, so the ``needs_bios: False`` that comes back then
+        carries ``bios_status_unknown: True`` — no consumer may read that one as
+        "this platform needs none" (#1693).
         """
         system = self._resolve_system(platform_slug)
         fw_slugs = firmware_paths.resolve_firmware_slugs(platform_slug)
@@ -763,8 +774,14 @@ class FirmwareService:
             files = collect_firmware_status(items, registry_platform, active_core_so)
         except Exception:
             if not registry_platform:
+                # Nothing left to answer from: the server list is the only source
+                # of the requirement for a platform the registry does not cover,
+                # so this is "we don't know", not "needs none" (#1693). Reporting
+                # it as a negative would clear the "unmanaged" state a successful
+                # check had shown.
                 return {
                     "needs_bios": False,
+                    "bios_status_unknown": True,
                 }
             registry_items = []
             for file_name, reg_entry in registry_platform.items():
