@@ -212,11 +212,59 @@ leaves your existing install intact. If the cancel happens to land just as the d
 
 Downloaded ROMs are stored in your RetroDECK roms directory (e.g. `~/retrodeck/roms/gba/`).
 
-**Only one version of a game is downloaded at a time.** If you tap **Download** on a version while another version of
+**Only one version of a game is kept on disk at a time.** If you tap **Download** on a version while another version of
 the same game (its [sibling group](#versions)) is already on disk, the plugin removes the old install first and then
-downloads the new one — no prompt. This keeps a multi-version game to a single copy on disk. Your **save files are never
-touched** by this cleanup, so switching back and re-downloading the earlier version rejoins its saves. Games that still
-carry a separate shortcut per version from an older release are left untouched.
+downloads the new one — no prompt. **Use Existing Files** ([below](#when-the-game-is-already-on-your-device)) removes
+the old install the same way, just before it records the files you placed yourself. This keeps a multi-version game to a
+single copy on disk. Your **save files are never touched** by this cleanup, so switching back and re-downloading the
+earlier version rejoins its saves. Games that still carry a separate shortcut per version from an older release are left
+untouched.
+
+### When the game is already on your device
+
+If you copied ROMs into your RetroDECK folders yourself, a game the plugin has no record of may already be sitting
+exactly where a download would write. The plugin never writes over it. Instead, the Play button reads **Use Existing
+Files**, and pressing it opens a dialog rather than starting a download.
+
+The dialog shows both sides — what is on your device (name, size, when it last changed) and what the server would send —
+and says plainly whether the two are the same size. From there you have three choices:
+
+- **Use These Files** — the plugin records what is already there as the installed copy. Nothing is downloaded, nothing
+  is renamed, and no playlist is generated: your files are taken exactly as they are. The game becomes playable
+  immediately. One thing is removed, and only one: if another version of the same game was already on disk, that
+  version's files and its install record go — the same one-version-at-a-time cleanup a download does, without a prompt.
+  Your saves are not part of it, and that version can be downloaded again whenever you want it back.
+- **Check Against Server** — compares the files on your device against the checksums RomM published for that game. This
+  reads every file, so a large game takes a few seconds to a minute; it only ever runs when you press the button. There
+  are three possible answers: the files match, they differ (and the dialog names each file on its own line), or they
+  cannot be confirmed — the dialog says which of those it is. For a game made of several files, each one has to be in
+  the folder RomM says it belongs in — a file of the right name sitting somewhere else in the game folder is reported as
+  missing, not as a match. Files RomM does not list at all are fine and are never reported.
+
+  For a game your server keeps zipped, the check looks **inside** the zip, because that is what RomM's checksums
+  describe — the zip's own bytes match nothing it publishes. So a zip you repacked yourself still matches as long as the
+  game inside it is the same. A zip holding a **single** game is confirmed this way; one holding several (an arcade set,
+  a multi-disc release, or a game packed next to a readme) usually cannot be, because your server publishes one checksum
+  for the whole archive and nothing says which of its files that number covers. Newer RomM libraries — ones rescanned
+  since RomM 4.9.0 — publish a checksum per file inside the archive, and those are checked one by one, with anything the
+  server did not list ignored as usual. An archive in a format the plugin cannot open, such as `.7z` or `.rar`, is never
+  reported as differing; it simply cannot be confirmed. One case still works outside a zip: if you unpacked a
+  single-game archive yourself, the loose file is compared against the game it came from.
+- **Download Instead** — replaces what is there. This deletes your files first, so it asks a second time and names what
+  will be removed. If the file is your own dump, a translation patch or a romhack, the server cannot give it back.
+
+**Cancel** does nothing at all.
+
+Once you use the existing files, they are a normal install in every respect — including that **Uninstall** deletes them,
+exactly as it would a downloaded copy. That is the reason for the dialog: the decision is made once, up front, with the
+comparison in front of you.
+
+Two cases the dialog cannot help with:
+
+- The folder or file in the way is the wrong shape for the game — a folder where the server serves a single file, or the
+  reverse. The dialog says so and only offers replace or cancel.
+- The same game sitting elsewhere under a **different name**. The plugin looks only at the exact location it would
+  download to, so a differently-named copy is not found.
 
 ### Pausing and Resuming a Download
 
@@ -234,6 +282,12 @@ from where it left off. Two cases can't resume, so they show only **Cancel** (no
 
 In those cases, cancelling and starting over is the only option — but a fresh download is safe, as cancelling never
 removes an already-installed copy.
+
+If you chose **Download Instead** on the [already-on-your-device dialog](#when-the-game-is-already-on-your-device) and
+then paused, resuming picks up where it left off as usual: your existing file is still there until the download
+finishes, and the answer you gave covers it. Resume is only refused if something _new_ has turned up at the game's
+location in the meantime — Tender says so rather than deleting it, since you were never shown that content. Cancel the
+download and start again to see the dialog for what is there now.
 
 ### Multi-Disc and Multi-File Games
 
@@ -347,6 +401,11 @@ To remove a downloaded ROM file:
 4. The shortcut remains in your library so you can re-download later
 
 This only removes the ROM file — the Steam shortcut, artwork, and metadata are preserved.
+
+This applies to files you told the plugin to [use from your device](#when-the-game-is-already-on-your-device) as well:
+once they are the installed copy, **Uninstall** deletes them exactly as it would a downloaded one. The plugin has one
+kind of install and does not remember where the files came from — which is why the choice is put to you at the moment
+you make it, not afterwards.
 
 The button switches to **Uninstalling…** as soon as you tap it, and a game made of many files counts them down as they
 go. Pressing it again while that is on screen does nothing — the removal already running is the one that finishes, and

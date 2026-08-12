@@ -268,6 +268,7 @@ async def test_action_report_rejects_stale_token_with_canonical_shape(harness):
         ("sign_out", ()),
         ("save_server_url", ("https://server.example", None)),
         ("start_download", (41,)),
+        ("adopt_existing_rom", (41,)),
         ("migrate_retrodeck_files", (None,)),
         ("sync_rom_saves", (41,)),
         ("switch_version", (0x80000001, 41, False)),
@@ -327,7 +328,7 @@ async def test_detached_writer_lifetime_blocks_prune_admission(harness, monkeypa
     else:
         task = asyncio.create_task(release.wait())
 
-        async def start_download(_rom_id):
+        async def start_download(_rom_id, _replace_existing=False):
             return {"success": True, "message": "started"}
 
         monkeypatch.setattr(harness.plugin._download_service, "start_download", start_download)

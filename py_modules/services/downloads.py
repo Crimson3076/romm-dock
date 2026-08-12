@@ -16,21 +16,19 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from domain.disc_formats import DISC_IMAGE_EXTENSIONS
-from domain.download_frames import cancelled_frame
+from domain.disk_space import disk_space_verdict
+from domain.download_frames import cancelled_frame, failed_frame
 from domain.rom_files import (
     build_m3u_content,
     detect_launch_file,
     es_de_collapse_rename,
     folder_boot_layout_root,
-    is_launchable_target,
     is_multi_file_download,
     needs_m3u,
     resolve_extract_dir_name,
     resolve_local_file_name,
     synthetic_rom_name,
 )
-from domain.rom_install import RomInstall
-from domain.shortcut_data import EmulatorInvocation, build_launch_options, resolve_emulator_invocation
 from lib.errors import error_response
 from lib.list_result import ErrorCode
 from lib.path_safety import PathTraversalError, coerce_safe_component, safe_join
@@ -41,22 +39,28 @@ if TYPE_CHECKING:
     from models.state import InstalledRomEntry
 
     from services.protocols import (
-        ActiveCoreReader,
         Clock,
-        DiscResolver,
         DownloadFileStore,
+        DownloadTargetGateFn,
         EventEmitter,
         RetroDeckPaths,
+        RomInstallRecorder,
         RommRomReader,
         RomRemoverProvider,
         Sleeper,
         SystemM3uSupportFn,
         SystemResolver,
-        SystemSupportedExtensionsFn,
         UnitOfWorkFactory,
     )
 
 _DOWNLOAD_QUEUE_MAX_TERMINAL = 50
+# One wording for every way a download fails to get off the ground: the user
+# reads the same sentence whichever step raised.
+_START_FAILED_MESSAGE = "Failed to start download"
+# Said twice for a single refusal — once to the frontend as a failure frame,
+# once to the caller as the refusal itself — so the two cannot drift apart.
+_UNSAFE_PATH_MESSAGE = "Server sent an unsafe platform path — download aborted"
+
 _ZIP_TMP_EXT = ".zip.tmp"
 _TMP_EXT = ".tmp"
 # A download in one of these statuses has run to a terminal end — it is no
@@ -98,12 +102,10 @@ class DownloadServiceConfig:
 
     Holds the Protocol-typed adapters, runtime infrastructure, time/sleep
     seams, the SQLite Unit-of-Work factory, and path providers
-    DownloadService needs at construction time. The shared ``active_core``
-    resolver resolves a reinstalled ROM's full active core so
-    ``download_complete`` re-bakes the ``-e`` override into ``launch_options``
-    (the per-game/per-platform selection survives uninstall → reinstall), and the
-    shared ``disc_resolver`` resolves a freshly-downloaded multi-disc ROM's
-    selected disc so the same persisted pick survives uninstall → reinstall too.
+    DownloadService needs at construction time. ``install_recorder`` is the
+    shared writer of the ``rom_installs`` row and the shortcut bake behind it;
+    ``target_gate`` is the pre-flight that refuses to write over content the
+    plugin did not put there (ADR-0028).
     """
 
     romm_api: RommRomReader
@@ -115,13 +117,9 @@ class DownloadServiceConfig:
     clock: Clock
     sleeper: Sleeper
     retrodeck_paths: RetroDeckPaths
-    active_core: ActiveCoreReader
-    disc_resolver: DiscResolver
+    install_recorder: RomInstallRecorder
+    target_gate: DownloadTargetGateFn
     m3u_support: SystemM3uSupportFn
-    # The live per-system accept-list. The one place the launch-target check
-    # reads its knowledge from, so swapping the source (emu-atlas, #1652) is a
-    # change to this wiring line and nothing else.
-    system_extensions: SystemSupportedExtensionsFn
     uow_factory: UnitOfWorkFactory
     # Deferred access to RomRemovalService.remove_rom — the two services form a
     # construction cycle, so the composition root binds it after both exist
@@ -142,10 +140,9 @@ class DownloadService:
         self._clock = config.clock
         self._sleeper = config.sleeper
         self._retrodeck_paths = config.retrodeck_paths
-        self._active_core = config.active_core
-        self._disc_resolver = config.disc_resolver
+        self._install_recorder = config.install_recorder
+        self._target_gate = config.target_gate
         self._m3u_support = config.m3u_support
-        self._system_extensions = config.system_extensions
         self._uow_factory = config.uow_factory
         self._rom_remover = config.rom_remover
 
@@ -243,46 +240,37 @@ class DownloadService:
         if cleaned:
             self._logger.info(f"Cleaned {cleaned} leftover tmp file(s)")
 
-    async def start_download(self, rom_id):
+    async def start_download(self, rom_id, replace_existing=False):
+        """Start a download, refusing when its target path is already occupied.
+
+        *replace_existing* is the user's answer to that refusal: the download
+        proceeds and whatever is in the way is cleared first. It rides on this
+        callable rather than a second one so every download — first attempt or
+        replace — passes the same prologue: the ``already_downloading`` guard, the
+        path-safety coercion, the occupancy gate, the supersede, the disk pre-flight.
+        """
         rom_id = int(rom_id)
         if rom_id in self._download_in_progress:
             return {"success": False, "reason": "already_downloading", "message": "Already downloading"}
-        # Claim the in-progress slot BEFORE the supersede await so a second
-        # start_download for this same rom during that await is rejected by the
-        # guard above instead of racing past it (B1). ``_begin_download`` re-adds
-        # idempotently; every early exit here (removal abort, exception) releases
-        # the claim, and on success the download task's ``finally`` owns it.
-        self._download_in_progress.add(rom_id)
-        # At most one downloaded version per shortcut binding (#1298): strip a
-        # sibling install bound to this shortcut (or unbound) before this one
-        # lands — a grandfathered sibling with its own shortcut is exempt. A
-        # removal failure aborts the download so the invariant stays honest.
-        try:
-            cleanup_failure = await self._remove_conflicting_sibling_installs(rom_id)
-        except Exception:
-            self._download_in_progress.discard(rom_id)
-            raise
-        if cleanup_failure is not None:
-            self._download_in_progress.discard(rom_id)
-            return cleanup_failure
-        return await self._begin_download(rom_id, resume=False)
+        return await self._begin_download(rom_id, resume=False, replace_existing=bool(replace_existing))
 
-    async def _remove_conflicting_sibling_installs(self, rom_id: int) -> dict[str, Any] | None:
-        """Strip any other downloaded version of ``rom_id``'s sibling group (#1298 T7).
+    async def supersede_sibling_installs(self, rom_id: int) -> dict[str, Any] | None:
+        """Strip any other installed version of ``rom_id``'s sibling group (#1298 T7).
 
-        Shared by ``start_download`` and ``resume_download``. The group's members
-        are snapshotted in one short read UoW (closed before the removal seam runs
-        — the removal opens its own UoW, which must not nest; ADR-0006). The
-        membership read is a single indexed lookup done directly (like
-        ``get_installed_rom``); each superseded install is then removed through the
+        The single home of the supersede — ``_begin_download`` once its occupancy
+        gate has passed (a refusal must not already have deleted another version),
+        and adoption through ``SiblingSupersedeFn`` for the same reason: an adopted
+        install is an install (ADR-0028). Neither caller may copy the selection
+        rule below. The group's members are snapshotted in one short read UoW,
+        closed before the removal seam runs — the removal opens its own UoW, which
+        must not nest (ADR-0006). Each superseded install is removed through the
         canonical ``RomRemovalService.remove_rom`` (files + ``rom_installs`` row;
         saves untouched per ADR-0007) rather than duplicating its deletion logic.
-        Every removal attempt is logged with both rom ids so a failure is
-        attributable (S7). A removal that reports ``not_installed`` raced clean and
-        is skipped; any other failure is returned so the caller aborts with that
-        shape. A superseded sibling's *paused* queue entry is evicted so the queue
-        stays coherent with disk (S1). Returns ``None`` when the group is clean /
-        all removals succeeded.
+        Every attempt is logged with both rom ids so a failure is attributable (S7).
+        A removal that reports ``not_installed`` raced clean and is skipped; any
+        other failure is returned so the caller aborts with that shape. A superseded
+        sibling's *paused* queue entry is evicted so the queue stays coherent with
+        disk (S1). Returns ``None`` when the group is clean / all removals succeeded.
         """
         sibling_ids = self._conflicting_sibling_install_ids(rom_id)
         if not sibling_ids:
@@ -340,14 +328,16 @@ class DownloadService:
                 superseded.append(member.rom_id)
             return superseded
 
-    async def _begin_download(self, rom_id, *, resume: bool):
+    async def _begin_download(self, rom_id, *, resume: bool, replace_existing: bool = False):
         """Shared core of ``start_download`` and ``resume_download``.
 
-        Fetches ROM detail, resolves the platform path, runs the disk pre-flight,
-        then registers the queue entry, task, byte reservation, and control token.
-        On ``resume=True`` the disk pre-flight discounts the bytes already on the
-        existing ``.tmp`` (only the remainder is still needed) and ``_do_download``
-        is started with ``resume=True`` so the transfer appends rather than restarts.
+        Fetches ROM detail, resolves the platform path, then runs the three
+        pre-flights **in this order**: the occupancy gate, the #1298 sibling
+        supersede, the disk-space check. Only then are the queue entry, task,
+        byte reservation and control token registered. On ``resume=True`` the
+        disk pre-flight discounts the bytes already on the existing ``.tmp``
+        (only the remainder is still needed) and ``_do_download`` is started with
+        ``resume=True`` so the transfer appends rather than restarts.
 
         The ``already_downloading`` guard stays with ``start_download``;
         ``resume_download`` validates the paused entry before calling here.
@@ -364,12 +354,13 @@ class DownloadService:
         platform_fs_slug = rom_detail.get("platform_fs_slug")
         system = self._resolve_system(platform_slug, platform_fs_slug)
 
-        # Path building, directory creation, and the disk pre-flight can raise
-        # (SD card unmounted → OSError; ``roms_path()`` returning None → TypeError
-        # in the join). Any raise here must release the in-progress flag so the
-        # ROM isn't stuck "Already downloading" until a plugin reload (#1048).
-        # The explicit early-return guards inside still ``return`` (not raise)
-        # and discard the flag themselves; a ``return`` does not trip the except.
+        # Path building, the occupancy gate, directory creation and the disk
+        # pre-flight can all raise (SD card unmounted → OSError; ``roms_path()``
+        # returning None → TypeError in the join). Any raise across the three
+        # blocks below must release the in-progress flag so the ROM isn't stuck
+        # "Already downloading" until a plugin reload (#1048). The explicit
+        # early-return guards inside still ``return`` (not raise) and discard the
+        # flag themselves; a ``return`` does not trip the except.
         try:
             roms_path = self._retrodeck_paths.roms_path()
             try:
@@ -380,70 +371,78 @@ class DownloadService:
             except PathTraversalError as e:
                 self._download_in_progress.discard(rom_id)
                 self._logger.error(f"Rejected download for ROM {rom_id}: unsafe platform slug {system!r}: {e}")
-                await self._emit(
-                    "download_failed",
-                    {
-                        "rom_id": rom_id,
-                        "rom_name": rom_detail.get("name", ""),
-                        "platform_name": rom_detail.get("platform_name", platform_slug),
-                        "error_message": "Server sent an unsafe platform path — download aborted",
-                    },
-                )
-                return {
-                    "success": False,
-                    "reason": "path_traversal",
-                    "message": "Server sent an unsafe platform path — download aborted",
-                }
-            file_name, files_missing = resolve_local_file_name(rom_detail)
-            if files_missing:
-                self._logger.warning(
-                    f"has_nested_single_file=true but files list is empty; falling back to fs_name='{file_name}'"
-                )
-            # Coerce the server-supplied name to a single safe component: strip
-            # any directory portion and reject a degenerate result (``..`` would
-            # escape the platform dir, ``.``/``""`` would resolve to it) — falling
-            # back to the synthetic rom_<id> identity.
-            safe_name, name_changed = coerce_safe_component(file_name, synthetic_rom_name(rom_detail))
-            if name_changed:
-                self._logger.warning(f"Sanitized fs_name from '{file_name}' to '{safe_name}'")
-                file_name = safe_name
+                name = rom_detail.get("name", "")
+                platform = rom_detail.get("platform_name", platform_slug)
+                await self._emit("download_failed", failed_frame(rom_id, name, platform, _UNSAFE_PATH_MESSAGE))
+                return {"success": False, "reason": "path_traversal", "message": _UNSAFE_PATH_MESSAGE}
+            file_name = self._safe_local_file_name(rom_detail)
             file_size = rom_detail.get("fs_size_bytes", 0)
             target_path = os.path.join(roms_dir, file_name)
 
-            # Check disk space: multi-file ROMs need space for ZIP + extracted contents
-            self._download_file_store.make_dirs(roms_dir)
-            free_space = self._download_file_store.disk_free(roms_dir)
-            buffer = 100 * 1024 * 1024
-            required = file_size * 2 + buffer if is_multi_file_download(rom_detail) else file_size + buffer
-            # On resume, the partial ``.tmp`` already holds some of the bytes, so
-            # only the remainder still needs free space — discount what's on disk
-            # so a near-complete resume isn't rejected for the full size.
-            if resume:
-                required = max(required - self._partial_tmp_size(target_path, rom_detail), 0)
-            # Account for siblings already reserved but not yet written to disk,
-            # so two concurrent downloads can't each pass a pre-flight that only
-            # one of them actually fits (#1053).
-            reserved_total = sum(self._reserved_bytes.values())
-            if file_size and free_space - reserved_total < required:
+            # Refuse before a single byte moves when something is already at the
+            # path this download would claim — the user decides between adopting
+            # it and replacing it (ADR-0028). A multi-file ROM claims its extract
+            # directory, not the archive name.
+            checked_path = target_path
+            if is_multi_file_download(rom_detail):
+                checked_path = os.path.join(roms_dir, self._resolve_safe_extract_dir_name(rom_detail))
+            occupied = await self._target_gate(rom_detail, checked_path, replace=replace_existing)
+            if occupied is not None:
                 self._download_in_progress.discard(rom_id)
-                free_mb = max(free_space - reserved_total, 0) // (1024 * 1024)
-                need_mb = required // (1024 * 1024)
+                return occupied
+        except Exception as e:
+            self._download_in_progress.discard(rom_id)
+            self._logger.error(f"Failed to prepare download for ROM {rom_id}: {e}")
+            return {"success": False, "reason": ErrorCode.UNKNOWN.value, "message": _START_FAILED_MESSAGE}
+
+        # At most one downloaded version per shortcut binding (#1298): strip a
+        # sibling install bound to this shortcut (or unbound) before this one
+        # lands — a grandfathered sibling with its own shortcut is exempt. A
+        # removal failure aborts the download so the invariant stays honest.
+        #
+        # Ordering is load-bearing at both ends. AFTER the gate, because the
+        # supersede deletes another version's files: refusing afterwards would
+        # leave a user who then presses Cancel with one version uninstalled and
+        # nothing in its place. BEFORE the disk pre-flight, because the removal
+        # frees the space the replacement needs — checking first would reject a
+        # same-size swap on a nearly full card. The in-progress claim is already
+        # held (B1), so a second start_download during this await is rejected by
+        # ``start_download``'s guard rather than racing past it.
+        try:
+            cleanup_failure = await self.supersede_sibling_installs(rom_id)
+        except Exception:
+            self._download_in_progress.discard(rom_id)
+            raise
+        if cleanup_failure is not None:
+            self._download_in_progress.discard(rom_id)
+            return cleanup_failure
+
+        try:
+            self._download_file_store.make_dirs(roms_dir)
+            verdict = disk_space_verdict(
+                file_size=file_size,
+                free_space=self._download_file_store.disk_free(roms_dir),
+                reserved_bytes=sum(self._reserved_bytes.values()),
+                multi_file=is_multi_file_download(rom_detail),
+                already_on_disk=self._partial_tmp_size(target_path, rom_detail) if resume else 0,
+            )
+            if not verdict.fits:
+                self._download_in_progress.discard(rom_id)
                 return {
                     "success": False,
                     "reason": "insufficient_space",
-                    "message": f"Not enough disk space ({free_mb}MB free, need {need_mb}MB)",
+                    "message": f"Not enough disk space ({verdict.free_mb}MB free, need {verdict.needed_mb}MB)",
                 }
         except Exception as e:
             self._download_in_progress.discard(rom_id)
             self._logger.error(f"Failed to prepare download for ROM {rom_id}: {e}")
-            return {"success": False, "reason": ErrorCode.UNKNOWN.value, "message": "Failed to start download"}
+            return {"success": False, "reason": ErrorCode.UNKNOWN.value, "message": _START_FAILED_MESSAGE}
 
         rom_name = rom_detail.get("name", file_name)
         platform_name = rom_detail.get("platform_name", platform_slug)
         # Carry the prior resumability verdict across a resume so the UI keeps
         # showing Pause before the resumed transfer's headers re-confirm it.
-        prior = self._download_queue.get(rom_id, {})
-        resumable = bool(prior.get("resumable", False))
+        resumable = bool(self._download_queue.get(rom_id, {}).get("resumable", False))
 
         # Create the control token BEFORE the task so the closure captured inside
         # ``_do_download``'s progress callback polls this exact object. A later
@@ -457,7 +456,7 @@ class DownloadService:
         except Exception as e:
             self._download_in_progress.discard(rom_id)
             self._logger.error(f"Failed to start download task for ROM {rom_id}: {e}")
-            return {"success": False, "reason": ErrorCode.UNKNOWN.value, "message": "Failed to start download"}
+            return {"success": False, "reason": ErrorCode.UNKNOWN.value, "message": _START_FAILED_MESSAGE}
 
         self._download_queue[rom_id] = {
             "rom_id": rom_id,
@@ -474,18 +473,46 @@ class DownloadService:
             # Whether the server proved byte-range resume support for this ROM.
             # Re-confirmed live by the ``on_meta`` callback once headers arrive.
             "resumable": resumable,
+            # The user's replace answer, carried across a pause so a resumed
+            # replace-download is not refused by the very file it is replacing.
+            # Kept only where the answer is still LIVE: a single-file replace
+            # deliberately deletes nothing (``os.replace`` is atomic), so the
+            # original is still there and still the content the user was shown. A
+            # multi-file replace already removed its directory, so the answer is
+            # spent — anything at that path now is content the user has never
+            # seen, and the gate must ask about it rather than delete it.
+            "_replace_existing": replace_existing and not is_multi_file_download(rom_detail),
         }
         self._download_tasks[rom_id] = task
         # Reserve this download's required bytes so a concurrent sibling's
         # pre-flight sees the outstanding claim (released in ``_do_download``'s
         # ``finally``).
-        self._reserved_bytes[rom_id] = required
+        self._reserved_bytes[rom_id] = verdict.needed_bytes
         self._control_tokens[rom_id] = control
         return {"success": True, "message": "Download started"}
 
     def task_for_rom(self, rom_id: int) -> asyncio.Task[None] | None:
         """Return the detached task whose lifetime owns this ROM's install write."""
         return self._download_tasks.get(int(rom_id))
+
+    def _safe_local_file_name(self, rom_detail: dict[str, Any]) -> str:
+        """The on-disk name for this ROM: the server's, coerced to one safe component.
+
+        Strips any directory portion and rejects a degenerate result — ``..``
+        would escape the platform directory and ``.`` or ``""`` would resolve to
+        it — falling back to the synthetic ``rom_<id>`` identity. Both repairs
+        are logged, because the name the user sees on disk then differs from the
+        one the server states.
+        """
+        file_name, files_missing = resolve_local_file_name(rom_detail)
+        if files_missing:
+            self._logger.warning(
+                f"has_nested_single_file=true but files list is empty; falling back to fs_name='{file_name}'"
+            )
+        safe_name, name_changed = coerce_safe_component(file_name, synthetic_rom_name(rom_detail))
+        if name_changed:
+            self._logger.warning(f"Sanitized fs_name from '{file_name}' to '{safe_name}'")
+        return safe_name
 
     def _partial_tmp_size(self, target_path, rom_detail) -> int:
         """Bytes already on disk in the partial ``.tmp`` for *target_path*.
@@ -496,52 +523,6 @@ class DownloadService:
         """
         tmp_ext = _ZIP_TMP_EXT if is_multi_file_download(rom_detail) else _TMP_EXT
         return self._download_file_store.file_size(target_path + tmp_ext)
-
-    def _record_install_io(self, *, rom_id, rom_detail, file_path, rom_dir, system, cleanup):
-        """Build the ``RomInstall`` aggregate and persist it in a short write UoW.
-
-        The filesystem work (rename, extraction, M3U detection) has already run
-        outside any transaction; only the ``RomInstall`` upsert is wrapped here
-        (ADR-0006). ``rom_dir`` is the dedicated extract directory for a
-        multi-file ROM, or ``None`` for a single-file ROM (which owns no folder).
-        If the RomM data fails the aggregate's invariant (non-positive
-        ``rom_id``), nothing is persisted, *cleanup* removes the just-installed
-        artifact, and a failure message is returned.
-
-        Returns ``(file_path, None)`` on success or ``(None, error)`` when the
-        invariant rejects the data.
-        """
-        # Recorded, never acted on: an unlaunchable download keeps its files and
-        # its row, and only the shortcut's launch command is withheld. Refusing
-        # the install instead would delete a package the user's remaining option
-        # is to install by hand in the emulator (#1582, #1652).
-        launchable = is_launchable_target(file_path, rom_dir, self._system_extensions(system))
-        if not launchable:
-            self._logger.warning(f"No launch target for rom_id={rom_id}: {system} cannot launch '{file_path}'")
-        try:
-            install = RomInstall.mark_installed(
-                rom_id=int(rom_id),
-                file_path=file_path,
-                rom_dir=rom_dir,
-                platform_slug=rom_detail.get("platform_slug", ""),
-                system=system,
-                installed_at=self._clock.now().isoformat(),
-                launchable=launchable,
-            )
-        except ValueError as e:
-            cleanup()
-            return None, f"Invalid install metadata: {e}"
-
-        with self._uow_factory() as uow:
-            uow.rom_installs.save(install)
-            # Download write-back (#1395): top up the ROM's size from the detail
-            # we already fetched, so the game-detail UI shows it without waiting
-            # for the next sync. Guarded on truthiness — a missing/zero size must
-            # never overwrite a good persisted value.
-            size = rom_detail.get("fs_size_bytes")
-            if size:
-                uow.roms.set_fs_size_bytes(int(rom_id), size)
-        return file_path, None
 
     def _resolve_safe_extract_dir_name(self, rom_detail: dict[str, Any]) -> str:
         """Resolve the sanitized base name for a multi-file ROM's extract dir.
@@ -601,7 +582,7 @@ class DownloadService:
         # filesystem work, so a later failure cleans up the renamed dir.
         extract_dir, launch_file = self._maybe_es_de_collapse_io(extract_dir, launch_file)
 
-        return self._record_install_io(
+        return self._install_recorder.do_record_install(
             rom_id=rom_id,
             rom_detail=rom_detail,
             file_path=launch_file,
@@ -644,7 +625,7 @@ class DownloadService:
         tmp_path = target_path + _TMP_EXT
         self._download_file_store.rename(tmp_path, target_path)
 
-        return self._record_install_io(
+        return self._install_recorder.do_record_install(
             rom_id=rom_id,
             rom_detail=rom_detail,
             file_path=target_path,
@@ -652,42 +633,6 @@ class DownloadService:
             system=system,
             cleanup=lambda: self._download_file_store.remove_file(target_path),
         )
-
-    def _resolve_bound_app_id(self, rom_id: int, file_path: str) -> tuple[int | None, EmulatorInvocation | None, str]:
-        """Return the ROM's ``(shortcut_app_id, emulator, bake_path)`` for the re-bake.
-
-        Reads the ROM + its fresh install record in a short read UoW, then
-        resolves the ROM's FULL active emulator through the shared ``active_core``
-        resolver and the multi-disc launch path through the shared
-        ``disc_resolver`` so ``download_complete`` re-bakes the right launch
-        command. ``app_id`` is ``None`` when the ROM has no Steam shortcut yet
-        (not synced) — the frontend no-ops and the next sync writes the launch
-        command. ``emulator`` is the resolved :class:`EmulatorInvocation` (libretro
-        core or standalone) when the ROM's per-game/per-platform/system resolution
-        yields one (bake the ``-e`` form), ``None`` when it resolves to nothing — a
-        genuinely unresolvable platform (bake the plain launch). ``bake_path`` is
-        the selected disc's path for a multi-disc ROM (the persisted pick survives
-        uninstall → reinstall, just like the core override), or *file_path*
-        unchanged for a single-disc ROM. The resolver already warns + degrades on
-        a stale label/pin, so no bogus invocation or missing-disc path ever
-        reaches the bake. This is the load-bearing site: the per-game override and
-        the disc pin both live on ``roms`` so they survive uninstall → reinstall,
-        and reinstall goes through here.
-        """
-        with self._uow_factory() as uow:
-            rom = uow.roms.get(int(rom_id))
-            install = uow.rom_installs.get(int(rom_id))
-            selected_disc = rom.selected_disc if rom is not None else None
-        if rom is None:
-            return (None, None, file_path)
-        emulator = self._active_core.active_emulator_for_rom(int(rom_id))
-        # The install record was committed just before this read, so it is
-        # present in the normal flow; guard for the rare race where it is not and
-        # fall back to the raw download path (no multi-disc resolution possible).
-        bake_path = (
-            self._disc_resolver.resolve_for_install(install, selected_disc) if install is not None else file_path
-        )
-        return (rom.shortcut_app_id, emulator, bake_path)
 
     def _make_progress_callback(self, rom_id, rom_name, platform_name, file_name, control=None):
         """Build a throttled progress callback for a download."""
@@ -868,10 +813,9 @@ class DownloadService:
         entry = self._download_queue[rom_id]
         entry["status"] = "completed"
         entry["progress"] = 1.0
-        app_id, emulator, bake_path = await self._loop.run_in_executor(
-            None, self._resolve_bound_app_id, rom_id, final_path
+        app_id, launch_options = await self._loop.run_in_executor(
+            None, self._install_recorder.do_resolve_launch_bake, rom_id, rom_detail, final_path
         )
-        launch_options = build_launch_options(resolve_emulator_invocation(rom_detail, emulator), bake_path)
         await self._emit(
             "download_complete",
             {
@@ -888,24 +832,13 @@ class DownloadService:
         # value the frontend confirm-sets onto the shortcut), so the next sync
         # skips the now-correct shortcut instead of re-touching it (delta apply,
         # #1383). Only when the ROM has a bound shortcut — an unbound ROM has none
-        # to record, and the next sync creates + records it. Second of the five
+        # to record, and the next sync creates + records it. Second of the six
         # writer sites.
         if app_id is not None:
-            await self._loop.run_in_executor(None, self._record_applied_launch_options_io, rom_id, launch_options)
+            await self._loop.run_in_executor(
+                None, self._install_recorder.do_record_applied_launch_options, rom_id, launch_options
+            )
         self._logger.info(f"Download complete: {rom_name} -> {final_path}")
-
-    def _record_applied_launch_options_io(self, rom_id: int, launch_options: str) -> None:
-        """Record *launch_options* as ``rom_id``'s applied shortcut state in a short write UoW.
-
-        The delta-restricted apply reads this back to skip a shortcut that already
-        carries the correct launch command (#1383). A no-op when the row is gone.
-        """
-        with self._uow_factory() as uow:
-            rom = uow.roms.get(int(rom_id))
-            if rom is None:
-                return
-            rom.record_applied_launch_options(launch_options)
-            uow.roms.set_applied_launch_options(int(rom_id), rom.applied_launch_options)
 
     async def _reconcile_post_io(self, post_io_future):
         """After a cancel, settle an in-flight post-IO commit and report whether
@@ -1153,15 +1086,7 @@ class DownloadService:
             self._download_queue[rom_id]["error"] = str(e)
             self._cleanup_partial_download(target_path, has_multiple, extract_dir_name, final_path)
             self._logger.error(f"Download failed for {rom_name}: {e}")
-            await self._emit(
-                "download_failed",
-                {
-                    "rom_id": rom_id,
-                    "rom_name": rom_name,
-                    "platform_name": platform_name,
-                    "error_message": str(e),
-                },
-            )
+            await self._emit("download_failed", failed_frame(rom_id, rom_name, platform_name, str(e)))
 
         finally:
             # A re-download (or resume) can overwrite these per-download
@@ -1382,12 +1307,16 @@ class DownloadService:
         binding to a sibling while this download was paused (#1298 S1): if another
         member now owns the shortcut, this target is stale — the resume is refused
         (``superseded``) and its queue entry dropped rather than re-downloading a
-        version the picker has already moved away from. Otherwise the same sibling
-        supersede that guards ``start_download`` runs first (abort on removal
-        failure), then the download re-begins with ``resume=True`` so the transfer
-        appends onto the existing bytes (when the server honoured the original
-        ``Range`` probe) instead of restarting. The in-progress claim is taken
-        before the supersede await and released on every early exit (B1).
+        version the picker has already moved away from. Otherwise the transfer
+        appends onto the existing bytes instead of restarting (when the server
+        honoured the original ``Range`` probe).
+
+        The occupancy gate runs again, against the **final** path rather than the
+        partial ``.tmp``. A single-file replace's final path still holds the file
+        the user chose to replace, so the entry's stored answer goes back to the
+        gate — without it the resume is refused by the very file it is replacing,
+        every time. Anything else faces a free path, or a refusal if content
+        appeared there while it sat paused.
         """
         rom_id = int(rom_id)
         entry = self._download_queue.get(rom_id)
@@ -1396,16 +1325,7 @@ class DownloadService:
         if self._resume_target_superseded(rom_id):
             self.evict(rom_id)
             return {"success": False, "reason": "superseded", "message": "Another version is now active"}
-        self._download_in_progress.add(rom_id)
-        try:
-            cleanup_failure = await self._remove_conflicting_sibling_installs(rom_id)
-        except Exception:
-            self._download_in_progress.discard(rom_id)
-            raise
-        if cleanup_failure is not None:
-            self._download_in_progress.discard(rom_id)
-            return cleanup_failure
-        return await self._begin_download(rom_id, resume=True)
+        return await self._begin_download(rom_id, resume=True, replace_existing=bool(entry.get("_replace_existing")))
 
     def _resume_target_superseded(self, rom_id: int) -> bool:
         """True when a sibling now owns the group's shortcut, stranding this resume.

@@ -12,6 +12,7 @@ from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_hostname_reader import FakeHostnameReader
 from fakes.fake_machine_id_reader import FakeMachineIdReader
+from fakes.fake_path_exists_reader import FakePathExistsReader
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_plugin_metadata_reader import FakePluginMetadataReader
 from fakes.fake_renderer_gc import FakeRendererGc
@@ -36,6 +37,11 @@ from services.playtime import PlaytimeService, PlaytimeServiceConfig
 from services.saves import SaveService, SaveServiceConfig
 
 _GAVEL = GavelNativeAdapter()
+
+# RetroDECK ROMs root the target-path probe resolves against. Never touched on
+# disk — the probe is a fake set of paths, so the base only has to be absolute
+# and normalized for the containment guard to accept a child of it.
+_ROMS_BASE = "/fake/retrodeck/roms"
 
 
 @pytest.fixture
@@ -184,7 +190,17 @@ def active_core_resolver():
 
 
 @pytest.fixture
-def game_detail_service(plugin, clock, active_core_resolver):
+def path_probe():
+    """Existence probe backing the page's single target-path ``stat``.
+
+    Empty by default, so an uninstalled ROM reports nothing in the way; a test
+    that exercises the occupied case adds the exact path to ``paths``.
+    """
+    return FakePathExistsReader()
+
+
+@pytest.fixture
+def game_detail_service(plugin, clock, active_core_resolver, path_probe):
     """Create a GameDetailService wired to the plugin's shared UoW and pinned clock."""
     return GameDetailService(
         config=GameDetailServiceConfig(
@@ -195,6 +211,9 @@ def game_detail_service(plugin, clock, active_core_resolver):
             bios_checker=plugin._firmware_service,
             achievements=plugin._achievements_service,
             active_core=active_core_resolver,
+            path_exists=path_probe,
+            retrodeck_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
+            resolve_system=lambda platform_slug, platform_fs_slug=None: platform_fs_slug or platform_slug,
         ),
     )
 
@@ -470,6 +489,90 @@ class TestGetCachedGameDetailInstalled:
         assert result["installed"] is False
         # No install record → rom_file falls back to Rom.fs_name.
         assert result["rom_file"] == "game_10.sfc"
+
+
+class TestTargetPathOccupied:
+    """The single ``stat`` this network-free page runs on an uninstalled ROM (#260).
+
+    It exists so the page stops offering an undifferentiated Download for content
+    already in place. Everything it cannot know goes quiet — it never claims.
+    """
+
+    @pytest.mark.asyncio
+    async def test_false_when_nothing_is_at_the_target_path(self, plugin, game_detail_service):
+        _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["target_path_occupied"] is False
+
+    @pytest.mark.asyncio
+    async def test_true_when_the_target_path_exists(self, plugin, game_detail_service, path_probe):
+        _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
+        path_probe.paths.add(f"{_ROMS_BASE}/snes/game_10.sfc")
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["target_path_occupied"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_installed_rom_is_never_probed(self, plugin, game_detail_service, path_probe):
+        # An install record already answers the question, so the stat is skipped
+        # outright rather than run and ignored.
+        _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
+        _install_rom(plugin, plugin._tmp_path, rom_id=10, system="snes", file_name="game.sfc")
+        path_probe.paths.add(f"{_ROMS_BASE}/snes/game_10.sfc")
+
+        result = game_detail_service.get_cached_game_detail(50000)
+
+        assert result["installed"] is True
+        assert result["target_path_occupied"] is False
+
+    @pytest.mark.asyncio
+    async def test_exactly_one_probe_per_read(self, plugin, game_detail_service, path_probe):
+        _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
+        probed: list[str] = []
+        path_probe.exists = lambda path: bool(probed.append(path))
+
+        game_detail_service.get_cached_game_detail(50000)
+
+        assert len(probed) == 1
+
+    @pytest.mark.asyncio
+    async def test_false_when_the_roms_path_is_unknown(self, plugin, game_detail_service, path_probe):
+        game_detail_service._retrodeck_paths.roms = ""
+        path_probe.exists = lambda _path: True
+        _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["target_path_occupied"] is False
+
+    @pytest.mark.asyncio
+    async def test_false_when_the_rom_has_no_fs_name(self, plugin, game_detail_service, path_probe):
+        # A pre-migration row: nothing to compute a path from, so the field goes
+        # quiet rather than probing the bare platform directory.
+        from domain.rom import Rom
+
+        path_probe.exists = lambda _path: True
+        with plugin._uow:
+            plugin._uow.roms.save(
+                Rom(
+                    rom_id=10,
+                    platform_slug="snes",
+                    name="Game",
+                    fs_name="",
+                    shortcut_app_id=50000,
+                    last_synced_at="2025-01-01T00:00:00",
+                )
+            )
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["target_path_occupied"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_traversing_fs_name_is_refused_rather_than_probed(self, plugin, game_detail_service, path_probe):
+        probed: list[str] = []
+        path_probe.exists = lambda path: bool(probed.append(path))
+        _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="../../../etc/passwd")
+
+        result = game_detail_service.get_cached_game_detail(50000)
+
+        assert result["target_path_occupied"] is False
+        assert probed == []
 
 
 class TestGetCachedGameDetailConflictFiltering:

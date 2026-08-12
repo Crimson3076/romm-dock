@@ -85,6 +85,11 @@ vi.mock("../components/SyncConflictModal", () => ({
 vi.mock("../components/StopGameModal", () => ({
   showStopGameModal: vi.fn(),
 }));
+// Adopt/replace/cancel dialog — spied so the button's routing off a
+// `target_occupied` refusal is observable without rendering the modal.
+vi.mock("../components/AdoptExistingModal", () => ({
+  showAdoptExistingModal: vi.fn(),
+}));
 
 import { getCachedGameDetail } from "../utils/cachedGameDetailStore";
 import { setRommConnectionState, reportServerReachable, getRommConnectionState } from "../utils/connectionState";
@@ -97,6 +102,7 @@ import { showOfflineDriftModal } from "../components/OfflineDriftModal";
 import { showFallbackLaunchModal } from "../components/FallbackLaunchModal";
 import { handleConflicts } from "../components/SyncConflictModal";
 import { showStopGameModal } from "../components/StopGameModal";
+import { showAdoptExistingModal } from "../components/AdoptExistingModal";
 import { mountPruneLeasePlugin, releaseAllPruneLeases } from "../utils/pruneLease";
 import { resetBoundVanished, setBoundVanished } from "../utils/vanishedBinding";
 import type { SyncConflict, SaveStatus } from "../types";
@@ -494,6 +500,71 @@ describe("CustomPlayButton — pause/resume on active download (#1124)", () => {
 
     // Non-vacuous: the exact rom_id was resumed.
     expect(backend.resumeDownload).toHaveBeenCalledWith(42);
+  });
+
+  it("a refused resume is said out loud rather than doing nothing", async () => {
+    // The backend can turn a resume down — content appeared at the game's
+    // location while it sat paused. Swallowing that leaves the user pressing a
+    // button with no effect and no explanation.
+    vi.mocked(backend.resumeDownload).mockResolvedValue({
+      success: false,
+      reason: "target_occupied",
+      message: "A folder named 'Game 1' is already in place",
+      existing: { name: "Game 1", path: "/roms/psx/Game 1", is_dir: true, size_bytes: 2048, modified_at: 0 },
+      incoming: { name: "Game 1", size_bytes: 2048 },
+      sizes_match: true,
+      adoptable: true,
+    });
+    const { findByLabelText } = await renderActive(42, { status: "paused", resumable: true });
+    const menu = openMenu(await findByLabelText("Download actions"));
+    const resumeItem = await menu.findByText("Resume");
+
+    await act(async () => {
+      resumeItem.click();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
+      title: "Tender",
+      body: "Something else is at this game's location now — cancel the download and start again",
+    });
+  });
+
+  it("a resume refused for any other reason surfaces the backend's own message", async () => {
+    vi.mocked(backend.resumeDownload).mockResolvedValue({
+      success: false,
+      message: "Another version is now active",
+    });
+    const { findByLabelText } = await renderActive(42, { status: "paused", resumable: true });
+    const menu = openMenu(await findByLabelText("Download actions"));
+    const resumeItem = await menu.findByText("Resume");
+
+    await act(async () => {
+      resumeItem.click();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
+      title: "Tender",
+      body: "Another version is now active",
+    });
+  });
+
+  it("a thrown resume is surfaced rather than swallowed", async () => {
+    vi.mocked(backend.resumeDownload).mockRejectedValue(new Error("bridge down"));
+    const { findByLabelText } = await renderActive(42, { status: "paused", resumable: true });
+    const menu = openMenu(await findByLabelText("Download actions"));
+    const resumeItem = await menu.findByText("Resume");
+
+    await act(async () => {
+      resumeItem.click();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
+      title: "Tender",
+      body: "Couldn't resume the download — is RomM server running?",
+    });
   });
 
   it("Cancel from the resumable dropdown still cancels the download", async () => {
@@ -3194,5 +3265,287 @@ describe("CustomPlayButton — active-download button never takes the idle blue 
     expect(fill.style.width).toBe("30%");
     const group = utils.container.querySelector('[data-testid="focusable"]') as HTMLElement;
     expect(group.style.getPropertyValue("--romm-pulse-color")).toContain("212,167,44");
+  });
+});
+
+describe("CustomPlayButton — content already on disk (#260)", () => {
+  const OCCUPIED = {
+    success: false as const,
+    reason: "target_occupied" as const,
+    message: "A file named 'game.z64' is already in place",
+    existing: { name: "game.z64", path: "/roms/n64/game.z64", is_dir: false, size_bytes: 2048, modified_at: 0 },
+    incoming: { name: "game.z64", size_bytes: 1024 },
+    sizes_match: false,
+    adoptable: true,
+  };
+
+  beforeEach(() => {
+    vi.mocked(getCachedGameDetail).mockReset();
+    vi.mocked(backend.startDownload).mockReset();
+    vi.mocked(backend.adoptExistingRom).mockReset();
+    vi.mocked(showAdoptExistingModal).mockReset();
+    vi.mocked(setLaunchOptionsConfirmed).mockClear();
+    vi.mocked(toaster.toast).mockClear();
+  });
+
+  it("labels the button 'Use Existing Files' when the cached stat found content", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: true });
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    expect(await findByText("Use Existing Files")).toBeTruthy();
+  });
+
+  it("still says Download when nothing is in the way", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: false });
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    expect(await findByText("Download")).toBeTruthy();
+  });
+
+  it("stops saying 'Use Existing Files' once the files are uninstalled", async () => {
+    // The stat that set the flag ran at mount. An uninstall deletes exactly the
+    // content it found, so the label has to go back — otherwise it names files
+    // that are no longer there.
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: true });
+    const utils = render(<CustomPlayButton appId={100} />);
+    expect(await utils.findByText("Use Existing Files")).toBeTruthy();
+
+    await act(async () => {
+      globalThis.dispatchEvent(new CustomEvent("romm_rom_uninstalled", { detail: { rom_id: 42 } }));
+      await Promise.resolve();
+    });
+
+    expect(await utils.findByText("Download")).toBeTruthy();
+  });
+
+  it("stops saying 'Use Existing Files' when a transfer is cancelled", async () => {
+    // A cancelled replace-download already removed a multi-file ROM's directory
+    // at admission, so the stat behind the label is spent.
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: true });
+    const utils = render(<CustomPlayButton appId={100} />);
+    expect(await utils.findByText("Use Existing Files")).toBeTruthy();
+
+    act(() => {
+      emitDeckyEvent<[DownloadProgressEvent]>("download_progress", {
+        rom_id: 42,
+        rom_name: "Test ROM",
+        platform_name: "PSX",
+        file_name: "game.iso",
+        status: "cancelled",
+        progress: 0.4,
+        bytes_downloaded: 400,
+        total_bytes: 1000,
+      });
+    });
+
+    expect(await utils.findByText("Download")).toBeTruthy();
+  });
+
+  it("stops saying 'Use Existing Files' when a download fails", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: true });
+    const utils = render(<CustomPlayButton appId={100} />);
+    expect(await utils.findByText("Use Existing Files")).toBeTruthy();
+
+    act(() => {
+      emitDeckyEvent<[DownloadFailedEvent]>("download_failed", {
+        rom_id: 42,
+        rom_name: "Test ROM",
+        platform_name: "PSX",
+        error_message: "boom",
+      });
+    });
+
+    expect(await utils.findByText("Download")).toBeTruthy();
+  });
+
+  it("a version switch takes the incoming ROM's occupancy, not the outgoing one's", async () => {
+    // The outgoing version's answer says nothing about where the new one lives.
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: true });
+    const utils = render(<CustomPlayButton appId={100} />);
+    expect(await utils.findByText("Use Existing Files")).toBeTruthy();
+
+    vi.mocked(getCachedGameDetail).mockResolvedValue({
+      found: true,
+      rom_id: 43,
+      rom_name: "Other version",
+      installed: false,
+      target_path_occupied: false,
+    });
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", { detail: { type: "version_switched", app_id: 100, rom_id: 43 } }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(await utils.findByText("Download")).toBeTruthy();
+  });
+
+  it("a version switch to an occupied ROM says so", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false, target_path_occupied: false });
+    const utils = render(<CustomPlayButton appId={100} />);
+    expect(await utils.findByText("Download")).toBeTruthy();
+
+    vi.mocked(getCachedGameDetail).mockResolvedValue({
+      found: true,
+      rom_id: 43,
+      rom_name: "Other version",
+      installed: false,
+      target_path_occupied: true,
+    });
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", { detail: { type: "version_switched", app_id: 100, rom_id: 43 } }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(await utils.findByText("Use Existing Files")).toBeTruthy();
+  });
+
+  it("opens the dialog on a target_occupied refusal instead of toasting a failure", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload).mockResolvedValue(OCCUPIED);
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("cancel");
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(showAdoptExistingModal)).toHaveBeenCalledWith(42, OCCUPIED);
+    expect(vi.mocked(toaster.toast)).not.toHaveBeenCalled();
+    await utils.findByText("Use Existing Files");
+  });
+
+  it("replace re-runs the download with the replace flag set", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload)
+      .mockResolvedValueOnce(OCCUPIED)
+      .mockResolvedValueOnce({ success: true, message: "Download started" });
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("replace");
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(backend.startDownload).mock.calls).toEqual([
+      [42, false],
+      [42, true],
+    ]);
+  });
+
+  it("cancel starts nothing", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload).mockResolvedValue(OCCUPIED);
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("cancel");
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(backend.startDownload)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(backend.adoptExistingRom)).not.toHaveBeenCalled();
+  });
+
+  it("adopt records the install and writes the launch command onto the shortcut", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload).mockResolvedValue(OCCUPIED);
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("adopt");
+    vi.mocked(backend.adoptExistingRom).mockResolvedValue({
+      success: true,
+      message: "Using the files already on this device",
+      file_path: "/roms/n64/game.z64",
+      rom_dir: null,
+      app_id: 100,
+      launch_options: 'flatpak run … "/roms/n64/game.z64"',
+      prune_lease_token: "adopt-token",
+    });
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(backend.adoptExistingRom)).toHaveBeenCalledWith(42);
+    expect(vi.mocked(setLaunchOptionsConfirmed)).toHaveBeenCalledWith(100, 'flatpak run … "/roms/n64/game.z64"');
+    // The lease the backend issued for this Steam write is given back, not held
+    // to its TTL — the bound branch is the only one that ever receives one.
+    expect(vi.mocked(backend.releasePruneConflictLease)).toHaveBeenCalledWith("adopt-token");
+    await utils.findByText("Play");
+  });
+
+  it("an unbound adopted ROM writes no launch options and holds no lease", async () => {
+    // The backend guards acquisition — an unbound adopt is issued no token, so
+    // there is nothing here to release. The token in this mock is the shape the
+    // frontend must stay inert to if one ever arrives anyway: no Steam write,
+    // and no lease taken out that nothing would give back.
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload).mockResolvedValue(OCCUPIED);
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("adopt");
+    vi.mocked(backend.adoptExistingRom).mockResolvedValue({
+      success: true,
+      message: "ok",
+      file_path: "/roms/n64/game.z64",
+      rom_dir: null,
+      app_id: null,
+      launch_options: "",
+      prune_lease_token: "stray-token",
+    });
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(setLaunchOptionsConfirmed)).not.toHaveBeenCalled();
+    await utils.findByText("Play");
+  });
+
+  it("a refused adoption surfaces its message and leaves the button on the download state", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload).mockResolvedValue(OCCUPIED);
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("adopt");
+    vi.mocked(backend.adoptExistingRom).mockResolvedValue({
+      success: false,
+      reason: "nothing_to_adopt",
+      message: "The files are no longer there — nothing was adopted",
+    });
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
+      title: "Tender",
+      body: "The files are no longer there — nothing was adopted",
+    });
+    await utils.findByText("Use Existing Files");
+  });
+
+  it("a thrown adoption is surfaced rather than swallowed", async () => {
+    mockCachedDetail({ rom_id: 42, installed: false });
+    vi.mocked(backend.startDownload).mockResolvedValue(OCCUPIED);
+    vi.mocked(showAdoptExistingModal).mockResolvedValue("adopt");
+    vi.mocked(backend.adoptExistingRom).mockRejectedValue(new Error("bridge down"));
+    const utils = render(<CustomPlayButton appId={100} />);
+    const btn = await utils.findByText("Download");
+
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
+      title: "Tender",
+      body: "Couldn't use the existing files — is RomM server running?",
+    });
+    await utils.findByText("Use Existing Files");
   });
 });

@@ -465,12 +465,238 @@ class TestWriteTextAtomic:
         assert dest.read_text(encoding="utf-8") == "Final Fantasy VII — Disc 1.cue\n"
 
 
+class TestDescribePath:
+    def test_none_for_a_missing_path(self, adapter, tmp_path):
+        assert adapter.describe_path(str(tmp_path / "nope")) is None
+
+    def test_describes_a_file(self, adapter, tmp_path):
+        f = tmp_path / "Game.sfc"
+        f.write_bytes(b"0123456789")
+        described = adapter.describe_path(str(f))
+        assert described is not None
+        assert described["path"] == str(f)
+        assert described["is_dir"] is False
+        assert described["size_bytes"] == 10
+        assert described["modified_at"] == pytest.approx(f.stat().st_mtime)
+
+    def test_a_directory_reports_its_recursive_total(self, adapter, tmp_path):
+        # Comparable with the server's fs_size_bytes for a multi-file ROM, which
+        # is the sum over every file including the nested ones.
+        game = tmp_path / "Game"
+        (game / "sub").mkdir(parents=True)
+        (game / "disc1.bin").write_bytes(b"a" * 100)
+        (game / "sub" / "disc2.bin").write_bytes(b"b" * 55)
+        described = adapter.describe_path(str(game))
+        assert described is not None
+        assert described["is_dir"] is True
+        assert described["size_bytes"] == 155
+
+    def test_an_empty_directory_reports_zero(self, adapter, tmp_path):
+        empty = tmp_path / "Empty"
+        empty.mkdir()
+        described = adapter.describe_path(str(empty))
+        assert described is not None
+        assert described["size_bytes"] == 0
+
+    def test_a_broken_symlink_inside_a_directory_contributes_zero(self, adapter, tmp_path):
+        # lstat on a dangling link succeeds and reports the link's own size, so
+        # a broken link never aborts the description of the tree around it.
+        game = tmp_path / "Game"
+        game.mkdir()
+        (game / "real.bin").write_bytes(b"a" * 10)
+        (game / "dangling").symlink_to(tmp_path / "gone")
+        described = adapter.describe_path(str(game))
+        assert described is not None
+        assert described["size_bytes"] >= 10
+
+
+class TestChecksum:
+    def test_md5_matches_hashlib(self, adapter, tmp_path):
+        import hashlib
+
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"the quick brown fox" * 100)
+        assert adapter.checksum(str(f), "md5") == hashlib.md5(f.read_bytes()).hexdigest()
+
+    def test_crc32_is_eight_lowercase_hex_digits(self, adapter, tmp_path):
+        import zlib
+
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"\xff" * 3)
+        expected = f"{zlib.crc32(f.read_bytes()) & 0xFFFFFFFF:08x}"
+        assert adapter.checksum(str(f), "crc32") == expected
+        assert len(expected) == 8
+
+    def test_crc32_of_an_empty_file_is_zero_padded(self, adapter, tmp_path):
+        f = tmp_path / "empty.bin"
+        f.write_bytes(b"")
+        assert adapter.checksum(str(f), "crc32") == "00000000"
+
+    def test_progress_reports_byte_deltas_summing_to_the_file_size(self, adapter, tmp_path):
+        f = tmp_path / "big.bin"
+        f.write_bytes(b"x" * (3 * 1024 * 1024 + 7))
+        deltas: list[int] = []
+        adapter.checksum(str(f), "md5", deltas.append)
+        assert sum(deltas) == 3 * 1024 * 1024 + 7
+        assert len(deltas) > 1  # chunked, not one gulp
+
+    def test_an_unknown_algorithm_raises(self, adapter, tmp_path):
+        f = tmp_path / "a.bin"
+        f.write_bytes(b"x")
+        with pytest.raises(ValueError, match="sha512"):
+            adapter.checksum(str(f), "sha512")
+
+    def test_a_missing_file_raises(self, adapter, tmp_path):
+        with pytest.raises(OSError):
+            adapter.checksum(str(tmp_path / "nope.bin"), "md5")
+
+
+class TestListArchiveMembers:
+    """The central directory answers what is inside without decompressing it."""
+
+    def _zip(self, path, members: dict[str, bytes], *, add_dir: str | None = None) -> None:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            if add_dir is not None:
+                archive.writestr(zipfile.ZipInfo(add_dir), b"")
+            for name, data in members.items():
+                archive.writestr(name, data)
+
+    def test_states_each_members_name_uncompressed_size_and_crc32(self, adapter, tmp_path):
+        import zlib
+
+        payload = b"rom bytes" * 512
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": payload})
+
+        assert adapter.list_archive_members(str(f)) == (
+            {
+                "name": "Game.gba",
+                "size_bytes": len(payload),
+                "crc32": f"{zlib.crc32(payload) & 0xFFFFFFFF:08x}",
+            },
+        )
+
+    def test_reads_the_uncompressed_size_not_the_stored_one(self, adapter, tmp_path):
+        # A compressible member is much smaller inside the archive; the size the
+        # server states is the one it decompresses to.
+        payload = b"a" * 10_000
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": payload})
+
+        assert adapter.list_archive_members(str(f))[0]["size_bytes"] == 10_000
+        assert f.stat().st_size < 10_000
+
+    def test_keeps_each_members_path_inside_the_archive(self, adapter, tmp_path):
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"disc1/track1.bin": b"one", "disc2/track1.bin": b"two"})
+
+        assert [member["name"] for member in adapter.list_archive_members(str(f))] == [
+            "disc1/track1.bin",
+            "disc2/track1.bin",
+        ]
+
+    def test_directory_entries_are_omitted(self, adapter, tmp_path):
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"disc1/track1.bin": b"one"}, add_dir="disc1/")
+
+        assert [member["name"] for member in adapter.list_archive_members(str(f))] == ["disc1/track1.bin"]
+
+    def test_an_empty_archive_lists_nothing_rather_than_failing(self, adapter, tmp_path):
+        f = tmp_path / "Game.zip"
+        self._zip(f, {})
+
+        assert adapter.list_archive_members(str(f)) == ()
+
+    def test_a_file_that_is_not_a_zip_cannot_be_looked_inside(self, adapter, tmp_path):
+        f = tmp_path / "Game.7z"
+        f.write_bytes(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 32)
+
+        assert adapter.list_archive_members(str(f)) is None
+
+    def test_a_truncated_archive_cannot_be_looked_inside(self, adapter, tmp_path):
+        source = tmp_path / "Game.zip"
+        self._zip(source, {"Game.gba": b"rom bytes" * 512})
+        truncated = tmp_path / "Truncated.zip"
+        truncated.write_bytes(source.read_bytes()[: len(source.read_bytes()) // 2])
+
+        assert adapter.list_archive_members(str(truncated)) is None
+
+    def test_a_missing_path_cannot_be_looked_inside(self, adapter, tmp_path):
+        assert adapter.list_archive_members(str(tmp_path / "nope.zip")) is None
+
+
+class TestChecksumArchiveMember:
+    """A member's digest is taken over its decompressed bytes, as RomM's is."""
+
+    def _zip(self, path, members: dict[str, bytes]) -> None:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, data in members.items():
+                archive.writestr(name, data)
+
+    def test_md5_is_the_members_content_not_the_containers(self, adapter, tmp_path):
+        import hashlib
+
+        payload = b"rom bytes" * 512
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": payload})
+
+        digest = adapter.checksum_archive_member(str(f), "Game.gba", "md5")
+
+        assert digest == hashlib.md5(payload).hexdigest()
+        assert digest != hashlib.md5(f.read_bytes()).hexdigest()
+
+    def test_crc32_matches_the_central_directory(self, adapter, tmp_path):
+        payload = b"rom bytes" * 512
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": payload})
+
+        listed = adapter.list_archive_members(str(f))[0]["crc32"]
+
+        assert adapter.checksum_archive_member(str(f), "Game.gba", "crc32") == listed
+
+    def test_progress_reports_deltas_summing_to_the_uncompressed_size(self, adapter, tmp_path):
+        payload = b"x" * (3 * 1024 * 1024 + 7)
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": payload})
+        deltas: list[int] = []
+
+        adapter.checksum_archive_member(str(f), "Game.gba", "md5", deltas.append)
+
+        assert sum(deltas) == len(payload)
+        assert len(deltas) > 1  # streamed, never held whole in memory
+
+    def test_a_member_the_archive_does_not_hold_raises(self, adapter, tmp_path):
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": b"rom"})
+
+        with pytest.raises(KeyError):
+            adapter.checksum_archive_member(str(f), "Other.gba", "md5")
+
+    def test_an_unknown_algorithm_raises(self, adapter, tmp_path):
+        f = tmp_path / "Game.zip"
+        self._zip(f, {"Game.gba": b"rom"})
+
+        with pytest.raises(ValueError, match="sha512"):
+            adapter.checksum_archive_member(str(f), "Game.gba", "sha512")
+
+    def test_a_container_that_is_not_a_zip_raises(self, adapter, tmp_path):
+        f = tmp_path / "Game.zip"
+        f.write_bytes(b"not an archive")
+
+        with pytest.raises(zipfile.BadZipFile):
+            adapter.checksum_archive_member(str(f), "Game.gba", "md5")
+
+
 class TestProtocolMethodCount:
     """Sanity check that every Protocol method has at least one test class."""
 
     def test_protocol_methods_covered(self):
         method_names = {
             "exists",
+            "describe_path",
+            "checksum",
+            "list_archive_members",
+            "checksum_archive_member",
             "remove_file",
             "remove_tree",
             "make_dirs",

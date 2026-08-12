@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from contextlib import AbstractAsyncContextManager
 
     from models.prune import SourceClaim
@@ -23,6 +24,97 @@ if TYPE_CHECKING:
     from domain.rom_install import RomInstall
     from domain.save_layout import SaveLayout
     from domain.shortcut_data import EmulatorInvocation
+
+
+class RomInstallRecorder(Protocol):
+    """The one writer of a ``rom_installs`` row and of the shortcut bake behind it.
+
+    Both a completed download and an adoption reach an install through here, so
+    the row an adoption writes is derived by exactly the rules a download's is —
+    ``file_path``, ``rom_dir``, ``system`` and the launchable verdict — rather
+    than by a second implementation free to drift from it (ADR-0028).
+
+    Synchronous throughout: every method opens a short write Unit of Work, so
+    callers on the event loop offload via ``loop.run_in_executor``.
+    """
+
+    def do_record_install(
+        self,
+        *,
+        rom_id: int,
+        rom_detail: dict[str, Any],
+        file_path: str,
+        rom_dir: str | None,
+        system: str,
+        cleanup: Callable[[], None],
+    ) -> tuple[str | None, str | None]:
+        """Persist the install, returning ``(file_path, None)`` or ``(None, error)``.
+
+        *cleanup* removes the just-placed artifact when the RomM data fails the
+        aggregate's invariant and nothing is persisted.
+        """
+        ...
+
+    def do_resolve_launch_bake(self, rom_id: int, rom_detail: dict[str, Any], file_path: str) -> tuple[int | None, str]:
+        """Return the ``(shortcut_app_id, launch_options)`` the frontend must write.
+
+        ``app_id`` is ``None`` when the ROM has no Steam shortcut yet — the
+        frontend no-ops and the next sync writes the launch command.
+        """
+        ...
+
+    def do_record_applied_launch_options(self, rom_id: int, launch_options: str) -> None:
+        """Record *launch_options* as this ROM's applied shortcut state. No-op when the row is gone."""
+        ...
+
+
+class SiblingSupersedeFn(Protocol):
+    """Strip any other installed version of this ROM's sibling group (#1298).
+
+    One downloaded version per shortcut binding, whichever route produced it —
+    an adopted install is an install (ADR-0028), so adoption is held to the rule
+    the download path already enforces. Returns ``None`` when the group is clean
+    or every removal succeeded, and a canonical failure dict otherwise, which the
+    caller must treat as an abort: a half-applied supersede leaves two installed
+    versions, the state the rule exists to prevent.
+
+    Which siblings qualify is deliberately **not** part of this contract — the
+    "bound to the same shortcut or unbound, never a grandfathered separate
+    shortcut" rule (ADR-0021 §5) has one implementation behind this seam.
+    """
+
+    async def __call__(self, rom_id: int) -> dict[str, Any] | None: ...
+
+
+class SiblingSupersedeProvider(Protocol):
+    """Deferred read of :class:`SiblingSupersedeFn`.
+
+    The supersede lives on DownloadService, which is constructed *after*
+    RomAdoptionService (it consumes the adoption service's occupancy gate), so
+    the composition root binds this after both exist — the same two-phase shape
+    ``RomRemoverProvider`` uses for the download↔removal cycle.
+    """
+
+    def __call__(self) -> SiblingSupersedeFn: ...
+
+
+class DownloadTargetGateFn(Protocol):
+    """Decide whether a download may write to the path it has computed.
+
+    Returns ``None`` when the path is free — or was cleared because the user
+    chose to replace what was there — and a canonical failure dict otherwise:
+    the ``target_occupied`` refusal carrying both sides of the comparison, or
+    the failure of a removal that the replace could not complete. Nothing is
+    written and no transfer starts on a non-``None`` answer.
+
+    Awaitable: describing an occupied directory walks it whole and clearing one
+    deletes it whole, so the implementation runs that work off the event loop.
+    The caller just awaits an answer.
+    """
+
+    async def __call__(
+        self, rom_detail: dict[str, Any], checked_path: str, *, replace: bool
+    ) -> dict[str, Any] | None: ...
 
 
 class RetryStrategy(Protocol):

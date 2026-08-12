@@ -34,6 +34,8 @@ from services.migration import MigrationService, MigrationServiceConfig
 from services.playtime import PlaytimeService, PlaytimeServiceConfig
 from services.prune import PruneService, PruneServiceConfig
 from services.relaunch_options_resolver import RelaunchOptionsResolver, RelaunchOptionsResolverConfig
+from services.rom_adoption import RomAdoptionService, RomAdoptionServiceConfig
+from services.rom_install_recorder import RomInstallRecorder, RomInstallRecorderConfig
 from services.rom_removal import RomRemovalService, RomRemovalServiceConfig
 from services.saves import SaveService, SaveServiceConfig
 from services.session_lifecycle import SessionLifecycleService, SessionLifecycleServiceConfig
@@ -46,7 +48,7 @@ from services.version_switch import VersionSwitchService, VersionSwitchServiceCo
 if TYPE_CHECKING:
     from typing import Any
 
-    from services.protocols import InstalledRomRemoverFn
+    from services.protocols import InstalledRomRemoverFn, SiblingSupersedeFn
 
     from .adapters import AdapterBundle, CallbackBundle, RuntimeBundle, StateBundle
 
@@ -109,6 +111,10 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     # supersede, but RomRemovalService needs DownloadService's queue-cleanup seam —
     # a construction cycle. Bind the remover after both services exist.
     rom_remover_binding: LateBinding[InstalledRomRemoverFn] = LateBinding("rom_remover")
+    # RomAdoptionService needs DownloadService's sibling supersede (#1298), but
+    # DownloadService needs the adoption service's occupancy gate — the same
+    # shape of cycle, bound after both exist.
+    sibling_supersede_binding: LateBinding[SiblingSupersedeFn] = LateBinding("sibling_supersede")
 
     # The single read-path core resolver (B1): folds the per-game
     # emulator_override pin over the system-layer ES-DE resolution. Built first
@@ -272,6 +278,34 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     )
     pending_sync_binding.set(lambda: sync_service.pending_sync)
 
+    rom_install_recorder = RomInstallRecorder(
+        config=RomInstallRecorderConfig(
+            logger=cfg.runtime.logger,
+            clock=cfg.runtime.clock,
+            uow_factory=cfg.callbacks.uow_factory,
+            system_extensions=cfg.callbacks.system_extensions,
+            active_core=active_core_resolver,
+            disc_resolver=disc_launch_resolver,
+        ),
+    )
+
+    rom_adoption_service = RomAdoptionService(
+        config=RomAdoptionServiceConfig(
+            romm_api=cfg.adapters.romm_api,
+            download_file_store=cfg.adapters.download_file_store,
+            resolve_system=cfg.adapters.http_adapter.resolve_system,
+            retrodeck_paths=cfg.callbacks.retrodeck_paths,
+            install_recorder=rom_install_recorder,
+            m3u_support=cfg.callbacks.m3u_support,
+            sibling_supersede=sibling_supersede_binding.get,
+            uow_factory=cfg.callbacks.uow_factory,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            emit=cfg.runtime.emit,
+            clock=cfg.runtime.clock,
+        ),
+    )
+
     download_service = DownloadService(
         config=DownloadServiceConfig(
             romm_api=cfg.adapters.romm_api,
@@ -283,10 +317,9 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             clock=cfg.runtime.clock,
             sleeper=cfg.runtime.sleeper,
             retrodeck_paths=cfg.callbacks.retrodeck_paths,
-            active_core=active_core_resolver,
-            disc_resolver=disc_launch_resolver,
+            install_recorder=rom_install_recorder,
+            target_gate=rom_adoption_service.check_download_target,
             m3u_support=cfg.callbacks.m3u_support,
-            system_extensions=cfg.callbacks.system_extensions,
             uow_factory=cfg.callbacks.uow_factory,
             rom_remover=rom_remover_binding.get,
         ),
@@ -307,6 +340,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     # Close the download↔removal cycle: DownloadService's sibling supersede now
     # resolves the live remover through this binding (#1298).
     rom_remover_binding.set(lambda: rom_removal_service.remove_rom)
+    sibling_supersede_binding.set(lambda: download_service.supersede_sibling_installs)
 
     firmware_service = FirmwareService(
         config=FirmwareServiceConfig(
@@ -364,6 +398,9 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             bios_checker=firmware_service,
             achievements=achievements_service,
             active_core=active_core_resolver,
+            path_exists=cfg.adapters.path_probe,
+            retrodeck_paths=cfg.callbacks.retrodeck_paths,
+            resolve_system=cfg.adapters.http_adapter.resolve_system,
         ),
     )
 
@@ -513,6 +550,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         "playtime_service": playtime_service,
         "sync_service": sync_service,
         "download_service": download_service,
+        "rom_adoption_service": rom_adoption_service,
         "rom_removal_service": rom_removal_service,
         "prune_service": prune_service,
         "firmware_service": firmware_service,

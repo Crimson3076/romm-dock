@@ -214,7 +214,11 @@ Format: **invariant** — tier — enforced by.
   Removed-game cleanup takes the **confirm** leg for one case deliberately: installed ROM content the user did not
   select for the recovery bundle is deleted with its row. The ROM is re-downloadable from RomM where a save is not, the
   per-candidate opt-in and its consequence are stated in the confirmation dialog and the user guide, and the row cannot
-  be removed at all without a fresh 404 — so this is a disclosed choice, not an exception that drifted in
+  be removed at all without a fresh 404 — so this is a disclosed choice, not an exception that drifted in. The adopt
+  dialog's **replace** exit is the second such case, and it does **not** rest on that justification: the premise is that
+  the content is the user's own — a different rip, a patch, a romhack — which is exactly what the server cannot hand
+  back. What carries it instead is that the user is shown both sides, offered a content check, and chooses between two
+  named outcomes behind a second confirmation ([ADR-0028](docs/adr/0028-adopted-install-is-an-install.md))
 - **Every read-mutate-write of a `RomSaveSyncState` runs under `SyncEngine.rom_lock(rom_id)`** — prompt-only — sync
   paths, `get_save_status`, and the four slot mutations hold the lock; mechanize via a `rom_save_sync_states.save`
   call-site audit
@@ -233,12 +237,14 @@ Format: **invariant** — tier — enforced by.
   families run against the core (ladder in `tests/adapters/test_gavel_native.py`, decision table in
   `tests/adapters/test_gavel_native_table_vectors.py`); the `.so` and the vectors are pinned to the same upstream
   release tag and are bumped together
-- **`applied_launch_options` is written only by the five recorded-state writer sites (sync ack-commit,
-  download-complete, uninstall, home-migration, version-switch), each recording the exact command the frontend wrote;
+- **`applied_launch_options` is written only by the six recorded-state writer sites (sync ack-commit, download-complete,
+  adopt-complete, uninstall, home-migration, version-switch), each recording the exact command the frontend wrote;
   excluded from the sync UPSERT; the only sanctioned reset is Force Full Sync's clear-to-NULL (a wrong recorded value is
   the only path to a wrong delta-skip)** — test + prompt-only — each writer site carries a value-exact test; new
   launch-options write paths are prompt-only — mechanize via a `set_applied_launch_options` /
-  `record_applied_launch_options` call-site audit
+  `record_applied_launch_options` call-site audit. Download-complete and adopt-complete are one site in the code
+  (`RomInstallRecorder.do_record_applied_launch_options`) and two in the flow, because an adopted install is an install
+  in every respect (ADR-0028)
 - **An abandoned-chunk stash's whole-unit apply staging (`pending_sync` / `pending_all_roms` / `pending_cover_sources`)
   is never mutated while the stash is pending (box IDLE) — every run-entry path passes `try_begin_run`, which clears the
   stash before any staging write** — prompt-only — the invariant holds today rather than being aspirational; mechanize
