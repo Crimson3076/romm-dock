@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from domain.disc_selection import Disc
     from domain.rom_install import RomInstall
-    from domain.save_layout import SaveLayout
+    from domain.save_layout import InSaveDir, SaveLayout
     from domain.shortcut_data import EmulatorInvocation
 
 
@@ -99,22 +99,79 @@ class SiblingSupersedeProvider(Protocol):
 
 
 class DownloadTargetGateFn(Protocol):
-    """Decide whether a download may write to the path it has computed.
+    """Decide whether a download may write the content it has computed a path for.
 
-    Returns ``None`` when the path is free — or was cleared because the user
-    chose to replace what was there — and a canonical failure dict otherwise:
-    the ``target_occupied`` refusal carrying both sides of the comparison, or
-    the failure of a removal that the replace could not complete. Nothing is
-    written and no transfer starts on a non-``None`` answer.
+    Returns ``None`` when nothing is in the way — the path is free and no file
+    elsewhere in the platform folder looks like this game, or the user chose to
+    replace what they were shown and it has been cleared — and a canonical
+    failure dict otherwise: the ``target_occupied`` refusal carrying both sides
+    of the comparison, one of the four the candidate search can return
+    (``adoption_candidates``, ``unusable_namesake``, ``candidate_vanished``), the
+    ``rename_collisions`` refusal from carrying a discarded candidate's saves, or
+    the failure of a removal the replace could not complete. Nothing is written
+    and no transfer starts on a non-``None`` answer.
 
-    Awaitable: describing an occupied directory walks it whole and clearing one
-    deletes it whole, so the implementation runs that work off the event loop.
+    *candidate_path* names the entry the user was shown when it sat elsewhere in
+    the folder under another name; with *replace* it is removed and its saves
+    carried to the canonical name, which is what the dialog's second
+    confirmation promises. *collision_choice* answers the collision that carry
+    can raise. *resume* suppresses the candidate search: a resume continues a
+    decision already taken, and the file the user declined must not refuse the
+    transfer they started.
+
+    *page_saw_candidate* is not an answer but a report — what the game page told
+    the user before they pressed. The search's last check is a backstop over it,
+    which is what makes the button's promise keepable: the page and the search
+    read the same folder from different knowledge and have diverged four times,
+    so nothing rests on them agreeing (ADR-0028).
+
+    Awaitable: describing an occupied directory walks it whole, clearing one
+    deletes it whole, and the candidate search lists a directory and reads
+    archive indexes, so the implementation runs that work off the event loop.
     The caller just awaits an answer.
     """
 
     async def __call__(
-        self, rom_detail: dict[str, Any], checked_path: str, *, replace: bool
+        self,
+        rom_detail: dict[str, Any],
+        checked_path: str,
+        *,
+        replace: bool,
+        resume: bool = False,
+        candidate_path: str | None = None,
+        collision_choice: str | None = None,
+        page_saw_candidate: bool = False,
     ) -> dict[str, Any] | None: ...
+
+
+class AdoptionCandidateProbeFn(Protocol):
+    """Cheap "is this game already here under another name" answer for the game detail read.
+
+    The composition root satisfies this with
+    ``RomAdoptionService.has_adoption_candidate`` — the same service as the gate
+    above, running the same ``matching_entries`` filter over the same folder
+    (read leaner here: names and kinds, no size or mtime).
+
+    The two answer from **different knowledge** and are not held to agreeing.
+    The page has a ``roms`` row and must stay network-free and instant; the gate
+    has the server payload and the path the download derived. That difference has
+    produced a real divergence four times — the shape RomM serves, the platform
+    directory, the name matched, and the directory listing itself — so the
+    button's promise does not rest on an invariant over the two searches. It
+    rests on the gate's last check: whatever this returned, a press ends in an
+    answer, because a page that reported a copy and a search that can say nothing
+    specific produce ``candidate_vanished`` rather than a silent download.
+
+    It answers the page's question only — a boolean, enough to label the button —
+    and stops at the name match, skipping the archive reads that rank candidates
+    for the dialog. Never raises: every failure answers ``False``, because a
+    search that could not run must not make a game look uninstallable.
+
+    A UoW-opening seam — it reads the install rows to subtract content another
+    game already owns — so the caller resolves it outside any open Unit of Work.
+    """
+
+    def __call__(self, platform_slug: str, fs_name: str) -> bool: ...
 
 
 class RetryStrategy(Protocol):
@@ -518,6 +575,48 @@ class SaveSortChangeFn(Protocol):
     """
 
     def __call__(self) -> SaveLayout: ...
+
+
+class SaveQuarantineFn(Protocol):
+    """The sanctioned save-file backup funnel, consumed by AdoptionRenamer.
+
+    The composition root satisfies this with ``SaveService.quarantine_local_file``
+    over ``MatrixExecutor``'s — the single source of truth for the backup
+    discipline, so a save is never destroyed without a recoverable copy (#965).
+    An adoption's Overwrite answers for save and savestate files the user chose
+    to lose, and those go through here rather than through a delete of their own:
+    a second implementation of the discipline is how the first one stops being
+    the discipline.
+
+    ``saves_dir`` is the directory the file sits in and ``filename`` its name;
+    the backup lands in ``<saves_dir>/.romm-backup/``. Returns ``True`` when a
+    file was moved, ``False`` when there was nothing there. Raises when the
+    backup directory is unsafe or the move fails — the caller reports that rather
+    than proceeding.
+    """
+
+    def __call__(self, saves_dir: str, filename: str) -> bool: ...
+
+
+class SaveSortingProvider(Protocol):
+    """Current savefile subdirectory sorting, consumed by RomAdoptionService.
+
+    The composition root satisfies this with ``SaveService.current_save_sorting``.
+    Adoption renames a ROM to the server's name and has to carry that ROM's saves
+    with it, so it must address the directory the sync itself addresses — which
+    is the one MigrationService recorded, honouring a pending save-sort
+    migration, and **not** the live ``retroarch.cfg``. The two differ exactly
+    while a migration is pending, and that is the case where a rename reading the
+    live config would move the files out from under the sync.
+
+    Distinct from :class:`RetroArchSaveLayoutProvider`, which reads the live
+    config: that one answers whether saves are written next to the ROM at all
+    (``savefiles_in_content_dir``), a state MigrationService records no marker
+    for. A UoW-opening seam — the caller resolves it outside any open Unit of
+    Work.
+    """
+
+    def __call__(self) -> InSaveDir: ...
 
 
 class MigrationPendingFn(Protocol):

@@ -10,12 +10,13 @@ import zipfile
 import zlib
 from typing import TYPE_CHECKING
 
+from domain.rom_candidates import DIR, FILE, LINK, Kind
 from lib.path_safety import safe_path_component
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from models.adoption import ArchiveMemberInfo, ExistingContent
+    from models.adoption import ArchiveMemberInfo, ExistingContent, TopLevelEntry, TopLevelName
 
 
 class FakeDownloadFileStore:
@@ -43,12 +44,22 @@ class FakeDownloadFileStore:
     - ``decode_calls`` / ``extract_calls`` / ``walk_calls`` /
       ``member_checksum_calls`` — captured argument lists for tests that
       need to assert on adapter calls.
+    - ``links`` — ``{path: target}`` for every entry the directory read reports
+      as a symlink. Listed by both listings with ``kind="link"``, which is never
+      adoptable. The target is stored rather than a bare set of paths because a
+      link's size is the length of the path it holds, and a fake that answered 0
+      would state a number the real adapter never returns.
+    - ``other_kinds`` — paths a filesystem holds that are neither file,
+      directory nor link (a FIFO, a socket, a device node). Staged so a
+      test can prove they are not listed at all.
     """
 
     def __init__(self, files: dict[str, bytes] | None = None) -> None:
         self.files: dict[str, bytes] = dict(files) if files else {}
         self.mtimes: dict[str, float] = {}
         self.dirs: set[str] = set()
+        self.links: dict[str, str] = {}
+        self.other_kinds: set[str] = set()
         self.disk_free_bytes: int = 10 * 1024 * 1024 * 1024  # 10 GiB
         self.fail_on_atomic_write: bool = False
         self.tmp_files: set[str] = set()
@@ -68,20 +79,99 @@ class FakeDownloadFileStore:
     def describe_path(self, path: str) -> ExistingContent | None:
         """Describe *path*, summing a directory's contents like the real adapter.
 
-        ``mtimes`` is an explicit per-path override; anything unset reports 0.0
-        so a test that does not care about the timestamp does not have to stage
-        one.
+        A staged link or a staged kindless entry occupies its path whether or not
+        anything is behind it, so both are described rather than reported as
+        absent — the real adapter's ``lstat`` answers the same way, and the
+        kindless one comes back with no ``kind`` rather than as a file.
+
+        A link's ``size_bytes`` is the length of the path it stores, which is
+        what ``lstat`` reports for one; ``links`` therefore holds a target path
+        per link rather than a bare set, so the fake states that number instead
+        of a zero the real adapter never returns. ``mtimes`` is an explicit
+        per-path override; anything unset reports 0.0 so a test that does not
+        care about the timestamp does not have to stage one.
         """
+        if path in self.links:
+            return {
+                "path": path,
+                "kind": LINK,
+                "size_bytes": len(self.links[path]),
+                "modified_at": self.mtimes.get(path, 0.0),
+            }
+        if path in self.other_kinds:
+            return {"path": path, "kind": None, "size_bytes": 0, "modified_at": self.mtimes.get(path, 0.0)}
         if not self.exists(path):
             return None
         is_dir = self.is_dir(path)
         size = sum(size for _p, size in self.scan_files_with_sizes(path)) if is_dir else len(self.files.get(path, b""))
         return {
             "path": path,
-            "is_dir": is_dir,
+            "kind": DIR if is_dir else FILE,
             "size_bytes": size,
             "modified_at": self.mtimes.get(path, 0.0),
         }
+
+    def _top_level(self, directory: str) -> tuple[tuple[str, str, Kind], ...]:
+        """``(name, path, kind)`` for everything directly inside *directory*.
+
+        Derived from the stored paths rather than scripted, so a fixture cannot
+        claim a listing its virtual filesystem does not have. Both listings read
+        this and neither filters it further, exactly as the real adapter's two
+        both ask ``_entry_kind`` and nothing else — including its rule that a
+        kind outside file/dir/link is not listed at all.
+        """
+        prefix = directory.rstrip("/") + "/"
+        kinds: dict[str, Kind] = {}
+        for path in list(self.files) + list(self.dirs) + list(self.links) + list(self.other_kinds):
+            if not path.startswith(prefix):
+                continue
+            head, _sep, tail = path[len(prefix) :].partition("/")
+            if not head:
+                continue
+            entry = prefix + head
+            if entry in self.other_kinds:
+                continue
+            if entry in self.links:
+                kinds[head] = LINK
+            elif tail or entry in self.dirs:
+                kinds[head] = DIR
+            else:
+                kinds.setdefault(head, FILE)
+        return tuple((name, prefix + name, kind) for name, kind in sorted(kinds.items()))
+
+    def list_top_level_entries(self, directory: str) -> tuple[TopLevelEntry, ...]:
+        """Describe what sits directly inside *directory*, without descending.
+
+        A directory reports size 0, exactly as the real adapter does; a link
+        reports the length of the path it stores rather than its target's size,
+        because nothing here follows one and that is the number ``lstat`` gives.
+        """
+        return tuple(
+            {
+                "name": name,
+                "path": path,
+                "kind": kind,
+                "size_bytes": self._entry_size(path, kind),
+                "modified_at": self.mtimes.get(path, 0.0),
+            }
+            for name, path, kind in self._top_level(directory)
+        )
+
+    def _entry_size(self, path: str, kind: Kind) -> int:
+        """What a per-entry ``stat`` reports for this kind, the adapter's way."""
+        if kind == DIR:
+            return 0
+        return len(self.links[path]) if kind == LINK else len(self.files.get(path, b""))
+
+    def list_top_level_names(self, directory: str) -> tuple[TopLevelName, ...]:
+        """Name and kind only — the same set, read without the per-entry ``stat``.
+
+        Built from the same source as :meth:`list_top_level_entries` and **not**
+        projected from it: the two must agree because they apply the same rule,
+        not because one is derived from the other. A fake that projects cannot
+        exhibit a disagreement, which is how a real one went unnoticed.
+        """
+        return tuple({"name": name, "path": path, "kind": kind} for name, path, kind in self._top_level(directory))
 
     def checksum(self, path: str, algorithm: str, progress_callback: Callable[[int], None] | None = None) -> str:
         """Hash the stored bytes, reporting the whole file as one progress chunk."""
@@ -149,6 +239,10 @@ class FakeDownloadFileStore:
         if path in self.remove_failures:
             raise OSError(f"simulated remove failure: {path}")
         self.files.pop(path, None)
+        # An unlink takes the entry out of the listing whatever kind it was —
+        # unlinking a link does not need its target.
+        self.links.pop(path, None)
+        self.other_kinds.discard(path)
 
     def remove_tree(self, path: str) -> None:
         if path in self.remove_tree_failures:

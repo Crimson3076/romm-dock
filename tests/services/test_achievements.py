@@ -123,6 +123,7 @@ def plugin(clock):
             path_exists=FakePathExistsReader(),
             retrodeck_paths=FakeRetroDeckPaths(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_fs_slug or platform_slug,
+            candidate_probe=lambda platform_slug, fs_name: False,
         ),
     )
     return p
@@ -132,6 +133,8 @@ def plugin(clock):
 async def _set_event_loop(plugin):
     """Ensure service loops match the running event loop for async tests."""
     plugin._achievements_service._loop = asyncio.get_event_loop()
+    # ``get_cached_game_detail`` runs its work on an executor worker.
+    plugin.loop = asyncio.get_event_loop()
 
 
 @pytest.fixture

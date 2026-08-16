@@ -259,12 +259,90 @@ Once you use the existing files, they are a normal install in every respect — 
 exactly as it would a downloaded copy. That is the reason for the dialog: the decision is made once, up front, with the
 comparison in front of you.
 
-Two cases the dialog cannot help with:
+One case the dialog cannot help with: the folder or file in the way is the wrong shape for the game — a folder where the
+server serves a single file, or the reverse. The dialog says so and only offers replace or cancel.
 
-- The folder or file in the way is the wrong shape for the game — a folder where the server serves a single file, or the
-  reverse. The dialog says so and only offers replace or cancel.
-- The same game sitting elsewhere under a **different name**. The plugin looks only at the exact location it would
-  download to, so a differently-named copy is not found.
+### When the same game is on your device under a different name
+
+Your copy is rarely named the way your server names it. `Example Quest - Second Journey (U).zip` and
+`Example Quest - Second Journey (USA).zip` are the same game, and a download would land beside your file rather than on
+it — leaving you with two copies of one game.
+
+So the plugin has a look around the platform folder — when the game's page opens, and again when you press the button.
+It reads that folder's top level only — never inside your subfolders, and never inside a game folder — keeps whatever
+your emulator accepts as a ROM for that system, skips anything it already has an install record for, and compares names
+with the version tags removed. `Example Quest - Second Journey (Rev 1) (USA).zip` and
+`Example Quest - Second Journey (U).zip` both reduce to the same game.
+
+**You find out before you press anything.** If your copy is there, the button reads **Use Existing Files** rather than
+Download — the same label it shows for a file sitting at the game's own location. You should never have to start the
+download you were trying to avoid just to be told it was unnecessary. The search runs again when you press, because the
+folder can change while the page is open, and the answer you act on should be the current one.
+
+Usually it finds nothing, and the download starts as always. When it finds exactly one file, you get the same comparison
+dialog as above. When it finds several, you get a short list first — strongest match at the top, each row saying what it
+is based on: a checksum read out of a zip's index, an exact size match, or the name alone. If there were more than the
+list shows, it says so.
+
+**When what is there cannot be used.** Two things carry this game's name and still cannot become it, and both get the
+same answer.
+
+The first is the **wrong shape**: your server sends each game either as a single file or as a folder of several files,
+and Tender can only take over what matches. A _folder_ with this game's name where the server sends a single file — or a
+loose file where it sends a folder — is not something it can use.
+
+The second is a **shortcut** (a symlink). Tender never adopts one, even when it points at exactly the right game file.
+Once a game counts as installed, Uninstall has to be able to remove it, and it will not remove a shortcut — so adopting
+one would leave you with a game you could never uninstall from here.
+
+Either way you are told instead of the download simply starting: **something with this name is here, it cannot be used
+as this game, so downloading leaves you with two copies.** You can go ahead and download anyway, which lands the
+server's copy beside what is already there under the server's own name, or cancel and sort it out yourself. Neither
+choice renames, moves or deletes anything you have.
+
+Things that are neither files, folders nor shortcuts are ignored entirely — Tender will not offer you something that
+only looks like a game because it happens to have the right name. The one place it does mention such a thing is when it
+sits at the exact spot the download would write to: there it says something is in the way without claiming to know what,
+because downloading over it would destroy it and you should be the one to decide that.
+
+**And if it finds nothing at all.** If the page told you a copy was here and pressing turns up nothing that matches —
+you moved it, renamed it or deleted it in between — you get told that too, instead of a download starting on its own.
+
+That last one is the promise the button actually makes: **pressing always gets you an answer.** The page and the check
+at press time look at the same folder but know different things about it, so the page can be right that something is
+there and still be wrong about whether it can be used. Whatever the two disagree about, pressing never quietly downloads
+past something carrying this game's name.
+
+Choosing a file and pressing **Use These Files** does one thing more than before: it **renames your file to the name
+your server uses**, and moves your saves and savestates for that game along with it. That is not tidiness. Uninstalling
+a game deletes the ROM but never the saves — so a game left under your own name would, after an uninstall and a later
+download, be looking for saves under a name nothing ever wrote. Renaming now keeps everything joined up.
+
+**Download Instead** on a file you picked from the list deletes that file, exactly as it does for one sitting at the
+game's own location — it asks a second time and names what goes first. Your saves and savestates for it are moved to the
+canonical name rather than left behind, so the freshly downloaded copy finds them. (For a game made of several files
+they stay where they are: the name they would need depends on what is inside the archive, which is not known until it
+has been downloaded.) Choosing **None of These** deletes nothing — you declined every candidate rather than picking one,
+so the download simply lands beside them.
+
+If a name it needs is already taken — you have played both versions and both left saves — a second dialog opens **before
+anything has been moved**, lists everything that collides, and asks once for the whole set. This is the same dialog on
+either exit, because it is the same question:
+
+- **Replace Them** — yours take those names. The files that were there are **not** destroyed: each is moved into a
+  `.romm-backup` folder beside it — the same safety net every other save the plugin replaces goes through — so you can
+  get one back by hand if you picked wrong. The ten most recent backups of each file are kept.
+- **Keep Them** — the existing files stay and your old-named ones stay where they are. Nothing is lost, but those old
+  files are now orphaned: nothing will read them.
+- **Cancel** — nothing happens at all.
+
+If a rename cannot be completed — saves on internal storage and ROMs on an SD card is the case that makes it awkward —
+the plugin tells you exactly which files moved and which did not, by name, rather than claiming success or a plain
+failure.
+
+One case is still out of reach by design: a copy of the game whose name is genuinely different, not just differently
+tagged. `Example Quest` will not be found for `Example Quest - Second Journey`, and it should not be — it is a different
+game.
 
 ### Pausing and Resuming a Download
 
@@ -301,8 +379,8 @@ extraction can't be cancelled, so the cancel/pause controls are replaced by a sp
 flips to **Installed** as usual. Single-file ROMs download as a bare file and skip this phase entirely.
 
 The plugin gives the extracted game its own folder and names that folder after the real **launch file** (including the
-extension, e.g. `Final Fantasy VII (USA).m3u/` or `Halo 3 (USA).iso/`) so that ES-DE collapses it into a single game
-entry instead of showing a folder plus loose files.
+extension, e.g. `Example Quest - Second Journey (USA).m3u/` or `Example Quest (USA).iso/`) so that ES-DE collapses it
+into a single game entry instead of showing a folder plus loose files.
 
 **Disc switching only applies to systems whose emulator supports it.** For the disc-swapping consoles — PS1, Saturn,
 Sega CD, PC Engine CD, Dreamcast, GameCube, Wii, and the like — a game-named `.m3u` playlist is generated so you can

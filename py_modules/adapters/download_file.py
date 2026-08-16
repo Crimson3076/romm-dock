@@ -13,21 +13,68 @@ import contextlib
 import hashlib
 import os
 import shutil
+import stat
 import urllib.parse
 import zipfile
 import zlib
 from typing import TYPE_CHECKING
 
+from domain.rom_candidates import DIR, FILE, LINK, Kind
 from lib.path_safety import safe_path_component
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import IO
 
-    from models.adoption import ArchiveMemberInfo, ExistingContent
+    from models.adoption import ArchiveMemberInfo, ExistingContent, TopLevelEntry, TopLevelName
 
 _EXTRACT_CHUNK = 1024 * 1024
 _HASH_CHUNK = 1024 * 1024
+
+
+def _kind_of(*, is_link: bool, is_dir: bool, is_file: bool) -> Kind | None:
+    """The whole admission rule, in the one place every door asks it.
+
+    The three answers arrive from whichever syscall the caller already made — a
+    directory read's ``d_type``, or an ``lstat``'s mode — because *how* the
+    filesystem was asked is the door's business and the rule is not. What lives
+    here is the rule itself: the order the three questions are put in, and the
+    fact that the vocabulary ends after them.
+
+    A link is asked about first and answered as a link, never as whatever it
+    resolves to: following it would re-admit it as ordinary content, and an
+    install row pointing at a link can never be removed (``claim_source``
+    refuses one outright). ``None`` is "not a thing a game can be" — a FIFO, a
+    socket, a device node. Inventing a kind for those is what let a named pipe
+    be offered as a game, and re-deriving this rule per door is what let one keep
+    being offered after the rule was written.
+    """
+    if is_link:
+        return LINK
+    if is_dir:
+        return DIR
+    return FILE if is_file else None
+
+
+def _entry_kind(entry: os.DirEntry[str]) -> Kind | None:
+    """:func:`_kind_of` for one directory entry, or ``None`` to leave it out.
+
+    The directory read already carries the type on every filesystem that reports
+    ``d_type``, so the three questions cost nothing; where it does not, the
+    first one falls back to an ``lstat`` whose answer the rest reuse.
+
+    An ``OSError`` here means the entry was there for the directory read and is
+    not there now, which folds into the same ``None``: a listing that came up
+    one entry shorter, not something to offer.
+    """
+    try:
+        return _kind_of(
+            is_link=entry.is_symlink(),
+            is_dir=entry.is_dir(follow_symlinks=False),
+            is_file=entry.is_file(follow_symlinks=False),
+        )
+    except OSError:
+        return None
 
 
 class DownloadFileAdapter:
@@ -45,6 +92,17 @@ class DownloadFileAdapter:
     def describe_path(self, path: str) -> ExistingContent | None:
         """Describe whatever occupies *path*, or ``None`` when nothing does.
 
+        The existence question is answered with ``lstat``, which does not follow:
+        a symlink occupies its path whether or not its target resolves, and a
+        listing that calls a dangling one "nothing here" is how the finalize
+        ``os.replace`` came to destroy one without a word.
+
+        The kind comes from :func:`_kind_of`, the same rule the two listings ask,
+        so this door cannot admit what they exclude. Where they answer a kindless
+        entry by leaving it out, this one reports it with ``kind`` unset: a
+        listing is a set and this is one named path, and something that is there
+        must not come back as nothing.
+
         A directory reports the recursive total of its contents so the number is
         comparable with the server's ``fs_size_bytes`` for a multi-file ROM; the
         walk accumulates sizes rather than collecting paths, because a single
@@ -54,16 +112,76 @@ class DownloadFileAdapter:
         better answer than none.
         """
         try:
-            stat = os.stat(path)
+            lstat = os.lstat(path)
         except OSError:
             return None
-        is_dir = os.path.isdir(path)
+        kind = _kind_of(
+            is_link=stat.S_ISLNK(lstat.st_mode),
+            is_dir=stat.S_ISDIR(lstat.st_mode),
+            is_file=stat.S_ISREG(lstat.st_mode),
+        )
         return {
             "path": path,
-            "is_dir": is_dir,
-            "size_bytes": self._tree_size(path) if is_dir else stat.st_size,
-            "modified_at": stat.st_mtime,
+            "kind": kind,
+            "size_bytes": self._tree_size(path) if kind == DIR else lstat.st_size,
+            "modified_at": lstat.st_mtime,
         }
+
+    def list_top_level_entries(self, directory: str) -> tuple[TopLevelEntry, ...]:
+        """Describe what sits directly inside *directory*, without descending.
+
+        One ``scandir`` and one ``stat`` per admitted entry. A directory reports
+        size 0 rather than its recursive total: totalling one multi-file install
+        means walking tens of thousands of files, which is not a price the
+        candidate search may charge a Download click. An entry whose ``stat``
+        fails is dropped — it was there for the directory read and is not there
+        now, which is a search that came up empty rather than something to offer.
+        """
+        found: list[TopLevelEntry] = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    kind = _entry_kind(entry)
+                    if kind is None:
+                        continue
+                    try:
+                        measured = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    found.append(
+                        {
+                            "name": entry.name,
+                            "path": entry.path,
+                            "kind": kind,
+                            "size_bytes": 0 if kind == DIR else measured.st_size,
+                            "modified_at": measured.st_mtime,
+                        }
+                    )
+        except OSError:
+            return ()
+        return tuple(found)
+
+    def list_top_level_names(self, directory: str) -> tuple[TopLevelName, ...]:
+        """Name and kind of everything directly inside *directory*, nothing more.
+
+        The listing for a caller that only matches names: no ``stat`` for the
+        size and mtime, because a name match reads neither. That is one syscall
+        per ROM saved on a folder that can hold a whole platform's library —
+        paid on every game page, on storage that may have to spin up.
+
+        Admits exactly what :meth:`list_top_level_entries` admits, because both
+        ask :func:`_entry_kind` and nothing else.
+        """
+        found: list[TopLevelName] = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    kind = _entry_kind(entry)
+                    if kind is not None:
+                        found.append({"name": entry.name, "path": entry.path, "kind": kind})
+        except OSError:
+            return ()
+        return tuple(found)
 
     @staticmethod
     def _tree_size(directory: str) -> int:

@@ -939,10 +939,22 @@ download over the real user progress.
 
 **Three structural guards:**
 
-1. **Rule 1 — Read previous layout during pending migration.** `RomInfoService.get_rom_save_info`
+1. **Rule 1 — Read previous layout during pending migration.** `RomInfoService.current_save_sorting`
    (`services/saves/rom_info.py`) reads `save_sort_settings_previous` (the layout RetroArch was writing to during the
    session) in preference to `save_sort_settings` (the new layout). This ensures save-sync always looks where RetroArch
    actually wrote.
+
+   It is the **single** answer to "which savefile layout is current", and every consumer that has to address a save on
+   disk goes through it: `get_rom_save_info` for the sync's own resolution, and — across the service boundary via
+   `SaveService.current_save_sorting` (the `SaveSortingProvider` seam) — `RomAdoptionService`, which renames an adopted
+   ROM and has to carry that ROM's saves to the directory the sync will look in. A second read of the live
+   `retroarch.cfg` there would diverge from this one in exactly the pending-migration window, moving the files out from
+   under both the sync and the migration that is about to go looking for them. The seam exists so that divergence is not
+   expressible.
+
+   The seam answers **sorting only**. Whether savefiles live under the saves root at all is `savefiles_in_content_dir`,
+   which stays a live-config read: `detect_save_sort_change` writes no marker for a `ContentDir` machine (those saves
+   sit outside the tree the plugin syncs), so there is no recorded previous state to prefer.
 
 2. **Rule 2 — Upload-only mode during pending migration.** `SyncEngine.do_sync_rom_saves` skips `server_only` matches
    (no downloads) when a save-sort migration is pending. This prevents stale server content from being written to disk
@@ -965,9 +977,9 @@ explicitly clicks the migrate button in Settings.
 Implemented in `_resolve_save_sort_conflict` in `py_modules/services/migration.py`.
 
 **The scenario**: the user enables `sort_savefiles_enable` mid-game and saves in-game. RetroArch writes fresh progress
-to the new layout — e.g. `saves/gba/mGBA/Mario Golf.srm`. The old file at the original layout — e.g.
-`saves/gba/Mario Golf.srm` — still exists with pre-change content. When migration runs, both files are present and the
-migration logic treats this as a conflict.
+to the new layout — e.g. `saves/gba/mGBA/Example Quest.srm`. The old file at the original layout — e.g.
+`saves/gba/Example Quest.srm` — still exists with pre-change content. When migration runs, both files are present and
+the migration logic treats this as a conflict.
 
 **Resolution rule**: the file with the newer `mtime` wins.
 
@@ -1162,9 +1174,9 @@ slot switch — writes content to a path of the form:
 <saves_dir>/<rom_basename>.<server_save.file_extension>
 ```
 
-`<rom_basename>` is the ROM file's name without extension (e.g. `Mario Golf - Advance Tour (USA)` from
-`Mario Golf - Advance Tour (USA).gba`); `<server_save.file_extension>` is the `file_extension` field on the chosen RomM
-save (e.g. `srm`).
+`<rom_basename>` is the ROM file's name without extension (e.g. `Example Quest - Second Journey (USA)` from
+`Example Quest - Second Journey (USA).gba`); `<server_save.file_extension>` is the `file_extension` field on the chosen
+RomM save (e.g. `srm`).
 
 This is the **only** path used for local writes. The server's stored `file_name` (which may carry a timestamp tag like
 `[2026-03-24_15-18-50]` or come from a different client with an unrelated naming convention) and the server's

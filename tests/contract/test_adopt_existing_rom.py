@@ -67,7 +67,7 @@ async def test_start_download_refuses_an_occupied_target_with_the_comparison(har
     assert result["existing"] == {
         "name": "rom-41",
         "path": str(path),
-        "is_dir": False,
+        "kind": "file",
         "size_bytes": len(b"user's own dump"),
         "modified_at": path.stat().st_mtime,
     }
@@ -331,9 +331,9 @@ def _stage_archived_detail(harness, archive: Path, members: dict[str, bytes], *,
 
 
 async def test_verify_matches_a_zipped_rom_the_plugin_itself_downloaded(harness):
-    # Measured on device: the same bytes RomM served, re-offered to the gate,
-    # reported a mismatch because the digest describes the ROM inside the zip
-    # and the check hashed the zip.
+    # The regression this pins: the same bytes RomM served, re-offered to the
+    # gate, reported a mismatch because the digest describes the ROM inside the
+    # zip and the check hashed the zip.
     seed_rom(harness, _ROM_ID, platform_slug="gba")
     members = {"rom-41.gba": b"cartridge bytes" * 64}
     archive = _place_archive(harness, members)

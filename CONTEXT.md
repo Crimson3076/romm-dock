@@ -193,11 +193,45 @@ consumer (uninstall, cleanup, home migration, version switch).
 
 ### Adoption candidate
 
-A file or directory in the platform's ROM directory that no `rom_installs` row accounts for and that the server's
-manifest could describe. "Candidate" carries the uncertainty deliberately: the match is made on cheap evidence — file
-size, and for a directory the top-level name set — so until the content is verified it is a guess. The verification
-(CRC32/MD5, read from a ZIP's central directory where the content is archived) is always user-triggered, never a wait
-imposed before the plugin will say anything.
+An entry at the top level of the platform's ROM directory that no `rom_installs` row accounts for, whose shape matches
+what the server serves, and whose **normalized name** equals the ROM's. "Candidate" carries the uncertainty
+deliberately: a name says nothing about content, so until it is verified this is a guess — and what ranks one candidate
+above another is only cheap evidence (a single-member archive's CRC32 from the ZIP index, an exact size), never proof.
+The verification (CRC32/MD5, read from a ZIP's central directory where the content is archived) is always
+user-triggered, never a wait imposed before the plugin will say anything.
+
+### Entry kind
+
+What an entry on disk **is**, judged by its own type without following it: `file`, `dir` or `link`. There is no fourth
+value — anything else a filesystem can hold (a FIFO, a socket, a device node) gets no kind at all, because "file or
+directory" has no truthful answer for one and inventing one is what let a named pipe be offered as a game. One rule
+answers this for every read of the filesystem, and the two kinds of read differ only in what they do with a kindless
+entry: a **directory listing** leaves it out, while **describing one named path** reports it with the kind absent —
+something that is there must never come back as nothing, or the next write goes over it in silence. A `link` is its own
+kind rather than whatever it resolves to: an install row must be removable, the uninstall path refuses a symlink, so a
+link is never adoptable however well its target resolves. _Avoid_: "shape" for this — **shape** is the
+single-file-vs-folder question the server answers, and the two are different judgements about different things.
+
+### Unusable namesake
+
+An entry whose **normalized name** equals the ROM's but which cannot become its install: the other **shape** — a
+directory where RomM serves a single file, or a loose file where it serves a folder — or any `link`. It is deliberately
+**not** an adoption candidate: nothing about it can be taken over, so it is never offered, ranked or renamed. It is
+still reported, because the alternative is a download that silently produces a second copy of the game beside it. The
+dialog's two exits are download-anyway (the server's copy lands beside it, under the server's name) and cancel; neither
+touches the entry. The two reasons are not one reason: a wrong shape is wrong only against what the server sends, so
+that refusal names the served shape, while a `link` is unusable on its own terms and naming a shape beside it would
+suggest the other shape would have taken it. _Avoid_: mismatched candidate, unusable candidate — the whole point is that
+it is not one.
+
+### Normalized name
+
+A ROM filename reduced to the game it denotes: extension removed, bracketed groups `(...)` / `[...]` dropped with their
+contents, every run of non-alphanumerics collapsed to one space, lowercased, trimmed.
+`Example Quest - Second Journey (Rev 1) (USA).zip` → `example quest second journey`. It is the candidate search's only
+match key, applied identically to both sides. An empty normalization (a name that is nothing but tags) matches nothing
+rather than everything. _Avoid_: fuzzy match, similar name — the comparison is exact equality of the normalized strings,
+and no edit distance or token scoring is involved.
 
 ### platform_slug (denormalized)
 

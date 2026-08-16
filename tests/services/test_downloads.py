@@ -20,11 +20,13 @@ from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
+from adapters.adoption_move import AdoptionMoveAdapter
 from adapters.download_file import DownloadFileAdapter
 from adapters.rom_files import RomFileAdapter
 from adapters.steam_config import SteamConfigAdapter
 from domain.rom import Rom
 from domain.rom_install import RomInstall
+from domain.save_layout import InSaveDir
 from domain.version_metadata import VersionMetadata
 from lib.list_result import ErrorCode
 from services.active_core_resolver import ActiveCoreResolver, ActiveCoreResolverConfig
@@ -198,12 +200,24 @@ def plugin():
             resolve_system=p._resolve_system,
             retrodeck_paths=retrodeck_paths,
             install_recorder=p._install_recorder,
+            adoption_move=AdoptionMoveAdapter(),
+            quarantine_save=lambda saves_dir, filename: False,
             m3u_support=lambda system_name: p._m3u_supported,
+            system_extensions=lambda system_name: p._system_extensions.get(system_name, frozenset()),
+            # ``None`` is "es_systems.xml could not answer", which the search
+            # reads as permission to proceed — the behaviour these tests predate.
+            system_known=lambda system_name: None,
+            save_layout=lambda: InSaveDir(sort_by_content=True, sort_by_core=False),
+            save_sorting=lambda: InSaveDir(sort_by_content=True, sort_by_core=False),
+            savestate_layout=lambda: InSaveDir(sort_by_content=False, sort_by_core=False),
+            active_core=p._active_core,
+            get_core_name=lambda core_so: None,
             # Late-bound like production: DownloadService is constructed below.
             sibling_supersede=lambda: p._download_service.supersede_sibling_installs,
             uow_factory=FakeUnitOfWorkFactory(p._uow),
             loop=asyncio.get_event_loop(),
             logger=decky.logger,
+            log_debug=lambda msg: None,
             emit=decky.emit,
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
         ),
@@ -649,7 +663,12 @@ class TestOccupiedTargetPreFlight:
         plugin._download_service._loop.create_task = MagicMock(side_effect=lambda coro: (coro.close(), MagicMock())[1])
         store = plugin._download_service._download_file_store
         store.describe_path = lambda path: (
-            {"path": path, "is_dir": is_dir, "size_bytes": size, "modified_at": 1_700_000_000.0}
+            {
+                "path": path,
+                "kind": "dir" if is_dir else "file",
+                "size_bytes": size,
+                "modified_at": 1_700_000_000.0,
+            }
             if path == occupied_path
             else None
         )
@@ -694,7 +713,7 @@ class TestOccupiedTargetPreFlight:
 
         assert result["reason"] == "target_occupied"
         assert result["existing"]["path"] == extract_dir
-        assert result["existing"]["is_dir"] is True
+        assert result["existing"]["kind"] == "dir"
         assert result["sizes_match"] is True
 
     @pytest.mark.asyncio
@@ -817,7 +836,7 @@ class TestResumingAReplaceDownload:
         store.describe_path = lambda path: (
             {
                 "path": path,
-                "is_dir": path == occupied_path and detail is _MULTI_DETAIL,
+                "kind": "dir" if detail is _MULTI_DETAIL else "file",
                 "size_bytes": 8,
                 "modified_at": 0.0,
             }
@@ -6055,6 +6074,48 @@ class TestResumeSupersede:
         assert result == {"success": False, "reason": ErrorCode.UNKNOWN.value, "message": "boom"}
         assert started == []
         assert 1 not in plugin._download_service._download_in_progress
+
+    @pytest.mark.asyncio
+    async def test_resume_tells_the_gate_it_is_a_resume(self, plugin):
+        # A paused multi-file transfer has no extract directory yet, so the gate
+        # sees a free path and would run the candidate search — handing back the
+        # very file the user declined when they admitted this download, with
+        # Cancel (which discards the transferred bytes) as the only exit.
+        # The stand-in gate refuses exactly as that search would.
+        seen: list[bool] = []
+
+        async def gate(rom_detail, checked_path, *, replace, resume=False, **answer):
+            seen.append(resume)
+            if resume:
+                return None
+            return {"success": False, "reason": "adoption_candidates", "message": "already on this device"}
+
+        plugin._download_service._target_gate = gate
+        plugin._download_service._download_queue[1] = {"rom_id": 1, "status": "paused", "resumable": True}
+        started = _stage_download_prologue(plugin)
+
+        result = await plugin.resume_download(1)
+
+        assert result["success"] is True
+        assert seen == [True]
+        assert len(started) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_download_still_faces_the_candidate_search(self, plugin):
+        # The counterpart: the skip is scoped to a resume, and a first attempt is
+        # still refused by the same gate.
+        async def gate(rom_detail, checked_path, *, replace, resume=False, **answer):
+            if resume:
+                return None
+            return {"success": False, "reason": "adoption_candidates", "message": "already on this device"}
+
+        plugin._download_service._target_gate = gate
+        started = _stage_download_prologue(plugin)
+
+        result = await plugin.start_download(1, False)
+
+        assert result["reason"] == "adoption_candidates"
+        assert started == []
 
     @pytest.mark.asyncio
     async def test_resume_non_paused_short_circuits_before_supersede(self, plugin):

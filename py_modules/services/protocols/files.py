@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
 
-    from models.adoption import ArchiveMemberInfo, ExistingContent
+    from models.adoption import ArchiveMemberInfo, ExistingContent, MoveOutcome, TopLevelEntry, TopLevelName
     from models.prune import (
         MutationOutcome,
         RecoveryArtifact,
@@ -134,6 +134,13 @@ class DownloadFileStore(Protocol):
         directory reports the recursive total of its contents, comparable with
         the server's ``fs_size_bytes`` for a multi-file ROM — which makes this
         an ``os.walk`` of the whole tree, so callers offload it.
+
+        Existence is answered without following, and ``kind`` is the same rule
+        the two listings apply, so a symlink is reported as occupying its path —
+        as a link, which may not be adopted — rather than as nothing at all.
+        Where the listings leave out what is neither file, directory nor link,
+        this reports it with no ``kind``: something that is there must not come
+        back as nothing.
         """
         ...
 
@@ -145,6 +152,35 @@ class DownloadFileStore(Protocol):
         receives each chunk's byte count as a delta so a caller hashing a whole
         directory accumulates across files. Raises ``ValueError`` for an
         algorithm the store cannot compute.
+        """
+        ...
+
+    def list_top_level_entries(self, directory: str) -> tuple[TopLevelEntry, ...]:
+        """Describe what sits directly inside *directory*, without descending.
+
+        The Download click's read of the platform directory, which ranks what it
+        finds and so needs each entry's size and mtime. It stays on the top level
+        deliberately: a single multi-file install can hold tens of thousands of
+        files, and a user's own subfolders are their filing, not the plugin's. A
+        directory entry therefore reports size 0 — its recursive total is not
+        something this read pays for. Idempotent on a missing directory (returns
+        ``()``).
+
+        Admits exactly what :meth:`list_top_level_names` admits: an entry is a
+        file, a directory or a symlink, judged without following it, and anything
+        else is not listed at all.
+        """
+        ...
+
+    def list_top_level_names(self, directory: str) -> tuple[TopLevelName, ...]:
+        """Name and kind of everything directly inside *directory*, nothing more.
+
+        The same read for the caller that only matches names — the game-detail
+        page. Dropping the ``stat`` that fills in size and mtime is the whole
+        point: it is one syscall per ROM on a folder that can hold a whole
+        platform's library, and this one runs on every game page. Same
+        top-level-only rule, same admitted set, same ``()`` on a directory that
+        cannot be read.
         """
         ...
 
@@ -283,6 +319,48 @@ class DownloadFileStore(Protocol):
 
         Writes to a temp file beside *path* and ``os.replace``s it to
         the final destination. The temp file is removed on any failure.
+        """
+        ...
+
+
+class AdoptionMoveStore(Protocol):
+    """Filesystem seam for carrying an adopted ROM and its saves to canonical names.
+
+    Spans the ``roms``, ``saves`` and ``states`` trees at once, which is why it
+    is its own seam: a ROM adopted under the user's own name has to arrive at the
+    server's name together with everything RetroArch named after it, and no
+    single-tree store can express that.
+
+    Implementations are synchronous — services that call from an async
+    context offload via ``loop.run_in_executor``.
+    """
+
+    def list_names(self, directory: str) -> tuple[str, ...]:
+        """Return the file names directly inside *directory*; ``()`` when it does not exist."""
+        ...
+
+    def exists(self, path: str) -> bool:
+        """Return True when *path* is taken, a dangling symlink included."""
+        ...
+
+    def is_file(self, path: str) -> bool:
+        """Return True when *path* is a regular file, following symlinks.
+
+        What the save-backup funnel can act on: it moves a regular file aside and
+        reports ``False`` for anything else. Asking first is what lets a colliding
+        target that is a directory be refused **by name, before anything moves**,
+        rather than no-opping the quarantine and failing later at the link.
+        """
+        ...
+
+    def move_pairs(self, pairs: tuple[tuple[str, str], ...]) -> MoveOutcome:
+        """Carry every ``(source, target)`` pair, keeping a failure recoverable.
+
+        Implementations link-then-unlink where the filesystem allows it, so a
+        failure while staging leaves the originals exactly as they were, and fall
+        back to rename-with-rollback where it does not (a directory, or a set
+        spanning a mount boundary). The outcome partitions the pairs by where the
+        content actually ended up — never a bare success, never a bare failure.
         """
         ...
 

@@ -305,7 +305,15 @@ class Plugin:
         return self._settings_service.update_whitelist_settings(disabled_defaults, custom_names)
 
     async def get_cached_game_detail(self, app_id):
-        return self._game_detail_service.get_cached_game_detail(app_id)
+        """Return the game page's whole payload, assembled off the loop thread.
+
+        Network-free but not free: a read UoW, a firmware-cache read, and for an
+        uninstalled ROM a ``stat`` and a directory listing on storage that may
+        have to wake up. Every game page opens this, so it goes to a worker —
+        which is also where a `SqliteUnitOfWork` connection is meant to live
+        (ADR-0004).
+        """
+        return await self.loop.run_in_executor(None, self._game_detail_service.get_cached_game_detail, app_id)
 
     @migration_blocked
     @prune_active_blocked
@@ -617,8 +625,22 @@ class Plugin:
 
     @migration_blocked
     @prune_active_blocked
-    async def start_download(self, rom_id, replace_existing=False):
-        result = await self._download_service.start_download(rom_id, replace_existing)
+    async def start_download(
+        self, rom_id, replace_existing=False, candidate_path=None, collision_choice=None, page_saw_candidate=False
+    ):
+        """Start a download, refusing when this game is already on the device.
+
+        ``candidate_path`` names the file the adopt dialog was showing when the
+        user chose Download over it: with ``replace_existing`` it is removed and
+        its saves carried to the canonical name, which is what that dialog's
+        second confirmation promises. ``collision_choice`` answers the save
+        collision that carry can raise. ``page_saw_candidate`` reports what the
+        game page told the user, so a page that found a copy can never end in a
+        silent download.
+        """
+        result = await self._download_service.start_download(
+            rom_id, replace_existing, candidate_path, collision_choice, page_saw_candidate
+        )
         task = self._download_service.task_for_rom(int(rom_id)) if result.get("success") else None
         if task is not None:
             await retain_prune_conflict(self, task, "start_download")
@@ -626,9 +648,16 @@ class Plugin:
 
     @migration_blocked
     @prune_active_blocked
-    async def adopt_existing_rom(self, rom_id):
-        """Record content already on disk as this ROM's install, without downloading."""
-        result = await self._rom_adoption_service.adopt_existing_rom(rom_id)
+    async def adopt_existing_rom(self, rom_id, candidate_path=None, collision_choice=None):
+        """Record content already on disk as this ROM's install, without downloading.
+
+        ``candidate_path`` names an entry elsewhere in the platform directory when
+        the user picked one the search offered — it is renamed into place, saves
+        and savestates with it. ``collision_choice`` answers the second dialog
+        (``"overwrite"`` / ``"keep"``) and is null until that dialog has been
+        shown.
+        """
+        result = await self._rom_adoption_service.adopt_existing_rom(rom_id, candidate_path, collision_choice)
         # Only a bound ROM gets a lease: the lease covers the frontend's write of
         # the launch command onto the shortcut, and an unbound ROM has no
         # shortcut to write to, so the frontend would hold the token to its full
@@ -638,9 +667,13 @@ class Plugin:
             result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "adopt_existing_rom")
         return result
 
-    async def verify_existing_content(self, rom_id):
-        """Compare the content at this ROM's target path against RomM's checksums."""
-        return await self._rom_adoption_service.verify_existing_content(rom_id)
+    async def verify_existing_content(self, rom_id, candidate_path=None):
+        """Compare content already on disk against RomM's checksums for this ROM.
+
+        ``candidate_path`` picks the entry to check when the user is deciding
+        about one the search offered; null checks this ROM's own target path.
+        """
+        return await self._rom_adoption_service.verify_existing_content(rom_id, candidate_path)
 
     async def cancel_download(self, rom_id):
         return self._download_service.cancel_download(rom_id)

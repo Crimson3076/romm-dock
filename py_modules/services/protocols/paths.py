@@ -41,6 +41,8 @@ class RetroDeckPaths(Protocol):
 
     def saves_path(self) -> str: ...
 
+    def states_path(self) -> str: ...
+
     def roms_path(self) -> str: ...
 
     def bios_path(self) -> str: ...
@@ -54,6 +56,18 @@ class RetroDeckPaths(Protocol):
 
 class RetroArchSaveLayoutProvider(Protocol):
     """Return the live RetroArch save-file layout as a ``SaveLayout`` value object."""
+
+    def __call__(self) -> SaveLayout: ...
+
+
+class RetroArchSavestateLayoutProvider(Protocol):
+    """Return the live RetroArch save**state** layout as a ``SaveLayout`` value object.
+
+    A separate seam from :class:`RetroArchSaveLayoutProvider` because RetroArch
+    sorts the two independently — a stock RetroDECK install content-sorts its
+    savefiles and leaves its savestates unsorted — so a consumer that needs to
+    address savestates must ask about savestates.
+    """
 
     def __call__(self) -> SaveLayout: ...
 
@@ -122,6 +136,26 @@ class SystemSupportedExtensionsFn(Protocol):
     def __call__(self, system_name: str) -> frozenset[str]: ...
 
 
+class SystemKnownFn(Protocol):
+    """Whether ``es_systems.xml`` lists a system at all — the same source as the accept-list.
+
+    ``True`` when the system is listed, ``False`` when the file was read and does
+    not name it, and ``None`` when the file could not be read, which is a
+    different thing from a denial and must not be treated as one.
+
+    The candidate search asks before it searches a platform directory: the
+    game-detail page resolves that directory from a RomM slug alone, and an
+    unmapped slug is taken verbatim as a directory name. A directory that is not
+    an ES-DE system is not a place a game can live, so a namesake inside it is
+    content the emulator will never look at. The same answer also protects the
+    accept-list's default-safe branch, which reads an empty extension set as
+    "cannot tell" and would otherwise let every entry through for a directory
+    that was never a system.
+    """
+
+    def __call__(self, system_name: str) -> bool | None: ...
+
+
 class PlatformCoreReader(Protocol):
     """Read seam for the plugin-owned per-platform core selection.
 
@@ -151,14 +185,16 @@ class CoreNameProviderFn(Protocol):
 class RetroArchConfigReader(Protocol):
     """Object seam for ``retroarch.cfg`` reads.
 
-    Held by ``main.py`` to bind ``get_save_layout`` as a callable
+    Held by ``main.py`` to bind the layout getters as callables
     forwarded into service wiring. Distinct from
-    :class:`RetroArchSaveLayoutProvider` (the call-shaped Protocol for
-    the bound method itself) — that one is what services receive; this
-    one is what ``main.py`` holds.
+    :class:`RetroArchSaveLayoutProvider` / :class:`RetroArchSavestateLayoutProvider`
+    (the call-shaped Protocols for the bound methods themselves) — those are what
+    services receive; this one is what ``main.py`` holds.
     """
 
     def get_save_layout(self) -> SaveLayout: ...
+
+    def get_savestate_layout(self) -> SaveLayout: ...
 
 
 class RetroArchCoreInfoReader(Protocol):

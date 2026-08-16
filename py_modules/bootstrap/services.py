@@ -293,14 +293,24 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         config=RomAdoptionServiceConfig(
             romm_api=cfg.adapters.romm_api,
             download_file_store=cfg.adapters.download_file_store,
+            adoption_move=cfg.adapters.adoption_move,
+            quarantine_save=save_sync_service.quarantine_local_file,
             resolve_system=cfg.adapters.http_adapter.resolve_system,
             retrodeck_paths=cfg.callbacks.retrodeck_paths,
             install_recorder=rom_install_recorder,
             m3u_support=cfg.callbacks.m3u_support,
+            system_extensions=cfg.callbacks.system_extensions,
+            system_known=cfg.callbacks.system_known,
+            save_layout=cfg.callbacks.get_save_layout,
+            save_sorting=save_sync_service.current_save_sorting,
+            savestate_layout=cfg.callbacks.get_savestate_layout,
+            active_core=active_core_resolver,
+            get_core_name=cfg.callbacks.get_core_name,
             sibling_supersede=sibling_supersede_binding.get,
             uow_factory=cfg.callbacks.uow_factory,
             loop=cfg.runtime.loop,
             logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
             emit=cfg.runtime.emit,
             clock=cfg.runtime.clock,
         ),
@@ -391,6 +401,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
 
     game_detail_service = GameDetailService(
         config=GameDetailServiceConfig(
+            candidate_probe=rom_adoption_service.has_adoption_candidate,
             settings=cfg.stores.settings,
             logger=cfg.runtime.logger,
             clock=cfg.runtime.clock,

@@ -8,26 +8,29 @@ from domain.rom_adoption import (
     LocalMember,
     ServerFile,
     ServerMember,
+    adoptable_content,
     compare_manifest,
     digests_to_read,
     is_archive_name,
     occupied_target_refusal,
     server_manifest,
     sizes_agree,
+    unadoptable_reason,
     unpacked_member,
     verification_status,
 )
+from domain.rom_candidates import DIR, FILE, LINK
 
 
 def _refusal(**overrides):
     payload = {
         "path": "/roms/snes/Game.sfc",
-        "is_dir": False,
+        "kind": FILE,
         "size_bytes": 1024,
         "modified_at": 1_700_000_000.0,
         "incoming_name": "Game.sfc",
         "incoming_size": 1024,
-        "adoptable": True,
+        "served_dir": False,
     }
     payload.update(overrides)
     return occupied_target_refusal(**payload)
@@ -166,7 +169,7 @@ class TestOccupiedTargetRefusal:
         assert payload["existing"] == {
             "name": "Game.sfc",
             "path": "/roms/snes/Game.sfc",
-            "is_dir": False,
+            "kind": FILE,
             "size_bytes": 2048,
             "modified_at": 1_700_000_000.0,
         }
@@ -174,11 +177,53 @@ class TestOccupiedTargetRefusal:
         assert payload["sizes_match"] is False
 
     def test_names_the_kind_in_the_message(self):
-        assert "folder" in _refusal(is_dir=True, path="/roms/psx/Game")["message"]
-        assert "file" in _refusal(is_dir=False)["message"]
+        assert _refusal(kind=DIR, path="/roms/psx/Game")["message"] == "A folder named 'Game' is already in place"
+        assert _refusal()["message"] == "A file named 'Game.sfc' is already in place"
+        assert _refusal(kind=LINK)["message"] == "A shortcut named 'Game.sfc' is already in place"
 
-    def test_adoptable_is_carried_through(self):
-        assert _refusal(adoptable=False)["adoptable"] is False
+    def test_something_with_no_kind_is_named_as_vaguely_as_it_is_known(self):
+        # The plugin looked and has no word for what is there. Calling it a file
+        # is the invention that let a named pipe be offered as a game.
+        assert _refusal(kind=None)["message"] == "Something named 'Game.sfc' is already in place"
+
+    def test_only_the_served_shape_is_adoptable(self):
+        assert _refusal()["adoptable"] is True
+        assert _refusal(kind=DIR)["adoptable"] is False
+        assert _refusal(kind=DIR, served_dir=True)["adoptable"] is True
+        assert _refusal(served_dir=True)["adoptable"] is False
+
+    def test_a_link_is_never_adoptable_in_either_direction(self):
+        # An install row has to be removable and the uninstall path refuses a
+        # link, so this holds whatever the link resolves to.
+        assert _refusal(kind=LINK)["adoptable"] is False
+        assert _refusal(kind=LINK, served_dir=True)["adoptable"] is False
+
+    def test_something_with_no_kind_is_never_adoptable(self):
+        assert _refusal(kind=None)["adoptable"] is False
+        assert _refusal(kind=None, served_dir=True)["adoptable"] is False
+
+    def test_a_size_verdict_is_withheld_where_the_number_is_not_the_content_s(self):
+        # A link's stat reports the length of the path it stores; relating that to
+        # the server's byte count would dress two unrelated numbers as evidence.
+        assert _refusal(kind=LINK, size_bytes=1024, incoming_size=1024)["sizes_match"] is None
+        assert _refusal(kind=None, size_bytes=1024, incoming_size=1024)["sizes_match"] is None
+        assert _refusal(size_bytes=1024, incoming_size=1024)["sizes_match"] is True
+
+
+class TestUnadoptableReason:
+    """The sentence the acting site refuses with, one per way content can fail."""
+
+    def test_each_kind_gets_the_reason_that_belongs_to_it(self):
+        assert unadoptable_reason(DIR) == "A folder is in the way where a file belongs"
+        assert unadoptable_reason(FILE) == "A file is in the way where a folder belongs"
+        assert unadoptable_reason(LINK) == "A shortcut is in the way — a shortcut cannot be used as this game"
+        assert unadoptable_reason(None) == "What is in the way is neither a file nor a folder"
+
+    def test_every_kind_the_predicate_can_refuse_has_a_sentence(self):
+        for kind in (FILE, DIR, LINK, None):
+            for served_dir in (True, False):
+                if not adoptable_content(kind, served_dir=served_dir):
+                    assert unadoptable_reason(kind)
 
 
 class TestCompareManifest:
@@ -249,16 +294,15 @@ def _archived(*members: ServerMember, name: str = "Game.zip", size: int = 4096) 
 
 _MEMBER = ServerMember(name="Game.gba", size_bytes=64, algorithm="md5", digest="ab", crc32="0000beef")
 
-# What a real server sends for a zipped ROM: no ``archive_members`` at all, a
-# size that is the container's, and a digest that is the content's. The values
-# are the measured ones from a RomM 5.1.0 instance — its md5 and crc are the
-# member's, not the archive's.
+# The shape RomM sends for a zipped ROM: no ``archive_members`` at all, a size
+# that is the container's, and a digest that is the content's — its md5 and crc
+# describe the member, not the archive.
 _WHOLE_ARCHIVE = ServerFile(
     name="Game.zip",
-    size_bytes=12058408,
+    size_bytes=12000000,
     algorithm="md5",
-    digest="2e8814e664675572a43b01900bbbb16b",
-    crc32="d56c2e54",
+    digest="1111111122222222333333334444aaaa",
+    crc32="0000c0de",
 )
 
 
@@ -388,20 +432,20 @@ class TestCompareArchiveWithoutStatedMembers:
     """
 
     def _opened(self, *members: LocalMember) -> LocalFile:
-        return LocalFile(size_bytes=12058408, digest="", members=members, is_archive=True)
+        return LocalFile(size_bytes=12000000, digest="", members=members, is_archive=True)
 
     def test_a_sole_member_that_agrees_yields_no_difference(self):
-        local = self._opened(LocalMember("Game.gba", 16777216, "d56c2e54", "2e8814e664675572a43b01900bbbb16b"))
+        local = self._opened(LocalMember("Game.gba", 16000000, "0000c0de", "1111111122222222333333334444aaaa"))
         assert compare_manifest((_WHOLE_ARCHIVE,), {"Game.zip": local}) == ()
 
     def test_a_sole_member_that_differs_is_reported_under_the_archive(self):
-        local = self._opened(LocalMember("Game.gba", 16777216, "d56c2e54", "0" * 32))
+        local = self._opened(LocalMember("Game.gba", 16000000, "0000c0de", "0" * 32))
         (difference,) = compare_manifest((_WHOLE_ARCHIVE,), {"Game.zip": local})
         assert difference.name == "Game.zip"
         assert difference.detail == "contents differ from the server's copy"
 
     def test_a_sole_member_is_disqualified_by_its_crc_alone(self):
-        local = self._opened(LocalMember("Game.gba", 16777216, "0000dead", ""))
+        local = self._opened(LocalMember("Game.gba", 16000000, "0000dead", ""))
         (difference,) = compare_manifest((_WHOLE_ARCHIVE,), {"Game.zip": local})
         assert difference.detail == "contents differ from the server's copy"
 
@@ -409,7 +453,7 @@ class TestCompareArchiveWithoutStatedMembers:
         local = LocalFile(
             size_bytes=999,
             digest="",
-            members=(LocalMember("Game.gba", 16777216, "d56c2e54", "2e8814e664675572a43b01900bbbb16b"),),
+            members=(LocalMember("Game.gba", 16000000, "0000c0de", "1111111122222222333333334444aaaa"),),
             is_archive=True,
         )
         assert compare_manifest((_WHOLE_ARCHIVE,), {"Game.zip": local}) == ()
@@ -422,7 +466,7 @@ class TestCompareArchiveWithoutStatedMembers:
         assert compare_manifest((_WHOLE_ARCHIVE,), {"Game.zip": local}) == ()
 
     def test_a_container_that_could_not_be_opened_is_not_compared(self):
-        local = LocalFile(size_bytes=12058408, digest="", is_archive=True)
+        local = LocalFile(size_bytes=12000000, digest="", is_archive=True)
         assert compare_manifest((_WHOLE_ARCHIVE,), {"Game.zip": local}) == ()
 
 
@@ -520,7 +564,7 @@ class TestDigestsToRead:
 
     def test_a_sole_member_is_read_against_the_file_level_digest(self):
         found = LocalFile(
-            size_bytes=4096, digest="", members=(LocalMember("Game.gba", 64, "d56c2e54"),), is_archive=True
+            size_bytes=4096, digest="", members=(LocalMember("Game.gba", 64, "0000c0de"),), is_archive=True
         )
         assert digests_to_read(_WHOLE_ARCHIVE, found) == (
             DigestRequest(member="Game.gba", algorithm="md5", size_bytes=64),
@@ -624,9 +668,9 @@ class TestVerificationStatus:
     def test_a_sole_member_that_was_read_matches(self):
         local = {
             "Game.zip": LocalFile(
-                size_bytes=12058408,
+                size_bytes=12000000,
                 digest="",
-                members=(LocalMember("Game.gba", 16777216, "d56c2e54", "2e8814e664675572a43b01900bbbb16b"),),
+                members=(LocalMember("Game.gba", 16000000, "0000c0de", "1111111122222222333333334444aaaa"),),
                 is_archive=True,
             )
         }
@@ -635,9 +679,9 @@ class TestVerificationStatus:
     def test_a_sole_member_that_was_never_read_is_not_a_match(self):
         local = {
             "Game.zip": LocalFile(
-                size_bytes=12058408,
+                size_bytes=12000000,
                 digest="",
-                members=(LocalMember("Game.gba", 16777216, "d56c2e54"),),
+                members=(LocalMember("Game.gba", 16000000, "0000c0de"),),
                 is_archive=True,
             )
         }
@@ -646,7 +690,7 @@ class TestVerificationStatus:
     def test_several_members_the_server_only_described_as_a_whole_cannot_match(self):
         local = {
             "Game.zip": LocalFile(
-                size_bytes=12058408,
+                size_bytes=12000000,
                 digest="",
                 members=(
                     LocalMember("disc1.bin", 64, "0000beef", "ab"),
@@ -658,7 +702,7 @@ class TestVerificationStatus:
         assert verification_status((_WHOLE_ARCHIVE,), local, ()) == "unverifiable"
 
     def test_an_archive_that_could_not_be_opened_cannot_match(self):
-        local = {"Game.zip": LocalFile(size_bytes=12058408, digest="anything", is_archive=True)}
+        local = {"Game.zip": LocalFile(size_bytes=12000000, digest="anything", is_archive=True)}
         assert verification_status((_WHOLE_ARCHIVE,), local, ()) == "unverifiable"
 
     def test_a_member_the_server_put_no_digest_on_is_exempt(self):

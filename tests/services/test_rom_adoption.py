@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import re
 import zipfile
 import zlib
 from types import SimpleNamespace
@@ -18,19 +19,25 @@ from typing import Any
 
 import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
+from fakes.fake_adoption_move import FakeAdoptionMoveStore
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_romm_api import FakeRommApi
+from fakes.fake_save_quarantine import FakeSaveQuarantine
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.system_time import FakeClock
 
 from domain.rom import Rom
+from domain.rom_candidates import CANDIDATE_LIMIT
 from domain.rom_install import RomInstall
+from domain.save_layout import ContentDir, InSaveDir, SaveLayout
 from services.rom_adoption import RomAdoptionService, RomAdoptionServiceConfig
 from services.rom_install_recorder import RomInstallRecorder, RomInstallRecorderConfig
 
 _ROMS = "/roms"
+_SAVES = "/saves"
+_STATES = "/states"
 _ROM_ID = 42
 
 
@@ -164,23 +171,54 @@ class Harness:
                 disc_resolver=FakeDiscResolver(),
             ),
         )
-        self.paths = FakeRetroDeckPaths(roms=_ROMS)
+        self.paths = FakeRetroDeckPaths(roms=_ROMS, saves=_SAVES, states=_STATES)
+        self.move = FakeAdoptionMoveStore(self.store)
+        self.quarantine = FakeSaveQuarantine(self.store)
+        # The layouts a stock RetroDECK install reports: savefiles content-sorted,
+        # savestates not sorted at all. Tests that care flip them individually.
+        #
+        # ``save_layout`` is the LIVE retroarch.cfg and answers only whether
+        # savefiles are written next to the ROM; ``save_sorting`` is what the save
+        # sync resolves its own paths with, which is the recorded observation and
+        # differs from the live config while a save-sort migration is pending.
+        self.save_layout: SaveLayout = InSaveDir(sort_by_content=True, sort_by_core=False)
+        self.save_sorting = InSaveDir(sort_by_content=True, sort_by_core=False)
+        self.savestate_layout: SaveLayout = InSaveDir(sort_by_content=False, sort_by_core=False)
+        # Per-core save sorting is off by default, so neither of these is read
+        # until a test turns ``sort_by_core`` on.
+        self.active_core = FakeActiveCoreResolver(default=(None, None))
+        self.core_name: str | None = None
         # Records every rom_id the supersede was asked about, and answers with
         # whatever a test has staged. Default: nothing to supersede.
         self.superseded: list[int] = []
         self.supersede_result: dict[str, Any] | None = None
+        # Which directories ES-DE lists as systems. A system no test staged
+        # answers ``None`` — the source could not answer, which is not a denial,
+        # so the search behaves exactly as it did before the check existed.
+        self.known_systems: dict[str, bool | None] = {}
+        self.debug_log: list[str] = []
         self.service = RomAdoptionService(
             config=RomAdoptionServiceConfig(
                 romm_api=self.romm_api,
                 download_file_store=self.store,
+                adoption_move=self.move,
+                quarantine_save=self.quarantine,
                 resolve_system=lambda platform_slug, platform_fs_slug=None: platform_fs_slug or platform_slug,
                 retrodeck_paths=self.paths,
                 install_recorder=self.recorder,
                 m3u_support=lambda system_name: self.m3u_supported,
+                system_extensions=lambda system_name: self.system_extensions.get(system_name, frozenset()),
+                save_layout=lambda: self.save_layout,
+                save_sorting=lambda: self.save_sorting,
+                savestate_layout=lambda: self.savestate_layout,
+                active_core=self.active_core,
+                system_known=lambda system_name: self.known_systems.get(system_name),
+                get_core_name=lambda core_so: self.core_name,
                 sibling_supersede=lambda: self._supersede,
                 uow_factory=FakeUnitOfWorkFactory(self.uow),
                 loop=loop,
                 logger=logging.getLogger("test_rom_adoption"),
+                log_debug=lambda msg: self.debug_log.append(msg),
                 emit=self._emit,
                 clock=self.clock,
             ),
@@ -261,7 +299,7 @@ class TestCheckDownloadTarget:
         assert result["success"] is False
         assert result["reason"] == "target_occupied"
         assert result["existing"]["size_bytes"] == 25
-        assert result["existing"]["is_dir"] is False
+        assert result["existing"]["kind"] == "file"
         assert result["existing"]["modified_at"] == 1_700_000_000.0
         assert result["incoming"] == {"name": "Game.sfc", "size_bytes": 10}
         assert result["sizes_match"] is False
@@ -279,7 +317,7 @@ class TestCheckDownloadTarget:
         result = await h.service.check_download_target(_single_file_detail(), "/roms/snes/Game.sfc", replace=False)
 
         assert result is not None
-        assert result["existing"]["is_dir"] is True
+        assert result["existing"]["kind"] == "dir"
         assert result["adoptable"] is False
 
     async def test_a_directory_in_a_multi_file_ROM_s_way_is_adoptable(self, h):
@@ -514,6 +552,35 @@ class TestAdopt:
         assert result["success"] is False
         assert result["reason"] == "unexpected_content_kind"
 
+    async def test_a_symlink_at_the_target_is_refused_by_the_acting_site_itself(self, h):
+        # The offering sites already refuse one, and this is the reachable case
+        # they cannot cover: the entry was a regular file when the dialog opened
+        # and is a link by the time the user confirms. Only this check stands
+        # between that and a row ``claim_source`` will never let go of.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.links["/roms/snes/Game.sfc"] = "/roms/snes/real.sfc"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID)
+
+        assert result["success"] is False
+        assert result["reason"] == "unexpected_content_kind"
+        assert result["message"] == "A shortcut is in the way — a shortcut cannot be used as this game"
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+        assert set(h.store.links) == {"/roms/snes/Game.sfc"}
+
+    async def test_a_named_pipe_at_the_target_is_refused_the_same_way(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.other_kinds.add("/roms/snes/Game.sfc")
+
+        result = await h.service.adopt_existing_rom(_ROM_ID)
+
+        assert result["success"] is False
+        assert result["reason"] == "unexpected_content_kind"
+        assert result["message"] == "What is in the way is neither a file nor a folder"
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+
     async def test_a_rejected_install_never_deletes_the_content(self, h):
         # A ROM with no `roms` row cannot carry an install. Refused up front —
         # before the supersede — so neither the user's bytes nor a sibling's are
@@ -590,6 +657,94 @@ class TestAdopt:
 
         assert result["reason"] == "nothing_to_adopt"
         assert h.superseded == []
+
+    def _change_target_during_supersede(self, h, change) -> None:
+        """Run *change* against the store in the window ``_adopt_io`` guards.
+
+        The validation has already accepted the content and the supersede has
+        already run its real I/O, so this is the only place a test can put a
+        change that the last re-stat is the sole check against. Hooking the
+        supersede seam rather than counting ``describe_path`` calls keeps the
+        witness tied to the ordering the service actually has.
+        """
+
+        async def _supersede(rom_id: int) -> None:
+            h.superseded.append(rom_id)
+            change()
+
+        h.service._sibling_supersede = lambda: _supersede
+
+    async def test_content_that_turns_into_a_link_across_the_supersede_is_refused(self, h):
+        # The window the re-stat exists for: a regular file when the validation
+        # looked, a link by the time the row would be written. Recording it would
+        # be the install ``claim_source`` never releases.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files["/roms/snes/Game.sfc"] = b"mine"
+
+        def _becomes_a_link() -> None:
+            del h.store.files["/roms/snes/Game.sfc"]
+            h.store.links["/roms/snes/Game.sfc"] = "/roms/snes/real.sfc"
+
+        self._change_target_during_supersede(h, _becomes_a_link)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID)
+
+        assert result["success"] is False
+        assert result["reason"] == "unexpected_content_kind"
+        assert result["message"] == "A shortcut is in the way — a shortcut cannot be used as this game"
+        assert h.superseded == [_ROM_ID]
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+        assert set(h.store.links) == {"/roms/snes/Game.sfc"}
+
+    async def test_content_that_loses_its_kind_across_the_supersede_is_refused_too(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files["/roms/snes/Game.sfc"] = b"mine"
+
+        def _becomes_a_pipe() -> None:
+            del h.store.files["/roms/snes/Game.sfc"]
+            h.store.other_kinds.add("/roms/snes/Game.sfc")
+
+        self._change_target_during_supersede(h, _becomes_a_pipe)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID)
+
+        assert result["reason"] == "unexpected_content_kind"
+        assert result["message"] == "What is in the way is neither a file nor a folder"
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+
+    async def test_content_that_vanishes_across_the_supersede_says_it_is_gone(self, h):
+        # The guard's other half, and a different situation: nothing is there, so
+        # "the files are no longer there" is the true sentence here and the wrong
+        # one above.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files["/roms/snes/Game.sfc"] = b"mine"
+
+        self._change_target_during_supersede(h, lambda: h.store.files.pop("/roms/snes/Game.sfc"))
+
+        result = await h.service.adopt_existing_rom(_ROM_ID)
+
+        assert result["success"] is False
+        assert result["reason"] == "nothing_to_adopt"
+        assert result["message"] == "The files are no longer there — nothing was adopted"
+        assert h.superseded == [_ROM_ID]
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+
+    async def test_content_that_survives_the_supersede_unchanged_is_still_recorded(self, h):
+        # The control: the same seam, the same ordering, no change — so the three
+        # refusals above are about what changed and not about the hook itself.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files["/roms/snes/Game.sfc"] = b"mine"
+
+        self._change_target_during_supersede(h, lambda: None)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID)
+
+        assert result["success"] is True
+        assert h.uow.rom_installs.get(_ROM_ID) is not None
 
     async def test_a_server_failure_surfaces_the_canonical_shape(self, h):
         h.romm_api.fail_on_next(OSError("boom"))
@@ -1245,3 +1400,1470 @@ class TestVerifyLocatesFilesExactly:
         frames = [payload for name, payload in h.events if name == "verify_progress"]
         assert frames, "no verify_progress frame was emitted"
         assert frames[-1] == {"rom_id": _ROM_ID, "bytes_done": 10, "bytes_total": 10}
+
+
+# ── the candidate search ─────────────────────────────────────────────────
+
+
+def _crc32(data: bytes) -> str:
+    return f"{zlib.crc32(data) & 0xFFFFFFFF:08x}"
+
+
+class TestCandidateSearch:
+    async def test_an_empty_platform_directory_lets_the_download_proceed(self, h):
+        result = await h.service.check_download_target(_single_file_detail(), "/roms/snes/Game.sfc", replace=False)
+        assert result is None
+
+    async def test_a_folder_of_other_games_lets_the_download_proceed(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Other Game (USA).sfc"] = b"z"
+        h.store.files["/roms/snes/Third Game (USA).sfc"] = b"m"
+
+        result = await h.service.check_download_target(_single_file_detail(), "/roms/snes/Game.sfc", replace=False)
+        assert result is None
+
+    async def test_the_same_game_under_another_name_refuses_the_download(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x" * 10
+        h.store.mtimes["/roms/snes/Game (U).sfc"] = 1_700_000_000.0
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc", size=10), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["success"] is False
+        assert result["reason"] == "adoption_candidates"
+        assert result["incoming"] == {"name": "Game (USA).sfc", "size_bytes": 10}
+        assert result["candidates"] == [
+            {
+                "name": "Game (U).sfc",
+                "path": "/roms/snes/Game (U).sfc",
+                "is_dir": False,
+                "size_bytes": 10,
+                "modified_at": 1_700_000_000.0,
+                "evidence": "size",
+                "detail": result["candidates"][0]["detail"],
+            }
+        ]
+        assert result["truncated"] is False
+
+    async def test_the_search_writes_nothing(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"mine"
+
+        await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert h.store.files == {"/roms/snes/Game (U).sfc": b"mine"}
+
+    async def test_several_candidates_are_ranked_by_what_each_rests_on(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc", ".zip"})}
+        member = b"cartridge bytes"
+        h.store.files["/roms/snes/Game (E).zip"] = _zip_bytes({"Game.sfc": member})
+        h.store.files["/roms/snes/Game (J).sfc"] = b"x" * 10
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x" * 7
+
+        result = await h.service.check_download_target(
+            _single_file_detail(
+                name="Game (USA).sfc",
+                size=10,
+                files=[{"file_name": "Game (USA).sfc", "file_size_bytes": 10, "crc_hash": _crc32(member)}],
+            ),
+            "/roms/snes/Game (USA).sfc",
+            replace=False,
+        )
+
+        assert result is not None
+        assert [(c["name"], c["evidence"]) for c in result["candidates"]] == [
+            ("Game (E).zip", "crc32"),
+            ("Game (J).sfc", "size"),
+            ("Game (U).sfc", "name"),
+        ]
+
+    async def test_a_candidate_an_install_row_accounts_for_is_never_offered(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+        h.seed_install(rom_id=99, file_path="/roms/snes/Game (U).sfc")
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+
+    async def test_a_multi_file_rom_s_directory_install_is_never_offered(self, h):
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.bin"] = b"x"
+        h.seed_install(rom_id=99, file_path="/roms/psx/Game (U)/disc.bin", rom_dir="/roms/psx/Game (U)")
+
+        assert (
+            await h.service.check_download_target(
+                _multi_file_detail(dir_name="Game (USA)"), "/roms/psx/Game (USA)", replace=False
+            )
+            is None
+        )
+
+    async def test_an_extension_the_system_does_not_accept_is_not_offered(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).txt"] = b"notes"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+
+    async def test_a_directory_candidate_is_offered_for_a_multi_file_rom(self, h):
+        h.system_extensions = {"psx": frozenset({".cue"})}
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"x"
+
+        result = await h.service.check_download_target(
+            _multi_file_detail(dir_name="Game (USA)"), "/roms/psx/Game (USA)", replace=False
+        )
+
+        assert result is not None
+        assert result["candidates"][0]["name"] == "Game (U)"
+        assert result["candidates"][0]["is_dir"] is True
+        assert result["candidates"][0]["size_bytes"] == 0
+
+    async def test_a_same_named_folder_is_not_offered_as_a_single_file_rom_s_candidate(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Game (U)")
+        h.store.files["/roms/snes/Game (U)/notes.txt"] = b"x"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "unusable_namesake"
+        assert "candidates" not in result
+
+    async def test_the_user_who_chose_download_is_not_asked_again(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=True
+            )
+            is None
+        )
+
+    async def test_a_resume_is_never_refused_by_the_candidate_the_user_declined(self, h):
+        # A paused multi-file transfer has no extract directory yet, so the gate
+        # sees a free path. Searching again would hand back the very candidate the
+        # user declined when they started the download, and the frontend's only
+        # exit is Cancel — which discards the transferred bytes.
+        h.system_extensions = {"psx": frozenset({".cue"})}
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"declined"
+
+        result = await h.service.check_download_target(
+            _multi_file_detail(dir_name="Game"), "/roms/psx/Game", replace=False, resume=True
+        )
+
+        assert result is None
+
+    async def test_the_same_candidate_still_refuses_a_fresh_download(self, h):
+        h.system_extensions = {"psx": frozenset({".cue"})}
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"declined"
+
+        result = await h.service.check_download_target(
+            _multi_file_detail(dir_name="Game"), "/roms/psx/Game", replace=False, resume=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "adoption_candidates"
+
+    async def test_an_occupied_target_is_still_the_other_dialog_s_subject(self, h):
+        # The search only ever runs on a free target: an occupied one is already
+        # a comparison the user is being shown.
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (USA).sfc"] = b"in the way"
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "target_occupied"
+
+
+class TestTheAdmissionRule:
+    """What an entry is decides what may be said about it — nothing follows a link."""
+
+    async def test_a_symlink_is_never_offered_as_a_candidate(self, h):
+        # Adopting one writes an install row the UI can never undo: every
+        # uninstall goes through ``claim_source``, which refuses a symlink.
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.links["/roms/snes/Game (U).sfc"] = "/roms/snes/real.sfc"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc", size=10), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "unusable_namesake"
+        assert result["existing"] == [{"name": "Game (U).sfc", "path": "/roms/snes/Game (U).sfc", "kind": "link"}]
+        assert "candidates" not in result
+
+    async def test_a_symlink_is_named_for_what_it_is(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.links["/roms/snes/Game (U).sfc"] = "/roms/snes/real.sfc"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["message"] == (
+            "'Game (U).sfc' has this game's name but is a shortcut to somewhere else, "
+            "which cannot be used as this game whatever it points at"
+        )
+
+    async def test_a_named_pipe_is_not_mentioned_at_all(self, h):
+        # It reported as an ordinary zero-byte file and was offered as a game.
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.other_kinds.add("/roms/snes/Game (U).sfc")
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+    async def test_a_real_file_is_still_a_candidate_beside_a_link(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.links["/roms/snes/Game (J).sfc"] = "/roms/snes/real.sfc"
+        h.store.files["/roms/snes/Game (U).sfc"] = b"mine"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "adoption_candidates"
+        assert [candidate["name"] for candidate in result["candidates"]] == ["Game (U).sfc"]
+
+    async def test_the_page_still_reports_a_link_so_the_button_is_honest(self, h):
+        # It is content the user has: a download lands beside it and leaves two.
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.links["/roms/snes/Game (U).sfc"] = "/roms/snes/real.sfc"
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is True
+
+    async def test_downloading_anyway_leaves_the_link_alone(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.links["/roms/snes/Game (U).sfc"] = "/roms/snes/real.sfc"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=True
+            )
+            is None
+        )
+        assert set(h.store.links) == {"/roms/snes/Game (U).sfc"}
+
+
+class TestSymlinkAtTheTargetPath:
+    """The same rule through the other door — content at the ROM's own location."""
+
+    async def test_a_link_at_the_target_path_is_not_adoptable(self, h):
+        # PR #1712's dialog offered to adopt it, because ``describe_path``
+        # followed and reported ordinary content.
+        h.store.links["/roms/snes/Game.sfc"] = "/roms/snes/real.sfc"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game.sfc"), "/roms/snes/Game.sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "target_occupied"
+        assert result["adoptable"] is False
+
+    async def test_ordinary_content_of_the_right_shape_is_still_adoptable(self, h):
+        h.store.files["/roms/snes/Game.sfc"] = b"mine"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game.sfc"), "/roms/snes/Game.sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "target_occupied"
+        assert result["adoptable"] is True
+
+    async def test_a_link_at_the_target_path_is_not_read_as_nothing(self, h):
+        # Reported as absent, the download proceeded and the finalize replace
+        # destroyed the link in silence. It occupies the path; the user is asked.
+        h.store.links["/roms/snes/Game.sfc"] = "/roms/snes/real.sfc"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game.sfc"), "/roms/snes/Game.sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "target_occupied"
+
+    async def test_a_named_pipe_at_the_target_path_is_reported_rather_than_written_over(self, h):
+        # The listings leave one out, so the search says "nothing here" and the
+        # download would have run and replaced it without a word. This door
+        # reports it — with no kind, because there is no honest word for it.
+        h.store.other_kinds.add("/roms/snes/Game.sfc")
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game.sfc"), "/roms/snes/Game.sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "target_occupied"
+        assert result["existing"]["kind"] is None
+        assert result["adoptable"] is False
+        assert result["sizes_match"] is None
+        assert result["message"] == "Something named 'Game.sfc' is already in place"
+
+    async def test_a_link_at_the_target_path_states_no_size_verdict(self, h):
+        # Its byte count is the length of the path it stores, and the dialog was
+        # showing that as the content's and comparing it with the server's.
+        h.store.links["/roms/snes/Game.sfc"] = "/roms/snes/real.sfc"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game.sfc", size=len("/roms/snes/real.sfc")),
+            "/roms/snes/Game.sfc",
+            replace=False,
+        )
+
+        assert result is not None
+        assert result["sizes_match"] is None
+
+
+class TestSearchableDirectory:
+    """A directory that is not an ES-DE system is not a place a game can live."""
+
+    async def test_a_directory_that_is_not_a_system_yields_no_candidate(self, h):
+        h.known_systems = {"snes": False}
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+    async def test_a_real_system_still_answers(self, h):
+        h.known_systems = {"snes": True}
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is True
+
+    async def test_a_source_that_could_not_answer_is_not_a_denial(self, h):
+        # ``None`` is "es_systems.xml could not be read", which must not turn the
+        # search off — the same default-safe reading the accept-list applies.
+        h.known_systems = {}
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is True
+
+    async def test_an_unknown_directory_with_no_accept_list_matches_nothing(self, h):
+        # The second hole the same check closes: an empty accept-list means
+        # "cannot tell" and skips the extension test, so without the system check
+        # every file in a non-system directory would match on name alone.
+        h.known_systems = {"not-a-system": False}
+        h.system_extensions = {}
+        h.store.files["/roms/not-a-system/Game (U).sfc"] = b"x"
+
+        assert h.service.has_adoption_candidate("not-a-system", "Game (USA).sfc") is False
+
+
+class TestVanishedBackstop:
+    """The page found a copy and the search cannot name one."""
+
+    async def test_it_refuses_rather_than_downloading_silently(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc", size=10),
+            "/roms/snes/Game (USA).sfc",
+            replace=False,
+            page_saw_candidate=True,
+        )
+
+        assert result is not None
+        assert result["success"] is False
+        assert result["reason"] == "candidate_vanished"
+        assert result["incoming"] == {"name": "Game (USA).sfc", "size_bytes": 10}
+
+    async def test_a_page_that_found_nothing_downloads_as_before(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+
+    async def test_every_specific_answer_wins_over_it(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"),
+            "/roms/snes/Game (USA).sfc",
+            replace=False,
+            page_saw_candidate=True,
+        )
+
+        assert result is not None
+        assert result["reason"] == "adoption_candidates"
+
+    async def test_answering_it_downloads(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"),
+                "/roms/snes/Game (USA).sfc",
+                replace=True,
+                page_saw_candidate=True,
+            )
+            is None
+        )
+
+    async def test_a_resume_is_never_refused_by_it(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"),
+                "/roms/snes/Game (USA).sfc",
+                replace=False,
+                resume=True,
+                page_saw_candidate=True,
+            )
+            is None
+        )
+
+
+class TestSearchUnderBothNames:
+    """A ROM RomM serves as a folder around one differently-named file."""
+
+    @staticmethod
+    def _nested_single(h) -> dict[str, Any]:
+        """The payload where the derived name and ``fs_name`` genuinely differ.
+
+        ``has_nested_single_file`` is what makes ``resolve_local_file_name`` take
+        the inner file's name; with exactly one file the download still takes the
+        single-file path, so it writes ``Inner Disc.cue`` while ``fs_name`` — and
+        the user's own copy — is named after the game. Without that flag all
+        three wanted names collapse to one string and this class proves nothing.
+        """
+        h.system_extensions = {"psx": frozenset({".cue"})}
+        detail = _single_file_detail(name="Game (USA)", size=10)
+        detail["platform_slug"] = "psx"
+        detail["has_nested_single_file"] = True
+        detail["files"] = [{"file_name": "Inner Disc.cue"}]
+        return detail
+
+    async def test_the_user_s_copy_is_found_under_the_fs_name(self, h):
+        # The search under the derived name alone finds nothing here: the copy is
+        # named after the game, and no user names a file after the inner disc.
+        detail = self._nested_single(h)
+        h.store.files["/roms/psx/Game (U).cue"] = b"mine"
+
+        result = await h.service.check_download_target(detail, "/roms/psx/Inner Disc.cue", replace=False)
+
+        assert result is not None
+        assert result["reason"] == "adoption_candidates"
+        assert [candidate["name"] for candidate in result["candidates"]] == ["Game (U).cue"]
+
+    async def test_the_derived_name_still_matches_where_it_is_the_one_on_disk(self, h):
+        # The other half: a copy named after the inner file is found too, so
+        # widening the search added a name rather than swapping one.
+        detail = self._nested_single(h)
+        h.store.files["/roms/psx/Inner Disc (U).cue"] = b"mine"
+
+        result = await h.service.check_download_target(detail, "/roms/psx/Inner Disc.cue", replace=False)
+
+        assert result is not None
+        assert result["reason"] == "adoption_candidates"
+        assert [candidate["name"] for candidate in result["candidates"]] == ["Inner Disc (U).cue"]
+
+    async def test_an_unrelated_file_is_still_not_a_candidate(self, h):
+        detail = self._nested_single(h)
+        h.store.files["/roms/psx/Other Game (U).cue"] = b"not mine"
+
+        assert await h.service.check_download_target(detail, "/roms/psx/Inner Disc.cue", replace=False) is None
+
+
+class TestSearchLogging:
+    """A divergence has to be reconstructible from the log afterwards."""
+
+    async def test_the_click_search_records_what_it_looked_for_and_found(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        (line,) = [entry for entry in h.debug_log if entry.startswith("adopt search:")]
+        assert "dir=/roms/snes" in line
+        assert "'game'" in line
+        assert "candidates=1" in line
+        assert "unusable=0" in line
+        assert "page_saw_candidate=False" in line
+
+    async def test_the_page_probe_records_its_own_answer(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        h.service.has_adoption_candidate("snes", "Game (USA).sfc")
+
+        (line,) = [entry for entry in h.debug_log if entry.startswith("adopt probe:")]
+        assert "dir=/roms/snes" in line
+        assert "name=game" in line
+        assert "found=1" in line
+
+    async def test_a_probe_with_no_name_to_match_still_says_what_it_answered(self, h):
+        # Every exit from the probe leaves a line, including the ones that give
+        # up before reading anything — a probe that logged nothing is a probe
+        # that cannot be told apart from one that never ran.
+        h.service.has_adoption_candidate("snes", "")
+
+        (line,) = [entry for entry in h.debug_log if entry.startswith("adopt probe:")]
+        assert "slug=snes" in line
+        assert "name=<empty>" in line
+        assert "found=0" in line
+
+    async def test_a_name_that_is_only_tags_answers_the_same_way(self, h):
+        # It has a name and still nothing to match on, which is the same answer
+        # and now the same line.
+        h.service.has_adoption_candidate("snes", "(USA).sfc")
+
+        (line,) = [entry for entry in h.debug_log if entry.startswith("adopt probe:")]
+        assert "name=<empty>" in line
+        assert "found=0" in line
+
+    async def test_every_exit_states_the_same_five_keys(self, h):
+        # A log read across a divergence is unreadable if its shape changes per
+        # exit — the reason this line exists is to be compared with the click
+        # search's, and with the same call on another day. The game name carries
+        # a space on purpose: a normalized name usually does, so a line that only
+        # parses for single-word titles would be no shape at all.
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Example Quest (U).sfc"] = b"x"
+
+        h.service.has_adoption_candidate("snes", "Example Quest (USA).sfc")
+        h.service.has_adoption_candidate("snes", "")
+        h.service.has_adoption_candidate("../escape", "Example Quest (USA).sfc")
+
+        lines = [entry for entry in h.debug_log if entry.startswith("adopt probe:")]
+        assert len(lines) == 3
+        shape = re.compile(r"adopt probe: slug=(.*) dir=(.*) name=(.*) entries=(\d+) found=(\d+)")
+        names: list[str] = []
+        for line in lines:
+            match = shape.fullmatch(line)
+            assert match is not None, line
+            names.append(match.group(3))
+        assert names == ["example quest", "<empty>", "example quest"]
+
+
+class TestWrongShapeNamesake:
+    """A namesake of the wrong shape is asked about, never quietly downloaded past."""
+
+    async def test_a_folder_where_the_server_sends_one_file_is_refused(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Game (U)")
+        h.store.files["/roms/snes/Game (U)/rom.sfc"] = b"mine"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc", size=10), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["success"] is False
+        assert result["reason"] == "unusable_namesake"
+        assert result["message"] == (
+            "'Game (U)' has this game's name but is a folder, and the server sends this game as a single file"
+        )
+        assert result["incoming"] == {"name": "Game (USA).sfc", "size_bytes": 10}
+        assert result["existing"] == [{"name": "Game (U)", "path": "/roms/snes/Game (U)", "kind": "dir"}]
+        assert result["served_is_dir"] is False
+        assert result["truncated"] is False
+
+    async def test_a_loose_file_where_the_server_sends_a_folder_is_refused(self, h):
+        h.system_extensions = {"psx": frozenset({".cue"})}
+        h.store.files["/roms/psx/Game (U).cue"] = b"mine"
+
+        result = await h.service.check_download_target(
+            _multi_file_detail(dir_name="Game (USA)"), "/roms/psx/Game (USA)", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "unusable_namesake"
+        assert result["message"] == (
+            "'Game (U).cue' has this game's name but is a single file, and the server sends this game as a folder"
+        )
+        assert result["existing"] == [{"name": "Game (U).cue", "path": "/roms/psx/Game (U).cue", "kind": "file"}]
+        assert result["served_is_dir"] is True
+
+    async def test_the_refusal_touches_nothing(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Game (U)")
+        h.store.files["/roms/snes/Game (U)/rom.sfc"] = b"mine"
+
+        await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert h.store.files == {"/roms/snes/Game (U)/rom.sfc": b"mine"}
+        assert h.store.dirs == {"/roms/snes/Game (U)"}
+
+    async def test_the_user_who_chose_to_download_anyway_is_not_asked_again(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Game (U)")
+        h.store.files["/roms/snes/Game (U)/rom.sfc"] = b"mine"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=True
+            )
+            is None
+        )
+
+    async def test_a_resume_is_never_refused_by_an_unusable_namesake(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Game (U)")
+        h.store.files["/roms/snes/Game (U)/rom.sfc"] = b"mine"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False, resume=True
+            )
+            is None
+        )
+
+    async def test_a_folder_named_after_another_game_is_no_conflict(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Other Game (U)")
+        h.store.files["/roms/snes/Other Game (U)/rom.sfc"] = b"z"
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+
+    async def test_a_file_the_system_does_not_accept_is_no_conflict(self, h):
+        # The extension filter answers before the shape question does: notes
+        # beside a folder-served game are not something to ask about.
+        h.system_extensions = {"psx": frozenset({".cue"})}
+        h.store.files["/roms/psx/Game (U).txt"] = b"notes"
+
+        assert (
+            await h.service.check_download_target(
+                _multi_file_detail(dir_name="Game (USA)"), "/roms/psx/Game (USA)", replace=False
+            )
+            is None
+        )
+
+    async def test_content_an_install_row_accounts_for_is_no_conflict(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.dirs.add("/roms/snes/Game (U)")
+        h.store.files["/roms/snes/Game (U)/rom.sfc"] = b"other game"
+        h.seed_install(rom_id=99, file_path="/roms/snes/Game (U)/rom.sfc", rom_dir="/roms/snes/Game (U)")
+
+        assert (
+            await h.service.check_download_target(
+                _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+            )
+            is None
+        )
+
+    async def test_a_candidate_of_the_right_shape_wins_over_one_of_the_wrong_shape(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"mine"
+        h.store.dirs.add("/roms/snes/Game (E)")
+        h.store.files["/roms/snes/Game (E)/rom.sfc"] = b"also mine"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "adoption_candidates"
+        assert [candidate["name"] for candidate in result["candidates"]] == ["Game (U).sfc"]
+
+    async def test_a_capped_list_says_so(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        for index in range(CANDIDATE_LIMIT + 1):
+            h.store.dirs.add(f"/roms/snes/Game ({index})")
+            h.store.files[f"/roms/snes/Game ({index})/rom.sfc"] = b"mine"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert result is not None
+        assert result["reason"] == "unusable_namesake"
+        assert len(result["existing"]) == CANDIDATE_LIMIT
+        assert result["truncated"] is True
+
+
+class TestHasAdoptionCandidate:
+    """The game-detail read's half of the search — a boolean, and never a raise."""
+
+    async def test_a_matching_file_is_a_candidate(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is True
+
+    async def test_a_folder_of_other_games_is_not(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Other Game (USA).sfc"] = b"z"
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+    async def test_a_matching_directory_counts_too(self, h):
+        # The page cannot know whether RomM serves this ROM as one file or a
+        # folder, so it does not filter on shape — the click-time search does.
+        h.system_extensions = {"psx": frozenset()}
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"x"
+
+        assert h.service.has_adoption_candidate("psx", "Game.zip") is True
+
+    async def test_the_rom_s_own_target_is_not_its_own_candidate(self, h):
+        # That is the occupied-target state, which the page answers separately.
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game.sfc"] = b"x"
+
+        assert h.service.has_adoption_candidate("snes", "Game.sfc") is False
+
+    async def test_an_install_row_s_content_is_another_game_s(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files["/roms/snes/Game (U).sfc"] = b"x"
+        h.seed_install(rom_id=99, file_path="/roms/snes/Game (U).sfc")
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+    async def test_it_never_reads_an_archive_index(self, h):
+        # Ranking evidence is the dialog's cost, not the page's: the page only has
+        # to say "something is here", never which of several is strongest.
+        h.system_extensions = {"snes": frozenset({".zip"})}
+        h.store.files["/roms/snes/Game (U).zip"] = _zip_bytes({"Game.sfc": b"cartridge"})
+        opened: list[str] = []
+
+        def record(path):
+            opened.append(path)
+            return
+
+        h.store.list_archive_members = record
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).zip") is True
+        assert opened == []
+
+    async def test_a_missing_roms_path_answers_quietly(self, h):
+        h.paths.roms = ""
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+    async def test_a_read_that_raises_answers_quietly(self, h, caplog):
+        # A search that could not run must never make a game look uninstallable.
+        # The probe's own listing is the lean one — the fake no longer projects
+        # it from the full one, so breaking the wrong method proves nothing.
+        def boom(_directory):
+            raise OSError("SD card ejected")
+
+        h.store.list_top_level_names = boom
+
+        with caplog.at_level(logging.WARNING):
+            assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+        assert any("candidate probe failed" in record.message for record in caplog.records)
+
+    async def test_an_unsafe_platform_slug_answers_quietly(self, h):
+        assert h.service.has_adoption_candidate("../../etc", "passwd") is False
+
+        # Refused where the directory is derived rather than thrown at the
+        # blanket guard, so the log says a probe ran and found nowhere to look —
+        # False is also its "nothing here" answer, and the line is what tells
+        # the two apart afterwards.
+        assert any(entry.startswith("adopt probe:") and "dir=unresolved" in entry for entry in h.debug_log)
+
+
+# ── downloading over a candidate ─────────────────────────────────────────
+
+
+_OLD = "/roms/snes/Game (U).sfc"
+_NEW = "/roms/snes/Game.sfc"
+
+
+class TestDiscardCandidate:
+    """The dialog's second confirmation names a deletion, so the deletion happens."""
+
+    @staticmethod
+    def _stage(h) -> None:
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.store.files[_OLD] = b"user's own dump"
+
+    async def test_downloading_over_a_candidate_removes_it(self, h):
+        self._stage(h)
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is None
+        assert _OLD not in h.store.files
+
+    async def test_its_saves_and_savestates_arrive_under_the_canonical_name(self, h):
+        self._stage(h)
+        h.store.files["/saves/snes/Game (U).srm"] = b"battery"
+        h.store.files["/states/Game (U).state"] = b"snapshot"
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is None
+        assert h.store.files["/saves/snes/Game.srm"] == b"battery"
+        assert h.store.files["/states/Game.state"] == b"snapshot"
+        assert "/saves/snes/Game (U).srm" not in h.store.files
+
+    async def test_none_of_these_removes_nothing(self, h):
+        # The user declined every candidate rather than choosing one, so no
+        # particular file was the subject and none may be deleted for them.
+        self._stage(h)
+        h.store.files["/saves/snes/Game (U).srm"] = b"battery"
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True)
+
+        assert result is None
+        assert h.store.files[_OLD] == b"user's own dump"
+        assert h.store.files["/saves/snes/Game (U).srm"] == b"battery"
+
+    async def test_a_failed_removal_aborts_with_the_candidate_intact(self, h):
+        self._stage(h)
+        h.store.remove_failures = {_OLD}
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is not None
+        assert result["success"] is False
+        assert result["reason"] == "replace_failed"
+        assert h.store.files[_OLD] == b"user's own dump"
+
+    async def test_a_failed_removal_says_the_saves_have_already_moved(self, h):
+        # Carry-then-remove means the second step can fail over a first step that
+        # succeeded. The file the user keeps can no longer find its saves, so a
+        # bare "download aborted" would be the abort reporting itself as clean.
+        self._stage(h)
+        h.store.files["/saves/snes/Game (U).srm"] = b"battery"
+        h.store.remove_failures = {_OLD}
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is not None
+        assert result["reason"] == "replace_failed"
+        assert "Game.srm" in result["message"]
+        assert h.store.files[_OLD] == b"user's own dump"
+        assert h.store.files["/saves/snes/Game.srm"] == b"battery"
+
+    async def test_a_failed_removal_with_no_saves_says_nothing_about_them(self, h):
+        self._stage(h)
+        h.store.remove_failures = {_OLD}
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is not None
+        assert result["reason"] == "replace_failed"
+        assert "already renamed" not in result["message"]
+
+    async def test_a_taken_save_name_raises_the_same_collision_question(self, h):
+        self._stage(h)
+        h.store.files["/saves/snes/Game (U).srm"] = b"mine"
+        h.store.files["/saves/snes/Game.srm"] = b"the other version's"
+
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is not None
+        assert result["reason"] == "rename_collisions"
+        assert [c["path"] for c in result["collisions"]] == ["/saves/snes/Game.srm"]
+        # Nothing moved and nothing removed while the question is open.
+        assert h.store.files[_OLD] == b"user's own dump"
+        assert h.store.files["/saves/snes/Game.srm"] == b"the other version's"
+
+    async def test_the_collision_answer_completes_the_discard(self, h):
+        self._stage(h)
+        h.store.files["/saves/snes/Game (U).srm"] = b"mine"
+        h.store.files["/saves/snes/Game.srm"] = b"the other version's"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(), _NEW, replace=True, candidate_path=_OLD, collision_choice="overwrite"
+        )
+
+        assert result is None
+        assert h.store.files["/saves/snes/Game.srm"] == b"mine"
+        assert _OLD not in h.store.files
+
+    async def test_keep_leaves_the_old_saves_and_still_removes_the_candidate(self, h):
+        self._stage(h)
+        h.store.files["/saves/snes/Game (U).srm"] = b"mine"
+        h.store.files["/saves/snes/Game.srm"] = b"the other version's"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(), _NEW, replace=True, candidate_path=_OLD, collision_choice="keep"
+        )
+
+        assert result is None
+        assert h.store.files["/saves/snes/Game.srm"] == b"the other version's"
+        assert h.store.files["/saves/snes/Game (U).srm"] == b"mine"
+        assert _OLD not in h.store.files
+
+    async def test_a_candidate_outside_the_platform_folder_is_refused(self, h):
+        h.store.files["/roms/gba/Game (U).sfc"] = b"different platform"
+
+        result = await h.service.check_download_target(
+            _single_file_detail(), _NEW, replace=True, candidate_path="/roms/gba/Game (U).sfc"
+        )
+
+        assert result is not None
+        assert result["reason"] == "invalid_candidate"
+        assert h.store.files["/roms/gba/Game (U).sfc"] == b"different platform"
+
+    async def test_a_candidate_that_vanished_lets_the_download_proceed(self, h):
+        result = await h.service.check_download_target(_single_file_detail(), _NEW, replace=True, candidate_path=_OLD)
+
+        assert result is None
+
+    async def test_a_multi_file_candidate_goes_but_its_saves_stay_put(self, h):
+        # The downloaded directory's launch file is inside an archive that has not
+        # been fetched, so the name those saves would need is unknown. Untouched
+        # and findable beats moved to a name nothing reads.
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"cue"
+        h.store.files["/saves/Game (U)/disc.srm"] = b"battery"
+
+        result = await h.service.check_download_target(
+            _multi_file_detail(dir_name="Game"), "/roms/psx/Game", replace=True, candidate_path="/roms/psx/Game (U)"
+        )
+
+        assert result is None
+        assert "/roms/psx/Game (U)/disc.cue" not in h.store.files
+        assert h.store.files["/saves/Game (U)/disc.srm"] == b"battery"
+
+
+# ── adopting a candidate ─────────────────────────────────────────────────
+
+
+class TestAdoptCandidate:
+    async def test_the_candidate_is_renamed_and_recorded_at_the_canonical_name(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"user's own dump"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is True
+        assert result["file_path"] == _NEW
+        assert h.move.moves == [(_OLD, _NEW)]
+
+    async def test_a_save_and_a_savestate_travel_with_it(self, h):
+        # The stock RetroDECK shape: savefiles content-sorted under
+        # saves/<system>, savestates not sorted at all.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"srm"
+        h.store.files["/states/Game (U).state"] = b"state"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is True
+        assert sorted(h.move.moves) == sorted(
+            [
+                (_OLD, _NEW),
+                ("/saves/snes/Game (U).srm", "/saves/snes/Game.srm"),
+                ("/states/Game (U).state", "/states/Game.state"),
+            ]
+        )
+
+    async def test_the_savestate_layout_is_read_separately_from_the_savefile_one(self, h):
+        # Assuming one from the other would look under /states/snes, where a
+        # stock RetroDECK install has never written anything.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/states/snes/Game (U).state"] = b"wrong dir"
+        h.store.files["/states/Game (U).state"] = b"state"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/states/Game (U).state", "/states/Game.state") in h.move.moves
+        assert not any(source.startswith("/states/snes/") for source, _target in h.move.moves)
+
+    async def test_another_game_s_save_is_never_carried_along(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"srm"
+        h.store.files["/saves/snes/Other Game (U).srm"] = b"not mine"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert all("Other Game" not in source for source, _target in h.move.moves)
+
+    async def test_a_rom_with_no_saves_at_all_still_moves(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is True
+        assert h.move.moves == [(_OLD, _NEW)]
+
+    async def test_saves_written_beside_the_rom_are_carried_without_moving_the_rom_twice(self, h):
+        # ``savefiles_in_content_dir=true`` puts the saves in the platform folder
+        # itself, which is also where the ROM is — so the ROM's own filename
+        # matches the stem prefix and would be paired a second time.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.save_layout = ContentDir()
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/roms/snes/Game (U).srm"] = b"srm"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is True
+        assert h.move.moves == [(_OLD, _NEW), ("/roms/snes/Game (U).srm", "/roms/snes/Game.srm")]
+
+    async def test_a_directory_rom_s_own_saves_travel_inside_it_and_are_not_paired(self, h):
+        # A multi-file ROM whose emulator writes beside the game: those files move
+        # as part of the directory's own rename, and pairing them would move them
+        # a second time — out of a directory that no longer exists.
+        h.seed_rom()
+        h.stage_detail(_multi_file_detail(dir_name="Game"))
+        h.save_layout = ContentDir()
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"cue"
+        h.store.files["/roms/psx/Game (U)/disc.srm"] = b"srm"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, "/roms/psx/Game (U)", None)
+
+        assert result["success"] is True
+        assert h.move.moves == [("/roms/psx/Game (U)", "/roms/psx/Game")]
+
+    async def test_a_content_sorted_directory_rom_moves_its_whole_save_folder(self, h):
+        h.seed_rom()
+        h.stage_detail(_multi_file_detail(dir_name="Game"))
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/roms/psx/Game (U)/disc.cue"] = b"cue"
+        h.store.files["/saves/Game (U)/disc.srm"] = b"srm"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, "/roms/psx/Game (U)", None)
+
+        assert result["success"] is True
+        assert ("/saves/Game (U)/disc.srm", "/saves/Game/disc.srm") in h.move.moves
+
+    async def test_the_savefile_directory_is_the_one_the_sync_resolves(self, h):
+        # No migration pending: the two sources agree, and adoption reaches the
+        # same directory `find_save_files` would.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"srm"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/saves/snes/Game (U).srm", "/saves/snes/Game.srm") in h.move.moves
+
+    async def test_a_pending_save_sort_migration_keeps_the_rename_in_the_old_layout(self, h):
+        # The regression this pins. While a save-sort migration is pending the
+        # files are still in the PREVIOUS layout and the sync deliberately keeps
+        # looking there (#238). Reading the live config would move them to
+        # /saves/Game (U)/ — out from under the sync, and out from under the
+        # pending migration that is about to go looking for them.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.save_layout = InSaveDir(sort_by_content=False, sort_by_core=False)
+        h.save_sorting = InSaveDir(sort_by_content=True, sort_by_core=False)
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"recorded layout"
+        h.store.files["/saves/Game (U).srm"] = b"live-config layout"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/saves/snes/Game (U).srm", "/saves/snes/Game.srm") in h.move.moves
+        assert all(not source.startswith("/saves/Game (U)") for source, _target in h.move.moves)
+        assert h.store.files["/saves/Game (U).srm"] == b"live-config layout"
+
+    async def test_a_savefile_migration_never_moves_the_savestates(self, h):
+        # The markers track savefile sorting only, so a pending savefile
+        # migration says nothing about savestates: they keep coming from the
+        # live config, whatever the recorded savefile layout says.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.save_layout = InSaveDir(sort_by_content=False, sort_by_core=False)
+        h.save_sorting = InSaveDir(sort_by_content=True, sort_by_core=False)
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/states/Game (U).state"] = b"state"
+        h.store.files["/states/snes/Game (U).state"] = b"not where states live"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/states/Game (U).state", "/states/Game.state") in h.move.moves
+        assert h.store.files["/states/snes/Game (U).state"] == b"not where states live"
+
+    async def test_the_content_dir_question_still_comes_from_the_live_config(self, h):
+        # MigrationService writes no marker for a ContentDir machine, so there is
+        # nothing recorded to prefer — and a recorded sorting must not override
+        # the live "saves sit next to the ROM".
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.save_layout = ContentDir()
+        h.save_sorting = InSaveDir(sort_by_content=True, sort_by_core=False)
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/roms/snes/Game (U).srm"] = b"beside the rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"not read on this machine"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/roms/snes/Game (U).srm", "/roms/snes/Game.srm") in h.move.moves
+        assert h.store.files["/saves/snes/Game (U).srm"] == b"not read on this machine"
+
+    async def test_per_core_sorting_reaches_the_core_subdirectory(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.save_sorting = InSaveDir(sort_by_content=True, sort_by_core=True)
+        h.active_core.default = ("snes9x_libretro", "Snes9x")
+        h.core_name = "Snes9x"
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Snes9x/Game (U).srm"] = b"srm"
+
+        await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/saves/snes/Snes9x/Game (U).srm", "/saves/snes/Snes9x/Game.srm") in h.move.moves
+
+    async def test_an_unresolvable_corename_looks_where_save_sync_looks(self, h, caplog):
+        # Warn-and-fall-back, exactly as RomInfoService does with the same
+        # question, so the rename and the sync never disagree about the directory.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.save_sorting = InSaveDir(sort_by_content=True, sort_by_core=True)
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"srm"
+
+        with caplog.at_level(logging.WARNING):
+            await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert ("/saves/snes/Game (U).srm", "/saves/snes/Game.srm") in h.move.moves
+        assert any("corename" in record.message for record in caplog.records)
+
+    async def test_a_candidate_outside_the_platform_folder_is_refused(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files["/roms/gba/Game (U).sfc"] = b"rom"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, "/roms/gba/Game (U).sfc", None)
+
+        assert result["success"] is False
+        assert result["reason"] == "invalid_candidate"
+        assert h.move.moves == []
+
+    async def test_a_traversing_candidate_path_is_refused(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, "/roms/snes/../../etc/passwd", None)
+
+        assert result["success"] is False
+        assert result["reason"] == "invalid_candidate"
+        assert h.move.moves == []
+
+    async def test_a_candidate_that_vanished_is_refused_before_anything_moves(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is False
+        assert result["reason"] == "nothing_to_adopt"
+        assert h.move.moves == []
+        assert h.superseded == []
+
+    async def test_content_arriving_at_the_canonical_name_refuses_the_rename(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files[_NEW] = b"someone else's"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is False
+        assert result["reason"] == "target_taken"
+        assert h.move.moves == []
+        assert h.store.files[_NEW] == b"someone else's"
+
+    async def test_content_arriving_between_the_check_and_the_move_refuses_too(self, h):
+        # The window between validating and planning is short but real, and what
+        # lands in it is the occupied-target case the other dialog owns — never
+        # something to overwrite or skip as part of the collision question.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        seen: list[str] = []
+        free_until_planned = h.move.exists
+
+        def exists(path: str) -> bool:
+            if path == _NEW and _NEW not in seen:
+                seen.append(_NEW)
+                return False
+            return free_until_planned(path) or path == _NEW
+
+        h.move.exists = exists
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is False
+        assert result["reason"] == "target_taken"
+        assert h.move.moves == []
+        assert h.store.files[_OLD] == b"rom"
+
+    async def test_a_directory_candidate_with_nothing_launchable_inside_still_moves(self, h):
+        # No launch file means no stem, and an empty stem must claim no saves
+        # rather than every file in the save directory.
+        h.seed_rom()
+        h.stage_detail(_multi_file_detail(dir_name="Game"))
+        h.store.dirs.add("/roms/psx/Game (U)")
+        h.store.files["/saves/psx/Game (U).srm"] = b"someone else's"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, "/roms/psx/Game (U)", None)
+
+        assert result["success"] is True
+        assert h.move.moves == [("/roms/psx/Game (U)", "/roms/psx/Game")]
+
+    async def test_the_supersede_runs_only_after_the_rename_succeeded(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.move.outcome = {"moved": [], "stranded": [], "unmoved": [_OLD], "error": "disk on fire"}
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is False
+        assert result["reason"] == "rename_failed"
+        assert h.superseded == []
+
+    async def test_a_partial_move_names_what_arrived_and_what_did_not(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"srm"
+        h.move.outcome = {
+            "moved": [_NEW],
+            "stranded": [],
+            "unmoved": ["/saves/snes/Game (U).srm"],
+            "error": "could not move Game (U).srm",
+        }
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is False
+        assert "Game (U).srm" in result["message"]
+        assert "Game.sfc" in result["message"]
+
+    async def test_a_stranded_old_copy_is_not_a_failure(self, h):
+        # One inode under two names loses nothing and a re-run finishes it, so the
+        # user's game is playable and the dialog says nothing alarming.
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.move.outcome = {"moved": [], "stranded": [_OLD], "unmoved": [], "error": "old copies remain"}
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is True
+        assert result["file_path"] == _NEW
+        assert h.store.files[_NEW] == b"rom"
+        assert h.store.files[_OLD] == b"rom"
+
+
+class TestAdoptCandidateCollisions:
+    @staticmethod
+    def _stage(h) -> None:
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.store.files["/saves/snes/Game (U).srm"] = b"mine"
+        h.store.files["/saves/snes/Game.srm"] = b"the other version's"
+        h.store.files["/states/Game (U).state"] = b"mine"
+        h.store.files["/states/Game.state"] = b"the other version's"
+
+    async def test_an_unanswered_collision_refuses_before_a_single_file_moves(self, h):
+        self._stage(h)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is False
+        assert result["reason"] == "rename_collisions"
+        assert h.move.moves == []
+        assert h.quarantine.quarantined == []
+
+    async def test_every_collision_is_listed_not_just_the_first(self, h):
+        self._stage(h)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert [collision["path"] for collision in result["collisions"]] == [
+            "/saves/snes/Game.srm",
+            "/states/Game.state",
+        ]
+        assert [collision["kind"] for collision in result["collisions"]] == ["save", "savestate"]
+
+    async def test_overwrite_replaces_the_occupied_names_then_moves_everything(self, h):
+        self._stage(h)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "overwrite")
+
+        assert result["success"] is True
+        # Replaced, not destroyed: both go through the sanctioned .romm-backup
+        # funnel, so a save the user chose to lose is still recoverable.
+        assert h.quarantine.quarantined == ["/saves/snes/Game.srm", "/states/Game.state"]
+        assert h.store.files["/saves/snes/.romm-backup/Game.srm"] == b"the other version's"
+        assert h.store.files["/states/.romm-backup/Game.state"] == b"the other version's"
+        assert sorted(h.move.moves) == sorted(
+            [
+                (_OLD, _NEW),
+                ("/saves/snes/Game (U).srm", "/saves/snes/Game.srm"),
+                ("/states/Game (U).state", "/states/Game.state"),
+            ]
+        )
+
+    async def test_keep_leaves_the_occupied_names_and_their_old_named_files_alone(self, h):
+        self._stage(h)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "keep")
+
+        assert result["success"] is True
+        assert h.quarantine.quarantined == []
+        assert h.move.moves == [(_OLD, _NEW)]
+        assert h.store.files["/saves/snes/Game (U).srm"] == b"mine"
+        assert h.store.files["/states/Game (U).state"] == b"mine"
+        assert h.store.files["/saves/snes/Game.srm"] == b"the other version's"
+
+    async def test_a_replace_that_fails_moves_nothing_and_names_what_went(self, h):
+        self._stage(h)
+        h.quarantine.failures = {"/states/Game.state"}
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "overwrite")
+
+        assert result["success"] is False
+        assert result["reason"] == "replace_failed"
+        assert "Game.state" in result["message"]
+        # The one that did go is named, so the user is not told nothing happened.
+        assert "Game.srm" in result["message"]
+        assert h.move.moves == []
+        assert h.store.files[_OLD] == b"rom"
+        assert h.store.files["/saves/snes/.romm-backup/Game.srm"] == b"the other version's"
+
+    async def test_an_unrecognised_answer_is_refused_rather_than_guessed(self, h):
+        self._stage(h)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "delete everything")
+
+        assert result["success"] is False
+        assert result["reason"] == "rename_collisions"
+        assert h.move.moves == []
+
+    async def test_a_move_that_fails_after_the_clear_says_where_the_replaced_saves_went(self, h):
+        # The clear succeeded, so the other version's saves are in .romm-backup
+        # for a replacement that never arrived. Reporting only the rename failure
+        # would leave them nowhere in the message and nowhere the user would look.
+        self._stage(h)
+        h.move.outcome = {
+            "moved": [],
+            "stranded": [],
+            "unmoved": [_OLD, "/saves/snes/Game (U).srm", "/states/Game (U).state"],
+            "error": "disk on fire",
+        }
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "overwrite")
+
+        assert result["success"] is False
+        assert result["reason"] == "rename_failed"
+        assert ".romm-backup" in result["message"]
+        assert "Game.srm" in result["message"]
+        assert "Game.state" in result["message"]
+        assert h.quarantine.quarantined == ["/saves/snes/Game.srm", "/states/Game.state"]
+
+    async def test_a_move_that_fails_with_nothing_replaced_says_nothing_about_backups(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.move.outcome = {"moved": [], "stranded": [], "unmoved": [_OLD], "error": "disk on fire"}
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["reason"] == "rename_failed"
+        assert ".romm-backup" not in result["message"]
+
+    async def test_a_folder_at_a_collision_target_is_refused_before_anything_moves(self, h):
+        # The up-front `_not_a_file` pass, which the funnel is never reached past:
+        # a folder at a savestate's name would otherwise no-op the clear and fail
+        # later at the link with nothing explaining why.
+        self._stage(h)
+        h.store.files.pop("/states/Game.state")
+        h.store.dirs.add("/states/Game.state")
+        h.store.files["/states/Game.state/stray"] = b"a folder at a savestate's name"
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "overwrite")
+
+        assert result["success"] is False
+        assert result["reason"] == "replace_failed"
+        assert "Game.state" in result["message"]
+        # Refused up front: the savefile beside it was never quarantined either.
+        assert h.quarantine.quarantined == []
+        assert h.move.moves == []
+        assert h.store.files["/saves/snes/Game.srm"] == b"the other version's"
+
+    async def test_a_collision_target_that_vanished_is_never_named_as_replaced(self, h):
+        # Present at the plan's exists() probe, gone by the time the funnel looks:
+        # it reports False and moves nothing, so nothing may claim it did.
+        #
+        # The production list is observable only inside a refusal, so this stages
+        # one — asserting on the fake's own record instead would be a tautology
+        # about the fake (it returns False *before* it appends), green whatever
+        # the renamer does with the return value.
+        self._stage(h)
+        h.quarantine.missing = {"/states/Game.state"}
+        h.move.outcome = {
+            "moved": [],
+            "stranded": [],
+            "unmoved": [_OLD, "/saves/snes/Game (U).srm", "/states/Game (U).state"],
+            "error": "disk on fire",
+        }
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, "overwrite")
+
+        assert result["success"] is False
+        assert result["reason"] == "rename_failed"
+        assert "moved to .romm-backup" in result["message"]
+        assert "Game.srm" in result["message"]
+        # The declined one is absent from the whole message, backup clause
+        # included. `Game (U).state` in the unmoved list does not contain it.
+        assert "Game.state" not in result["message"]

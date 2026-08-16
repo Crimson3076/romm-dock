@@ -21,6 +21,10 @@ import {
   startDownload,
   adoptExistingRom,
   isTargetOccupied,
+  isCandidatesFound,
+  isUnusableNamesake,
+  isCandidateVanished,
+  isRenameCollisions,
   cancelDownload,
   pauseDownload,
   resumeDownload,
@@ -46,7 +50,11 @@ import { scrollToTop } from "../utils/scrollHelpers";
 import { getEventTarget } from "../utils/events";
 import { applyLaunchGateSetupOutcome, resolveSaveSetupOutcome } from "../utils/saveSetup";
 import { handleButtonDownloadFailure } from "../utils/downloadFailure";
-import { showAdoptExistingModal } from "./AdoptExistingModal";
+import { comparisonForCandidate, showAdoptExistingModal } from "./AdoptExistingModal";
+import { showAdoptCandidateModal } from "./AdoptCandidateModal";
+import { showAdoptCollisionModal } from "./AdoptCollisionModal";
+import { showAdoptUnusableModal } from "./AdoptUnusableModal";
+import { showAdoptVanishedModal } from "./AdoptVanishedModal";
 import { showCoreChangeModal } from "./CoreChangeModal";
 import { handleConflicts } from "./SyncConflictModal";
 import { showOfflineDriftModal } from "./OfflineDriftModal";
@@ -63,6 +71,10 @@ import type {
   DownloadCompleteEvent,
   DownloadFailedEvent,
   TargetOccupiedResult,
+  CandidatesFoundResult,
+  UnusableNamesakeResult,
+  CandidateVanishedResult,
+  CollisionChoice,
   UninstallProgressEvent,
 } from "../types";
 import { SAVEFILES_IN_CONTENT_DIR_REASON } from "../types";
@@ -163,6 +175,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // the cached detail's single `stat`, so the button says so instead of offering
   // an undifferentiated Download; the comparison itself arrives at click time.
   const [targetOccupied, setTargetOccupied] = useState(false);
+  const [candidatePresent, setCandidatePresent] = useState(false);
   // Per-file progress of an in-flight uninstall (multi-file ROMs only).
   const [uninstallProgress, setUninstallProgress] = useState<{ removed: number; total: number } | null>(null);
   // Set synchronously before the uninstall's first await, so a second press
@@ -173,20 +186,26 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
-   * Enter the download state, restating whether something occupies this ROM's
-   * location.
+   * Enter the download state, restating what the backend found on disk for this
+   * ROM: content at its own location, and/or a candidate elsewhere in the
+   * platform folder under another name.
    *
-   * The single door into that state, because `targetOccupied` decides the
-   * button's LABEL and the value only ever comes from a `stat` the backend took
-   * — so it cannot be derived here, and it goes stale the moment a transfer
+   * The single door into that state, because between them the two decide the
+   * button's LABEL and both values only ever come from reads the backend took —
+   * so neither can be derived here, and both go stale the moment a transfer
    * ends, a version switch rebinds the shortcut, or an uninstall deletes what
-   * the stat found. Defaulting to `false` makes forgetting it under-claim
+   * was found. Defaulting to `false` makes forgetting either one under-claim
    * ("Download" for content that is there, which the gate then catches at click
    * time) rather than over-claim ("Use Existing Files" for content that is gone).
-   * The two callers that know the answer pass it.
+   * The two callers that know the answers pass them.
+   *
+   * They stay separate rather than folding into one flag because they are
+   * different states: an occupied target is compared where it lies, a candidate
+   * is renamed into place, and only the first survives a re-`stat` of one path.
    */
-  const enterDownloadState = (occupied = false) => {
+  const enterDownloadState = (occupied = false, candidate = false) => {
     setTargetOccupied(occupied);
+    setCandidatePresent(candidate);
     setState("download");
   };
 
@@ -293,7 +312,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
           }
         } else {
           detach(debugLog(`CustomPlayButton: -> download`));
-          enterDownloadState(cached.target_path_occupied === true);
+          enterDownloadState(cached.target_path_occupied === true, cached.adoption_candidate_present === true);
           await rehydrateInflightDownload(rid);
         }
       } catch (e) {
@@ -377,11 +396,14 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       if (romId !== romIdRef.current) return;
       // The one site that cannot go through `enterDownloadState`: the transition
       // is conditional, so as not to override the uninstalling animation when we
-      // triggered the removal ourselves. Clearing the flag is unconditional
-      // either way — the uninstall deleted exactly the content the stat found.
+      // triggered the removal ourselves. Clearing the flags is unconditional
+      // either way — the uninstall deleted exactly the content the stat found,
+      // and the candidate answer was read at page-open against a folder this
+      // removal has just changed.
       setState((prev) => (prev === "uninstalling" ? prev : "download"));
       setActionPending(false);
       setTargetOccupied(false);
+      setCandidatePresent(false);
     };
     globalThis.addEventListener("romm_rom_uninstalled", onUninstall);
 
@@ -411,7 +433,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         // outgoing version's answer says nothing about this one's location.
         setDlProgress(null);
         setActionPending(false);
-        enterDownloadState(cached.target_path_occupied === true);
+        enterDownloadState(cached.target_path_occupied === true, cached.adoption_candidate_present === true);
       }
     };
 
@@ -1012,11 +1034,34 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     }
   };
 
-  const handleDownload = async (replaceExisting = false) => {
+  const handleDownload = async (
+    replaceExisting = false,
+    discardPath?: string,
+    collisionChoice: CollisionChoice | null = null,
+  ) => {
     if (!romId || actionPending) return;
     setActionPending(true);
     try {
-      const result = await startDownload(romId, replaceExisting);
+      // Only a FIRST press reports what the page found. Every re-entry carries
+      // `replace`, which is the user's answer to a refusal the page's report
+      // already produced — reporting it again would ask the backstop to fire on
+      // an answer it just received.
+      const result = await startDownload(
+        romId,
+        replaceExisting,
+        discardPath ?? null,
+        collisionChoice,
+        !replaceExisting && candidatePresent,
+      );
+      if (isRenameCollisions(result)) {
+        // Carrying the discarded candidate's saves would land on names that are
+        // taken. Nothing has been removed or moved; the one answer covers the
+        // whole set, exactly as it does on the adopt exit.
+        setActionPending(false);
+        const answer = await showAdoptCollisionModal(result.collisions);
+        if (answer !== "cancel") await handleDownload(replaceExisting, discardPath, answer);
+        return;
+      }
       if (isTargetOccupied(result)) {
         // Nothing was written and no transfer started — the backend refused so
         // the user can choose (#260). Back to idle before the dialog opens,
@@ -1025,6 +1070,34 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         setTargetOccupied(true);
         setActionPending(false);
         await resolveOccupiedTarget(romId, result);
+        return;
+      }
+      if (isCandidatesFound(result)) {
+        // Same refusal contract, different subject: the target path was free and
+        // the game is on disk under another name. Recorded, because the backend
+        // just proved it — without this a cancelled dialog leaves the button
+        // reading "Download" for content it has confirmed is there.
+        setCandidatePresent(true);
+        setActionPending(false);
+        await resolveCandidates(romId, result);
+        return;
+      }
+      if (isUnusableNamesake(result)) {
+        // A namesake nothing can adopt — the other shape, or a link. Neither
+        // flag moves: no content occupies this ROM's own path, and nothing here
+        // is a candidate — what the page said stands, and the honest answer to
+        // "is this game here" is the dialog the user is about to get.
+        setActionPending(false);
+        await resolveUnusable(result);
+        return;
+      }
+      if (isCandidateVanished(result)) {
+        // The backstop fired: this page said a copy was here and the search can
+        // name nothing. The flag goes, because the one thing now known is that
+        // what the page found is not there to be used.
+        setCandidatePresent(false);
+        setActionPending(false);
+        await resolveVanished(result);
         return;
       }
       if (!result.success) {
@@ -1052,15 +1125,68 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     }
   };
 
+  // Offer what the search found. One candidate needs no list — there is nothing
+  // to choose between — so it goes straight to the comparison. Both download
+  // exits re-enter `handleDownload` with `replace`, which is what tells the
+  // backend to skip the search rather than refuse a second time.
+  //
+  // They differ in what they hand back. Choosing a candidate and then Download
+  // Instead names it, because the confirmation the user just answered says that
+  // file is deleted. "None of These" names nothing: the user declined every
+  // candidate rather than picking one, so none of them may be removed.
+  const resolveCandidates = async (rid: number, found: CandidatesFoundResult) => {
+    let candidate = found.candidates[0];
+    if (candidate === undefined) return;
+    if (found.candidates.length > 1) {
+      const picked = await showAdoptCandidateModal(found);
+      if (picked.kind === "cancel") return;
+      if (picked.kind === "download") {
+        await handleDownload(true);
+        return;
+      }
+      candidate = picked.candidate;
+    }
+    const choice = await showAdoptExistingModal(rid, comparisonForCandidate(candidate, found.incoming), candidate.path);
+    if (choice === "replace") {
+      await handleDownload(true, candidate.path);
+      return;
+    }
+    if (choice === "adopt") {
+      await handleAdopt(rid, candidate.path);
+    }
+  };
+
+  // Offer the only two honest exits for a namesake that cannot become this
+  // install: fetch the server's copy alongside it, or stop. `replace` is what
+  // carries the answer — it is what tells the backend the search has been
+  // answered — and no candidate path goes with it, because nothing on disk is
+  // being taken over or removed.
+  const resolveUnusable = async (unusable: UnusableNamesakeResult) => {
+    if ((await showAdoptUnusableModal(unusable)) === "download") await handleDownload(true);
+  };
+
+  // The backstop's two exits. Nothing is named, because nothing was found:
+  // `replace` here only says the search has been answered.
+  const resolveVanished = async (vanished: CandidateVanishedResult) => {
+    if ((await showAdoptVanishedModal(vanished)) === "download") await handleDownload(true);
+  };
+
   // Record what is on disk as the install, then write the launch command onto
   // the shortcut exactly as the download-complete listener does — an adopted
   // install is an install (ADR-0028), so it must be as launchable as a
   // downloaded one the moment the dialog closes.
-  const handleAdopt = async (rid: number) => {
+  const handleAdopt = async (rid: number, candidatePath?: string, collisionChoice: CollisionChoice | null = null) => {
     setActionPending(true);
     const admission = capturePruneLeaseAdmission(leaseOwner);
     try {
-      const result = await adoptExistingRom(rid);
+      const result = await adoptExistingRom(rid, candidatePath ?? null, collisionChoice);
+      if (isRenameCollisions(result)) {
+        // Nothing has moved. The one answer covers the whole set, and a dismissed
+        // dialog leaves the game exactly as it was.
+        const answer = await showAdoptCollisionModal(result.collisions);
+        if (answer !== "cancel") await handleAdopt(rid, candidatePath, answer);
+        return;
+      }
       if (!result.success) {
         showToast(result.message || "Couldn't use the existing files");
         return;
@@ -1080,6 +1206,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         );
       }
       setTargetOccupied(false);
+      setCandidatePresent(false);
       setState("play");
       globalThis.dispatchEvent(new CustomEvent("romm_data_changed", { detail: { type: "rom_adopted", rom_id: rid } }));
       showToast(`${romName || "ROM"} is ready to play`);
@@ -1385,12 +1512,24 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       dlLabel = formatProgress(dlProgress.bytesDownloaded, dlProgress.totalBytes);
     } else if (actionPending) {
       dlLabel = "Starting...";
-    } else if (targetOccupied) {
+    } else if (targetOccupied || candidatePresent) {
       // Pressing opens the comparison dialog (#260), so the label names that
       // action rather than a state: nothing is installed here, and a label
       // describing the files would read as "installed and ready". The verb
       // matches the dialog's own adopt button ("Use These Files") so the button
       // promises exactly what the dialog then offers.
+      //
+      // Both states earn the label. The user should not have to press Download
+      // to learn their own copy is sitting in the folder under another name.
+      //
+      // `candidatePresent` can overpromise: the page and the click-time search
+      // read the same folder knowing different things about it, and have
+      // disagreed on the served shape, the platform folder, the matched name and
+      // the listing itself. What the label promises is still kept — pressing
+      // ends in a dialog either way — but not because those differences are
+      // known to run one way. It holds because the search's last answer is a
+      // backstop: this flag is sent back on the press, and a page that reported
+      // a copy can never end in a silent download.
       dlLabel = "Use Existing Files";
     } else {
       dlLabel = "Download";

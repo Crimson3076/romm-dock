@@ -45,6 +45,11 @@ import type {
   CopySaveToSlotStatus,
   ListDevicesResponse,
   TargetOccupiedResult,
+  CandidatesFoundResult,
+  UnusableNamesakeResult,
+  CandidateVanishedResult,
+  RenameCollisionsResult,
+  CollisionChoice,
   AdoptResult,
   VerifyContentResult,
 } from "../types";
@@ -76,6 +81,42 @@ export function isCallableFailure(value: object): value is CallableFailure {
  */
 export function isTargetOccupied(value: object): value is TargetOccupiedResult {
   return "reason" in value && (value as { reason?: unknown }).reason === "target_occupied";
+}
+
+/**
+ * Narrow a `start_download` reply to the refusal that carries the short list of
+ * files on this device that could be this game under another name (#260). Keyed
+ * on the `reason` slug for the same reason `isTargetOccupied` is.
+ */
+export function isCandidatesFound(value: object): value is CandidatesFoundResult {
+  return "reason" in value && (value as { reason?: unknown }).reason === "adoption_candidates";
+}
+
+/**
+ * Narrow a `start_download` reply to the refusal naming entries that carry this
+ * game's name and cannot become its install — the other shape, or a symlink
+ * (#260). Same slug-keyed test as its siblings; what it offers is a second copy
+ * or a stop.
+ */
+export function isUnusableNamesake(value: object): value is UnusableNamesakeResult {
+  return "reason" in value && (value as { reason?: unknown }).reason === "unusable_namesake";
+}
+
+/**
+ * Narrow a `start_download` reply to the backstop: the page reported a copy and
+ * the click-time search found nothing it could name (#260). Last in the chain,
+ * so a more specific refusal always wins over it.
+ */
+export function isCandidateVanished(value: object): value is CandidateVanishedResult {
+  return "reason" in value && (value as { reason?: unknown }).reason === "candidate_vanished";
+}
+
+/**
+ * Narrow an `adopt_existing_rom` reply to the refusal that lists every name the
+ * rename needs and cannot have. Nothing was moved when this comes back.
+ */
+export function isRenameCollisions(value: object): value is RenameCollisionsResult {
+  return "reason" in value && (value as { reason?: unknown }).reason === "rename_collisions";
 }
 
 /**
@@ -147,6 +188,25 @@ export interface CachedGameDetail extends BiosAnswer {
   // is "nothing found or nothing knowable"; the full comparison runs at click
   // time (ADR-0028).
   target_path_occupied?: boolean;
+  /**
+   * Whether the platform folder holds an entry that could be this game under
+   * another name (#260). Read at page open so the button can say so without the
+   * user pressing Download to find out. Distinct from `target_path_occupied`:
+   * that one is content at this ROM's own location, which wins when both are
+   * true.
+   *
+   * The page and the click-time search answer from different knowledge — a
+   * `roms` row against the server payload — and are not held to agreeing; they
+   * have diverged on the served shape, the platform folder, the matched name and
+   * the directory listing itself. So this can be true for something the search
+   * then finds unusable, and the label overpromises.
+   *
+   * What still holds is what the label actually promises: pressing ends in an
+   * answer. Every way the search can find less than this did is a refusal that
+   * says so, and the last of them is a backstop for the ways nobody has thought
+   * of yet — which is why this value is sent back on the press.
+   */
+  adoption_candidate_present?: boolean;
 }
 
 // get_cached_game_detail wiring lives in utils/cachedGameDetailStore.ts so the
@@ -184,15 +244,54 @@ export const clearSyncCache = callable<[], BackendResult>("clear_sync_cache");
 export const getSyncStats = callable<[], SyncStats>("get_sync_stats");
 /**
  * Start a download. `replaceExisting` is the user's answer to a
- * `target_occupied` refusal: pass `true` only after the second confirmation
- * that names the deletion, because the backend then clears whatever is in the
- * way before fetching (ADR-0028).
+ * `target_occupied` or `adoption_candidates` refusal: pass `true` only after the
+ * second confirmation that names the deletion, because the backend then clears
+ * what the user was shown before fetching (ADR-0028).
+ *
+ * `candidatePath` names that content when it sat elsewhere in the platform
+ * folder under another name — the backend removes it and carries its saves to
+ * the canonical name, which is exactly what the confirmation promises. Pass
+ * `null` for a target-path replace, and for "None of These": there the user
+ * declined every candidate rather than choosing one, so nothing may be deleted
+ * on their behalf. `collisionChoice` answers the save-collision dialog that
+ * carry can raise, and stays `null` until that dialog has been shown.
+ *
+ * `true` is also how the two "cannot use what is here" refusals are answered —
+ * `unusable_namesake` and `candidate_vanished`. There the user is choosing to
+ * add a second copy, and no `candidatePath` goes with it, because nothing on
+ * disk is being taken over or removed.
+ *
+ * `pageSawCandidate` is not an answer but a report — whether the game page told
+ * this user a copy was on the device. The backend's last check is a backstop
+ * over it, so a page that found a copy can never end in a silent download.
  */
-export const startDownload = callable<[number, boolean], BackendResult | TargetOccupiedResult>("start_download");
-/** Record content already on disk as this ROM's install — nothing is fetched. */
-export const adoptExistingRom = callable<[number], AdoptResult>("adopt_existing_rom");
-/** Hash what is on disk and compare it against RomM's checksums. User-triggered only. */
-export const verifyExistingContent = callable<[number], VerifyContentResult>("verify_existing_content");
+export const startDownload = callable<
+  [number, boolean, string | null, CollisionChoice | null, boolean],
+  | BackendResult
+  | TargetOccupiedResult
+  | CandidatesFoundResult
+  | UnusableNamesakeResult
+  | CandidateVanishedResult
+  | RenameCollisionsResult
+>("start_download");
+/**
+ * Record content already on disk as this ROM's install — nothing is fetched.
+ *
+ * `candidatePath` names an entry elsewhere in the platform folder when the user
+ * picked one the search offered; it is renamed to the canonical name, saves and
+ * savestates with it. `null` adopts what is at the game's own location.
+ * `collisionChoice` answers the second dialog and stays `null` until that dialog
+ * has been shown — the backend refuses rather than guessing.
+ */
+export const adoptExistingRom = callable<[number, string | null, CollisionChoice | null], AdoptResult>(
+  "adopt_existing_rom",
+);
+/**
+ * Hash what is on disk and compare it against RomM's checksums. User-triggered
+ * only. `candidatePath` picks the entry to check; `null` checks the game's own
+ * location.
+ */
+export const verifyExistingContent = callable<[number, string | null], VerifyContentResult>("verify_existing_content");
 export const cancelDownload = callable<[number], BackendResult>("cancel_download");
 export const pauseDownload = callable<[number], BackendResult>("pause_download");
 /**
