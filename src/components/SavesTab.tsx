@@ -14,9 +14,10 @@ import { useState, useEffect, useRef, createElement, FC } from "react";
 import { DialogButton, Focusable, showModal } from "@decky/ui";
 import { switchSlot, getVersionList, checkLocalDrift, debugLog, logWarn } from "../api/backend";
 import { getRommConnectionState, onRommConnectionChange, reportServerReachable } from "../utils/connectionState";
-import type { SaveStatus, SyncConflict, SaveSlotSummary } from "../types";
+import type { SaveStatus, SyncConflict, SaveSlotSummary, LastKnownSlots } from "../types";
 import { scrollFocusedToCenter } from "../utils/scrollHelpers";
 import { MUTED_COLOR } from "./saves/helpers";
+import { renderLastKnownSlots } from "./saves/LastKnownSlotList";
 import { NewSlotModal } from "./saves/NewSlotModal";
 import { SlotPanel } from "./saves/SlotPanel";
 import { ConnectingIndicator } from "./saves/ConnectingIndicator";
@@ -36,6 +37,9 @@ interface SavesTabProps {
    *  tab is what would otherwise render it as a fact (#1747). */
   activeSlotKnown: boolean;
   availableSlots: SaveSlotSummary[];
+  /** The slots as of the last contact, shown only while no live answer has
+   *  landed — read-only, and never a source for `activeSlot` (#1755). */
+  lastKnownSlots: LastKnownSlots | null;
   slotsLoading: boolean;
   onSlotSwitched: (newSlot: string, newStatus: SaveStatus) => void;
 }
@@ -48,6 +52,7 @@ export const SavesTab: FC<SavesTabProps> = ({
   activeSlot,
   activeSlotKnown,
   availableSlots,
+  lastKnownSlots,
   slotsLoading,
   onSlotSwitched,
 }) => {
@@ -277,6 +282,12 @@ export const SavesTab: FC<SavesTabProps> = ({
     );
   };
 
+  // --- The slots as of the last contact ---
+  // Only while nothing live has landed, and only as history: the rows are not
+  // pressable and nothing here feeds `activeSlot`, so the tab still names no
+  // slot as the current one (#1747, #1755).
+  const lastKnownSection = !activeSlotKnown && lastKnownSlots ? renderLastKnownSlots(lastKnownSlots) : null;
+
   // --- Save files with no slot panel to live under ---
   // Legacy mode has no slot; an unanswered active slot has none this tab may
   // name (#1747). Either way the locally tracked files are still what the user
@@ -317,6 +328,9 @@ export const SavesTab: FC<SavesTabProps> = ({
     // Save files that belong to no slot panel — above the panels, if any.
     unslottedFilesSection,
 
+    // The last contact's slots, where there are no live panels to show.
+    lastKnownSection,
+
     // Slot panels — skip the "" (legacy) panel when already in legacy mode
     ...sorted
       .filter((s) => activeSlot !== null || s.slot !== "")
@@ -356,6 +370,11 @@ export const SavesTab: FC<SavesTabProps> = ({
           noFocusRing: false,
           onFocus: scrollFocusedToCenter,
           onClick: handleNewSlot,
+          // Creating a slot is a server write, so offline it can only end in the
+          // failure the banner above already predicts — after the full retry
+          // ladder. The sibling actions on this tab (slot switch, copy-to-slot)
+          // are disabled the same way.
+          disabled: isOffline,
         },
         "+ New Slot",
       ),
