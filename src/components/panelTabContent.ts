@@ -10,17 +10,15 @@
  */
 
 import { createElement } from "react";
-import type { Dispatch, SetStateAction } from "react";
 import { GameInfoTab } from "./GameInfoTab";
 import { SavesTab } from "./SavesTab";
 import { SlotSetupWizard } from "./SlotSetupWizard";
-import type { PanelState } from "./panelState";
+import type { PanelState, RomBinding } from "./panelState";
 
 interface TabContentContext {
   readonly appId: number;
-  readonly romId: number;
+  readonly binding: RomBinding;
   readonly state: PanelState;
-  readonly setState: Dispatch<SetStateAction<PanelState>>;
 }
 
 /** Tell every surface showing this ROM that its save-sync facts moved. */
@@ -33,12 +31,9 @@ function announceSaveSyncChange(romId: number): void {
 }
 
 /** Build the pane for the active tab, or null when the active tab builds none. */
-export function buildTabContent({
-  appId,
-  romId,
-  state,
-  setState,
-}: TabContentContext): ReturnType<typeof createElement> | null {
+export function buildTabContent({ appId, binding, state }: TabContentContext): ReturnType<typeof createElement> | null {
+  const romId = binding.romId;
+
   if (state.activeTab === "info") {
     return createElement(GameInfoTab, {
       key: "tab-info",
@@ -59,7 +54,12 @@ export function buildTabContent({
     return createElement(SlotSetupWizard, {
       romId,
       onComplete: () => {
-        setState((prev) => ({ ...prev, slotConfirmed: true }));
+        // Bound for the same reason the slot switch below is: the wizard calls
+        // this after awaiting the confirm, and it is unkeyed too. `slotConfirmed`
+        // is the gate deciding which of the two panes this function builds, so a
+        // stale `true` puts a saves tab in front of a version whose tracking is
+        // not configured (#1754).
+        binding.write((prev) => ({ ...prev, slotConfirmed: true }));
         announceSaveSyncChange(romId);
       },
     });
@@ -76,7 +76,12 @@ export function buildTabContent({
     lastKnownSlots: state.lastKnownSlots,
     slotsLoading: state.slotsLoading,
     onSlotSwitched: (newSlot, newStatus) => {
-      setState((prev) => ({
+      // `SavesTab` calls this after awaiting the switch, and gets no React key
+      // of its own: it survives the version switch that re-points the panel to
+      // another rom_id under the same appId, still holding the callback it was
+      // rendered with. Only the ROM this pane was built for separates that
+      // answer from one about the version now showing (#1754).
+      binding.write((prev) => ({
         ...prev,
         activeSlot: newSlot === "" ? null : newSlot,
         // A completed switch is an answer about the active slot in its own

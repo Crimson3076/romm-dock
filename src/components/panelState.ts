@@ -86,11 +86,17 @@ export interface PanelState {
 /** A ROM identity paired with the only writer allowed to fold an answer read for
  *  it into panel state.
  *
- *  `write` drops the update when the panel that issued the read is gone, and
- *  when the panel has been re-bound to a different ROM since. Those are two
- *  separate ends, and neither covers the other: a version switch re-binds the
- *  shortcut to a new rom_id without changing the appId, so the `[appId]` effect
- *  never re-runs and its `cancelled` flag never fires for it (#1713).
+ *  What the TYPE promises is one end: `write` drops the update once the panel
+ *  has been re-bound to a different ROM. That is the end a version switch needs,
+ *  because it re-binds the shortcut to a new rom_id without changing the appId,
+ *  so the `[appId]` effect never re-runs and its `cancelled` flag never fires
+ *  for it (#1713).
+ *
+ *  Whether a binding ALSO drops the update once the panel that issued the read
+ *  is gone is the constructor's to decide, and the two ends do not cover each
+ *  other. A read that outlives its effect run needs both, so hand it a
+ *  {@link bindRom} binding — a {@link bindRomInState} one carries the rom end
+ *  alone and would let that run's answer land.
  *
  *  Carrying the ROM alongside its writer is what keeps the two from drifting
  *  apart — a read issued off `binding.romId` cannot be folded in through a
@@ -118,6 +124,33 @@ export function bindRom(
       if (cancelled() || romIdRef.current !== romId) return;
       setter(update);
     },
+  };
+}
+
+/** Bind a write to `romId` against the identity carried by the state it
+ *  updates — the binding for a writer built during RENDER, which is what the
+ *  active tab's panes get handed.
+ *
+ *  Neither of {@link bindRom}'s two ends is reachable from there, each for its
+ *  own reason. `romIdRef` cannot be passed to a callee during render at all
+ *  (`react-hooks/refs`), and `prev.romId` is the same answer: the panel installs
+ *  it and re-points it in the same synchronous block as the ref, so the two can
+ *  only disagree inside that block — never across the await a stale answer
+ *  arrives from. `cancelled` belongs to a single run of the `[appId]` effect,
+ *  and a render-scoped writer could only reach it through a ref that every new
+ *  run resets — which would answer false again for the PREVIOUS run's load and
+ *  event lane, letting back in exactly the writes `bindRom` exists to refuse.
+ *  What its absence leaves uncovered is the window between an appId change and
+ *  the new load installing its ROM: the state still names the old ROM there, so
+ *  a write lands — into state that same load then replaces whole. */
+export function bindRomInState(romId: number, setter: Dispatch<SetStateAction<PanelState>>): RomBinding {
+  return {
+    romId,
+    write: (update) =>
+      setter((prev) => {
+        if (prev.romId !== romId) return prev;
+        return typeof update === "function" ? update(prev) : update;
+      }),
   };
 }
 
