@@ -143,6 +143,19 @@ interface Entry {
    *  and can finish in either order, so a load that no longer holds this number
    *  has been overtaken and writes nothing. */
   loadSeq: number;
+  /** Whether the newest load settled by throwing — a load a later one overtook
+   *  answers for nothing, however it settled. Cleared the moment the next load
+   *  is issued, so it is never set while one is in flight to answer the question.
+   *  It is the only thing that tells an entry whose read failed apart from one
+   *  that has no identity to install (an appId RomM does not know) or has not
+   *  resolved one yet — the shown state is the same in all three. Both recovery
+   *  lanes hang on it: {@link scheduleFailedLoadRetry} and {@link
+   *  reloadTriggeredBy}. */
+  loadFailed: boolean;
+  /** Whether the one timed retry has been scheduled. Spent for the entry's
+   *  lifetime at the moment it is scheduled, whatever that retry then answers —
+   *  see {@link scheduleFailedLoadRetry}. */
+  timedRetryUsed: boolean;
   saveStatusInFlight: InFlightSaveStatus | null;
   detachListeners: () => void;
 }
@@ -189,6 +202,8 @@ function openEntry(appId: number): Entry {
     listeners: new Set(),
     generation: 0,
     loadSeq: 0,
+    loadFailed: false,
+    timedRetryUsed: false,
     saveStatusInFlight: null,
     detachListeners: () => {},
   };
@@ -256,6 +271,10 @@ function writerForRom(entry: Entry, generation: number, romId: number): Dispatch
 async function loadDetail(appId: number, entry: Entry): Promise<void> {
   const generation = entry.generation;
   const loadSeq = ++entry.loadSeq;
+  // Ordered by taking the sequence number rather than by a fence: the load
+  // clearing this is the newest one there is, so a load in flight is never
+  // recorded as a failure a trigger below would retry.
+  entry.loadFailed = false;
   // Two separate ends: the generation covers an entry nobody is showing any
   // more, the sequence a load a later one has moved past.
   const cancelled = () => entry.generation !== generation || entry.loadSeq !== loadSeq;
@@ -344,6 +363,14 @@ async function loadDetail(appId: number, entry: Entry): Promise<void> {
     // load leaves every subscribed surface stale either way, so surface at warn
     // level (debugLog is dropped at the default log level).
     logError(`gameDetailStore: load error: ${e}`);
+    // Fenced like every write above — this entry's generation and this load's
+    // sequence — and bound to no rom: the read threw, so there is no rom this
+    // failure is about. A load a later one has moved past says nothing about
+    // whether the entry can load; the newer load's own outcome does.
+    if (!cancelled()) {
+      entry.loadFailed = true;
+      scheduleFailedLoadRetry(appId, entry);
+    }
   }
 }
 
@@ -576,6 +603,76 @@ async function handleCoreChange(entry: Entry): Promise<void> {
   }));
 }
 
+/** How long a failed load waits before its one retry. The plugin's own
+ *  backend-readiness ladders — `RETRY_DELAYS` in index.tsx (#1203) and
+ *  `CONNECTION_RETRY_DELAYS` in utils/connectionProbe.ts (#1045) — both go 2000,
+ *  5000, so 2000 is the interval this project has already recorded as regularly
+ *  too early. This lane has one attempt to spend rather than five, and a row
+ *  still filling after five seconds reads no more broken than after two. */
+const FAILED_LOAD_RETRY_MS = 5000;
+
+/**
+ * Schedule the one timed re-derive of an entry whose load threw.
+ *
+ * The second occasion on {@link Entry.loadFailed}, next to the install-state
+ * triggers below. It exists because those triggers miss the case that produces
+ * the failure: the bridge rejects the read — plugin_loader restarting under the
+ * page, a closed WebSocket — while a user looking at a game page and doing
+ * nothing else produces no download, no uninstall and no adoption for the entry
+ * to take its cue from.
+ *
+ * One TIMER, for the entry's whole lifetime — {@link Entry.timedRetryUsed} is
+ * spent where it is scheduled, so a retry that throws too schedules nothing
+ * further, and a timer already pending when the event lane re-derives is not
+ * withdrawn (that entry can see both). One rather than a ladder because the
+ * plugin runs a readiness ladder at init already; a per-page lane that grew one
+ * of its own would be racing it, page by page.
+ *
+ * Inert unless the entry is still the one this was scheduled for and is still
+ * failed. The flag is cleared where a load is ISSUED, so an entry the event lane
+ * has already recovered — or is mid-recovery on — reads nothing here; and the
+ * generation covers the page closed in the meantime, so a retry falling due
+ * after `closeEntry` finds a generation the entry has moved past.
+ */
+function scheduleFailedLoadRetry(appId: number, entry: Entry): void {
+  if (entry.timedRetryUsed) return;
+  entry.timedRetryUsed = true;
+  const generation = entry.generation;
+  setTimeout(() => {
+    if (entry.generation !== generation || !entry.loadFailed) return;
+    detach(reloadDetail(appId, entry));
+  }, FAILED_LOAD_RETRY_MS);
+}
+
+/**
+ * Whether an install-state event about `eventRomId` re-derives this entry.
+ *
+ * Normally that is the entry's own ROM and nothing else. The second arm is for
+ * the entry that has no identity to match against because its load threw: the
+ * first load installs the identity all three triggers are gated on, so without
+ * this arm a first load that failed would leave them nothing to match (#1676).
+ *
+ * With no identity the entry cannot tell whether the event is about its game, so
+ * it re-reads on any of them. The cost is bounded by what a user can do: one
+ * network-free `get_cached_game_detail` per install-state event, and none at all
+ * while a load is in flight or once one has answered.
+ *
+ * This lane is unbounded in time and bounded per event; {@link
+ * scheduleFailedLoadRetry} is the other way round, and covers the page where the
+ * user does nothing at all. Two things neither covers. A failure that outlives
+ * the one timed retry on a page nothing then happens on: the timed lane is spent
+ * and no event arrives, so the entry stays on the neutral default until a
+ * version switch or the next page visit. And a read that HANGS rather than
+ * rejects: `callable()` carries no timeout of its own — which is why index.tsx
+ * and utils/connectionProbe.ts race every attempt against `CALLABLE_TIMEOUT` —
+ * and this load awaits it bare, so the catch never runs, the flag both lanes
+ * read is never set, and neither fires.
+ */
+function reloadTriggeredBy(entry: Entry, eventRomId: number | undefined): boolean {
+  if (entry.state.romId !== null) return eventRomId === entry.state.romId;
+  return entry.loadFailed;
+}
+
 function attachListeners(appId: number, entry: Entry): () => void {
   const onDataChanged = (e: Event) => {
     detach(
@@ -602,7 +699,7 @@ function attachListeners(appId: number, entry: Entry): () => void {
               // Adoption writes an install record without a download, so no
               // `download_complete` fires — but `installed` and `fs_size_bytes`
               // changed just the same and the cached detail must be dropped.
-              if (detail.rom_id === entry.state.romId) await reloadDetail(appId, entry);
+              if (reloadTriggeredBy(entry, detail.rom_id)) await reloadDetail(appId, entry);
               break;
           }
         } catch (err) {
@@ -618,13 +715,13 @@ function attachListeners(appId: number, entry: Entry): () => void {
   // whole entry re-derived — reading it back inside the 3s TTL would return the
   // pre-change state.
   const onDownloadComplete = addEventListener<[DownloadCompleteEvent]>("download_complete", (evt) => {
-    if (evt.rom_id !== entry.state.romId) return;
+    if (!reloadTriggeredBy(entry, evt.rom_id)) return;
     detach(reloadDetail(appId, entry));
   });
 
   const onUninstalled = (e: Event) => {
     const romId = (e as CustomEvent).detail?.rom_id;
-    if (romId !== entry.state.romId) return;
+    if (!reloadTriggeredBy(entry, romId)) return;
     detach(reloadDetail(appId, entry));
   };
   globalThis.addEventListener("romm_rom_uninstalled", onUninstalled);
