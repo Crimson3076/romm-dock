@@ -36,7 +36,13 @@ that treats a file as optional) clears the warning, while switching to a core th
 A BIOS warning only ever disappears on an **answer**. When the plugin cannot work out the requirement — most often right
 after a BIOS download or delete, before the state has been read again — it keeps showing the last status it knew rather
 than reporting "no BIOS needed". So a check that could not be completed never quietly clears a missing-BIOS warning and
-lets the game launch without its files; it leaves the warning where it was until a check gets through.
+lets the game launch without its files; it leaves the warning where it was.
+
+It does not leave it there indefinitely, though. Whenever the game detail page is shown a BIOS state it could not work
+out — when the page opens, after switching the emulator core, after switching to another version of the game — it asks
+again in the background and fills the answer in a moment later. So a game opened while its requirement is still unread
+gets its BIOS tab a beat after the rest of the page, and a core or version switch settles on the new core's or new
+version's readiness rather than the one before it.
 
 An unreachable RomM server usually does **not** put the plugin in that position: it falls back to its built-in registry
 of known BIOS files and still tells you what the platform needs. Only a platform that registry does not cover depends

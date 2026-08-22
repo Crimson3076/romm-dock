@@ -16,6 +16,7 @@ import {
   getCachedGameDetail,
   getRomMetadata,
   checkPlatformBios,
+  getBiosStatus,
   getPlatformCoreInfo,
   getSaveStatus,
   isCallableFailure,
@@ -27,6 +28,7 @@ import { detach } from "../utils/detach";
 import {
   bindRom,
   biosFieldsFromCache,
+  refreshBiosIfStale,
   refreshPanelCoreInfo,
   refreshCoverArtInBackground,
   refreshInstalledRomInBackground,
@@ -174,12 +176,26 @@ async function handleCoreChange(
     getPlatformCoreInfo(binding.romId).catch((): CoreInfo | null => null),
     getCachedGameDetail(ctx.appId),
   ]);
-  if (ctx.cancelled() || !cached.found) return;
+  // A version switch landing inside the two reads above re-keys the panel, and
+  // everything this handler still has to say is then about the ROM it moved off.
+  // The rom binding already refuses the write, but it cannot give back the
+  // sequence ticket the re-read below would claim on the previous version's
+  // behalf — and that ticket would fence the switch's OWN re-read, dropping the
+  // answer the new version's requirement depends on with nothing left to
+  // re-issue it. `cancelled` does not cover this: a switch re-keys the rom
+  // without changing the appId (#1713).
+  if (ctx.cancelled() || ctx.romIdRef.current !== rid || !cached.found) return;
   // A detail carrying no BIOS answer leaves the shown status alone — the
   // core switch invalidated the cached detail, but a cold firmware cache
   // makes the re-read a non-answer rather than a "needs none" (#1693).
   const biosFields = biosFieldsFromCache(cached);
   binding.write((prev) => ({ ...prev, ...biosFields, coreInfo: coreInfo ?? prev.coreInfo }));
+  // The core the requirement is computed against just changed, so a re-read that
+  // could not answer leaves the PREVIOUS core's requirement on the page. Going
+  // back for it is what keeps that from standing until the next page open
+  // (#1752). Read directly: this handler runs because the requirement may have
+  // just changed, so it must not join a read issued before the change.
+  await refreshBiosIfStale(cached, binding, ctx.readSeqs, getBiosStatus);
 }
 
 async function handleVersionSwitched(
@@ -263,6 +279,18 @@ async function handleVersionSwitched(
   if (newRomId) {
     const binding = bindCurrentRom(ctx, newRomId);
     const reads = [
+      // The switched-to version's requirement is its own, so a detail that could
+      // not answer leaves the PREVIOUS version's on the page — the one case
+      // where keeping the shown status is showing another ROM's (#1752).
+      //
+      // Read directly even though the store's own `version_switched` load reads
+      // this same new rom_id microtasks away, which a join would collapse: a
+      // switch to a version the page showed earlier can join the request opened
+      // back then, and a BIOS download or a core pin since has made that answer
+      // wrong. Both page-open lanes take that residual (`api/sharedReads.ts`
+      // documents it) because they pay a duplicate on every open; one switch is
+      // the cheaper side of the same trade.
+      refreshBiosIfStale(cached, binding, ctx.readSeqs, getBiosStatus),
       refreshCoverArtInBackground(binding),
       // The BIOS tab's "Active Core" row and its per-file core lines come
       // from the dedicated core-info path (#923), keyed on rom_id so a
