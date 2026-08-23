@@ -224,7 +224,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
     };
   }, []);
 
-  // Clear transition timers (dl_complete→play, uninstalling→download) on unmount
+  // Clear a pending completion-flash timer on unmount
   useEffect(() => {
     return () => {
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
@@ -327,6 +327,18 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
 
   // Listen for download events
   useEffect(() => {
+    // The state the newest `save_sync` broadcast asked for. Read only by the
+    // download-complete flash's timer, which clears it when the flash starts —
+    // so what it holds when the flash ends is exactly what was announced under
+    // the flash, and the timer lands there instead of unconditionally on Play.
+    // Deferring rather than dropping is what keeps a conflict announced inside
+    // the window from being lost for good: this button hears about one at mount,
+    // on a version switch, and on this broadcast, and none of the three repeats
+    // for a page that stays open. The rom it was about travels with it, because
+    // a version switch inside the window rebinds romIdRef without cancelling the
+    // timer.
+    let lastAnnouncedState: { romId: number | null; state: PlayButtonState } | null = null;
+
     const progressListener = addEventListener<[DownloadProgressEvent]>(
       "download_progress",
       (evt: DownloadProgressEvent) => {
@@ -358,11 +370,15 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       "download_complete",
       (evt: DownloadCompleteEvent) => {
         if (evt.rom_id !== romIdRef.current) return;
-        // Brief completion flash before transitioning to Play
         setDlProgress(null);
         setActionPending(false);
+        lastAnnouncedState = null;
         setState("dl_complete");
-        transitionTimerRef.current = setTimeout(() => setState("play"), 1100);
+        transitionTimerRef.current = setTimeout(() => {
+          const announced = lastAnnouncedState;
+          lastAnnouncedState = null;
+          setState(announced !== null && announced.romId === romIdRef.current ? announced.state : "play");
+        }, 1100);
       },
     );
 
@@ -391,11 +407,14 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       const romId = (e as CustomEvent).detail?.rom_id;
       if (romId !== romIdRef.current) return;
       // The one site that cannot go through `enterDownloadState`: the transition
-      // is conditional, so as not to override the uninstalling animation when we
-      // triggered the removal ourselves. Clearing the flags is unconditional
-      // either way — the uninstall deleted exactly the content the stat found,
-      // and the candidate answer was read at page-open against a folder this
-      // removal has just changed.
+      // is conditional, so a LATER announcement of the same removal — any other
+      // writer reloading off this event — cannot replace the pulse this button
+      // is already showing. Not this component's own dispatch: `handleUninstall`
+      // dispatches before it sets `uninstalling`, so both land in one React
+      // batch and the pulse wins on ordering, guard or no guard. Clearing the
+      // flags is unconditional either way — the uninstall deleted exactly the
+      // content the stat found, and the candidate answer was read at page-open
+      // against a folder this removal has just changed.
       setState((prev) => (prev === "uninstalling" ? prev : "download"));
       setActionPending(false);
       setTargetOccupied(false);
@@ -448,13 +467,25 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       }
       if (detail?.type !== "save_sync") return;
       if (detail.rom_id && detail.rom_id !== romIdRef.current) return;
-      // Update button state based on conflict info from the event
-      if (detail.has_conflict !== undefined) {
-        setState((prev) => {
-          if (prev === "syncing" || prev === "launching" || prev === "download") return prev;
-          return detail.has_conflict ? "conflict" : "play";
-        });
-      }
+      if (detail.has_conflict === undefined) return;
+      const announced: PlayButtonState = detail.has_conflict ? "conflict" : "play";
+      lastAnnouncedState = { romId: romIdRef.current, state: announced };
+      setState((prev) => {
+        // The removal lane owns the button from the press until the pulse ends —
+        // `uninstall_pending` for however long the backend takes, `uninstalling`
+        // for the pulse. Neither verdict is a state this button can offer there:
+        // `announced` renders a PRESSABLE Play (or Resolve Conflict) over a
+        // disabled "Uninstalling...", for content that is on its way out or
+        // already gone. Nothing is deferred out of this lane either — the
+        // resting state is Download on success, and on a failed removal
+        // `handleUninstall` restores the state it captured at the press.
+        if (prev === "uninstall_pending" || prev === "uninstalling") return prev;
+        // The download flash holds the button for its own 1100ms and applies
+        // `announced` from `lastAnnouncedState` when it ends.
+        if (prev === "dl_complete") return prev;
+        if (prev === "syncing" || prev === "launching" || prev === "download") return prev;
+        return announced;
+      });
     };
     globalThis.addEventListener("romm_data_changed", onDataChanged);
 
