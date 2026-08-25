@@ -9,7 +9,7 @@
  * LABEL (not `core_so`), since a standalone emulator has no core.
  */
 
-import { createElement, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Menu, MenuItem, MenuSeparator } from "@decky/ui";
 import type { EmulatorOption } from "../types";
 
@@ -46,19 +46,30 @@ export interface EmulatorMenuConfig {
   onPick: (label: string) => void;
 }
 
+/**
+ * The entry text for a bakeable emulator: its label plus the markers saying what
+ * it is. "(default)" is the es_systems default, "(system)" the per-platform
+ * override, ✓ the one actually in effect — one entry can carry all three, which
+ * is why they are suffixes rather than a single state.
+ */
+function emulatorEntryLabel(e: EmulatorOption, isActive: boolean, isPlatformCore: boolean): string {
+  const defaultMark = e.is_default ? " (default)" : "";
+  const systemMark = isPlatformCore ? " (system)" : "";
+  const activeMark = isActive ? " ✓" : "";
+  return `${e.label}${defaultMark}${systemMark}${activeMark}`;
+}
+
 /** Build the `<Menu>` element for `showContextMenu`. */
 export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
   const { emulators, emulatorDataAvailable, activeLabel, platformCoreLabel, followSystem, onPick } = config;
 
   if (!emulatorDataAvailable) {
-    return createElement(
-      Menu,
-      { label: "Emulator" },
-      createElement(
-        MenuItem,
-        { key: "unavailable", disabled: true },
-        "Emulator list unavailable — RetroDECK installation not found",
-      ),
+    return (
+      <Menu label="Emulator">
+        <MenuItem key="unavailable" disabled={true}>
+          Emulator list unavailable — RetroDECK installation not found
+        </MenuItem>
+      </Menu>
     );
   }
 
@@ -68,8 +79,10 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
   const activeIsDefault = !activeLabel || activeLabel === defaultLabel;
 
   const children: ReactNode[] = [
-    createElement(MenuItem, { key: "compat", disabled: true }, "Switching cores may affect save compatibility"),
-    createElement(MenuSeparator, { key: "compat-sep" }),
+    <MenuItem key="compat" disabled={true}>
+      Switching cores may affect save compatibility
+    </MenuItem>,
+    <MenuSeparator key="compat-sep" />,
   ];
 
   if (followSystem) {
@@ -81,19 +94,17 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
     const fallbackSuffix = fallbackLabel ? ` (${fallbackLabel})` : "";
     const followsSystemMark = followSystem.hasGameOverride ? "" : " ✓";
     children.push(
-      createElement(
-        MenuItem,
-        { key: "follow-system", onClick: followSystem.onFollowSystem },
-        `Use System Override${fallbackSuffix}${followsSystemMark}`,
-      ),
-      createElement(MenuSeparator, { key: "follow-sep" }),
+      <MenuItem key="follow-system" onClick={followSystem.onFollowSystem}>
+        {`Use System Override${fallbackSuffix}${followsSystemMark}`}
+      </MenuItem>,
+      <MenuSeparator key="follow-sep" />,
     );
   }
 
   for (const e of emulators) {
     const key = `emu-${e.label}`;
     if (!e.bakeable) {
-      children.push(createElement(MenuItem, { key, disabled: true }, `${e.label} — ${reasonCopy(e.reason)}`));
+      children.push(<MenuItem key={key} disabled={true}>{`${e.label} — ${reasonCopy(e.reason)}`}</MenuItem>);
       continue;
     }
     // The active marker sits on the ACTIVE emulator: the default-marked entry
@@ -101,13 +112,11 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
     const isActive = activeIsDefault ? e.is_default : activeLabel === e.label;
     const isPlatformCore = platformCoreLabel !== null && e.label === platformCoreLabel;
     children.push(
-      createElement(
-        MenuItem,
-        { key, onClick: () => onPick(e.label) },
-        `${e.label}${e.is_default ? " (default)" : ""}${isPlatformCore ? " (system)" : ""}${isActive ? " ✓" : ""}`,
-      ),
+      <MenuItem key={key} onClick={() => onPick(e.label)}>
+        {emulatorEntryLabel(e, isActive, isPlatformCore)}
+      </MenuItem>,
     );
   }
 
-  return createElement(Menu, { label: "Emulator Core" }, ...children);
+  return <Menu label="Emulator Core">{children}</Menu>;
 }
