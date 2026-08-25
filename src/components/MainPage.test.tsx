@@ -867,7 +867,7 @@ describe("MainPage", () => {
     });
   });
 
-  describe("formatLastSync (via Last sync field)", () => {
+  describe("Last sync field", () => {
     function lastSyncText(container: HTMLElement): string | null {
       const labels = Array.from(container.querySelectorAll('[data-testid="field-label"]'));
       const idx = labels.findIndex((n) => n.textContent === "Last sync");
@@ -886,6 +886,21 @@ describe("MainPage", () => {
       const { container } = render(<MainPage onNavigate={vi.fn()} />);
       await flushAsync();
       expect(lastSyncText(container)).toContain("Never");
+    });
+
+    it("falls back to the raw value when last_sync cannot be parsed", async () => {
+      vi.mocked(backend.getSyncStats).mockResolvedValue({
+        ...defaultStats(),
+        last_sync: "not-a-timestamp",
+      });
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      // Neither `new Date` nor `Date.parse` throws on an unparseable string —
+      // they yield an Invalid Date and NaN. A formatter that does the arithmetic
+      // anyway reaches its last branch with NaN and renders it, so the second
+      // assertion is the one that pins the bug rather than the fallback shape.
+      expect(lastSyncText(container)).toContain("not-a-timestamp");
+      expect(lastSyncText(container)).not.toContain("NaN");
     });
 
     it("renders 'Just now' for a sync within the last minute", async () => {
