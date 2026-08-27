@@ -1,17 +1,17 @@
 """Preview / apply / per-unit sync lifecycle and the heartbeat clock.
 
-Owns every async path the user triggers from the QAM that mutates
-in-flight sync state: starting and cancelling syncs, computing a
-preview (read-only), and dispatching the per-unit sync pipeline on
-apply. The heartbeat clock — refreshed on every progress emission and
-inspected by per-unit waits — lives here too. Progress emission also
-lives here — sub-services that need to surface progress receive the
-orchestrator's ``emit_progress`` callback through their config.
-Anything that fetches ROMs belongs in :class:`LibraryFetcher`;
-anything that finalises shortcuts after the apply completes belongs
-in :class:`SyncReporter`. Cached ``rom_metadata`` is written by the
-reporter's per-unit commit (the same write UoW as the ``roms`` upsert),
-so preview never persists metadata and an interrupted apply leaves only
+Owns every async path the user triggers from the QAM that mutates in-flight
+sync state: starting and cancelling syncs, computing a preview (read-only),
+and dispatching the per-unit sync pipeline on apply. The heartbeat clock —
+refreshed on every progress emission and inspected by per-unit waits — lives
+here too. Progress emission also lives here — sub-services that need to
+surface progress receive the orchestrator's ``emit_progress`` callback
+through their config. Anything that fetches ROMs belongs in
+:class:`LibraryFetcher`; anything that finalises shortcuts after the apply
+completes belongs in :class:`SyncReporter`; Steam's renderer memory belongs
+in :class:`SessionBudgetMonitor`. Cached ``rom_metadata`` is written by the
+reporter's per-unit commit (the same write UoW as the ``roms`` upsert), so
+preview never persists metadata and an interrupted apply leaves only
 already-committed units' metadata.
 """
 
@@ -29,14 +29,8 @@ from domain.session_budget import (
     CLIFF_KB,
     COVER_TRANSIENT_KB,
     EFFECTIVE_CEILING_KB,
-    GC_SKIP_BELOW_KB,
-    POST_RUN_ADVISORY_KB,
-    WORST_CASE_CREATE_KB,
     chunk_worst_cost_kb,
-    gate_decision,
     post_run_advisory,
-    predict_run_crosses,
-    resume_would_proceed,
     session_memory_delta,
 )
 from domain.shortcut_data import EmulatorInvocation, build_shortcuts_data
@@ -57,6 +51,7 @@ from domain.sync_state import SyncCancelled
 from lib.errors import classify_error
 from lib.list_result import ErrorCode
 from services.library._state import CollectionMembership
+from services.library.session_budget import SYNC_PAUSED_BUDGET, SessionBudgetMonitor
 
 if TYPE_CHECKING:
     import logging
@@ -72,8 +67,6 @@ if TYPE_CHECKING:
         Clock,
         DiscResolver,
         EventEmitter,
-        RendererGcFn,
-        RendererRssFn,
         Sleeper,
         UnitOfWorkFactory,
         UuidGen,
@@ -86,12 +79,6 @@ _SYNC_CANCELLED = "Sync cancelled"
 # ``sync_runs.error`` via ``mark_interrupted``; the status split lets the UI
 # report "(interrupted)" instead of "(cancelled)" for a crash.
 _SYNC_INTERRUPTED = "Sync interrupted (Steam UI stopped responding)"
-# Terminal reason when the run paused itself at a chunk boundary because the
-# renderer's RSS is near Steam's per-session heap budget (the session-budget gate,
-# #1383). Distinct from ``_SYNC_INTERRUPTED`` so the UI shows resume-friendly
-# guidance ("restart Steam, then Resume Sync") rather than a crash message. Stored
-# in ``sync_runs.error`` and surfaced in the ``sync_complete`` payload.
-_SYNC_PAUSED_BUDGET = "Sync paused: Steam's memory is nearly full. Restart Steam when convenient, then Resume Sync."
 _PREVIEW_MAX_AGE_SECONDS = 1800  # 30 minutes — preview snapshots stale beyond this
 
 # Per-unit heartbeat-based timeout. If the frontend stops calling
@@ -110,14 +97,6 @@ _UNIT_WAIT_POLL_SEC = 1.0
 # chunk. A chunk may overflow this to keep a sibling group whole (see
 # :func:`domain.sync_chunking.build_unit_chunks`).
 _APPLY_CHUNK_SIZE = 200
-
-# Worst-case per-item cost of a created shortcut when the apply also pushes its
-# cover through Steam's artwork API: the shortcut's permanent create cost plus the
-# cover's transient peak. The chunk gate prices every emitted item at this rate
-# (worst case = every item a cover-applying create) and the preview prognosis
-# prices each planned CREATE at it; a CHANGED item stays at the lighter
-# ``UPDATE_TOUCH_KB`` (an update reuses its existing grid file, no cover applied).
-_CREATE_WITH_COVER_KB = WORST_CASE_CREATE_KB + COVER_TRANSIENT_KB
 
 
 def _collection_membership_key(unit: WorkUnit) -> tuple[str, str]:
@@ -152,10 +131,10 @@ class SyncOrchestratorConfig:
     per-game/per-platform deviation folded over the es_systems default)
     into ``launch_options`` at sync time, and the shared ``disc_resolver`` bakes
     each multi-disc ROM's selected disc (the persisted ``selected_disc`` pin) into
-    the installed-launch path at sync time. The ``renderer_rss`` / ``renderer_gc``
-    seams drive the session-budget gate: at each chunk boundary the orchestrator
-    forces a renderer GC then measures RSS, pausing the run before Steam's
-    per-session heap budget is exhausted (#1383).
+    the installed-launch path at sync time. The ``session_budget`` seam owns every
+    renderer-heap reading and verdict: at each chunk boundary the orchestrator asks
+    it whether applying the chunk would exhaust Steam's per-session heap budget, and
+    the run pauses itself when it would (#1383).
     """
 
     settings: dict[str, Any]
@@ -173,8 +152,7 @@ class SyncOrchestratorConfig:
     artwork: ArtworkManager
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
-    renderer_rss: RendererRssFn
-    renderer_gc: RendererGcFn
+    session_budget: SessionBudgetMonitor
 
 
 @dataclass(frozen=True)
@@ -214,8 +192,7 @@ class SyncOrchestrator:
         self._reporter = config.reporter
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
-        self._renderer_rss = config.renderer_rss
-        self._renderer_gc = config.renderer_gc
+        self._session_budget = config.session_budget
 
     # ── Sync control ─────────────────────────────────────────────
 
@@ -383,21 +360,12 @@ class SyncOrchestrator:
 
             await self.emit_progress(SyncStage.DONE, message="Preview ready", running=False)
 
-            # Post-preview session-budget prognosis (#1383): measure the renderer's
-            # current RSS (no GC — the preview is a fast read-only path) and predict
-            # whether the run's real work would cross the ceiling. Only NEW creates
-            # (worst-case rate) and CHANGED updates (lighter Set*-walk rate) grow the
-            # renderer heap; fully-unchanged items skip the per-item touch and are not
-            # projected, so a large unchanged re-sync never warns. Fail-open: an
-            # unavailable reading — or any seam error — yields no warning.
-            pause_likely = False
-            try:
-                rss_kb = await self._loop.run_in_executor(None, self._renderer_rss)
-                pause_likely = rss_kb is not None and predict_run_crosses(
-                    rss_kb, len(new), len(changed), create_kb=_CREATE_WITH_COVER_KB
-                )
-            except Exception as e:  # fail-open: an advisory must never fail the preview
-                self._logger.debug(f"Session-budget prognosis skipped: {e}")
+            # Post-preview session-budget prognosis (#1383): warn up front when the
+            # planned work would walk the renderer heap past the budget ceiling. The
+            # gate is fail-open, so an unreadable renderer simply yields no warning.
+            pause_likely = await self._session_budget.predict_pause_likely(
+                new_items=len(new), changed_items=len(changed)
+            )
 
             return {
                 "success": True,
@@ -586,56 +554,6 @@ class SyncOrchestrator:
         """
         return self._sync_state.sync_progress
 
-    async def get_session_budget_status(self) -> dict[str, Any]:
-        """Live renderer-heap reading for the QAM banners (#1383).
-
-        Reads the renderer's current RSS (no GC — this is a cheap on-render poll,
-        not the gate's settled measurement) alongside the three fixed budget lines so
-        the frontend can render "Steam memory: X.X GB" and colour it against the
-        thresholds: ``warn_kb`` (the advisory floor, ≈1.8 GB — where the yellow
-        high-heap banner also appears), ``ceiling_kb`` (the effective pause ceiling,
-        ≈2.2 GB), and ``cliff_kb`` (the OOM crash line, ≈2.45 GB). The frontend owns
-        no thresholds of its own — all three ride the payload so there is a single
-        source of truth. Also returns ``memory_delta_kb`` — the last clean run's
-        signed RSS growth, retained in memory — so a QAM remount can show
-        "last run: ±X GB" without a live sync — and ``resume_ready`` — whether the
-        live reading is low enough that resuming a paused run would apply at least one
-        full chunk without re-pausing (the gate's own predictive condition), so the
-        paused banner can flip to "memory is free, press Resume Sync" once a Steam
-        restart drops RSS. Fail-open: ``rss_kb`` is ``None`` when the reading is
-        unavailable (no ``steamwebhelper`` / unreadable ``/proc``) or any seam raises
-        — the banner then drops the number but keeps its guidance text;
-        ``memory_delta_kb`` is ``None`` until a clean run has measured both endpoints,
-        and ``resume_ready`` is ``None`` when RSS is unreadable (undecidable).
-
-        Also carries the last run's progress — ``run_done_items`` of
-        ``run_total_items`` — so the paused banner can say "X of Y games done". They
-        ride this payload rather than a new callable because the QAM already polls it
-        while a paused banner shows, and they live in the BACKEND because the plugin
-        process survives the Steam restart the banner asks for. Both are ``None`` when
-        no run has reached its plan in this process (a plugin reload wipes the
-        in-memory counters); the banner then omits the sentence.
-        """
-        rss_kb: int | None = None
-        try:
-            rss_kb = await self._loop.run_in_executor(None, self._renderer_rss)
-        except Exception as e:  # fail-open: a status poll must never raise
-            self._logger.debug(f"Session-budget status read failed: {e}")
-        run_total = self._sync_state.run_total_items
-        return {
-            "success": True,
-            "rss_kb": rss_kb,
-            "warn_kb": POST_RUN_ADVISORY_KB,
-            "ceiling_kb": EFFECTIVE_CEILING_KB,
-            "cliff_kb": CLIFF_KB,
-            "memory_delta_kb": self._sync_state.last_run_delta_kb,
-            "resume_ready": resume_would_proceed(rss_kb) if rss_kb is not None else None,
-            # A done count without its denominator is unreadable, so the pair is
-            # surfaced together: no known total ⇒ both None.
-            "run_done_items": self._sync_state.run_done_items if run_total is not None else None,
-            "run_total_items": run_total,
-        }
-
     # ── Sync termination ─────────────────────────────────────────
 
     async def _finish_sync(self, message):
@@ -696,29 +614,20 @@ class SyncOrchestrator:
         box.run_interrupted = False
         # Session-budget gate run-scoped state (#1383): the paused flag, the
         # emitted-chunk counter (first chunk exempt → guaranteed forward progress),
-        # the distinct pause reason, and the once-per-run "RSS unavailable" log guard.
+        # and the distinct pause reason. The gate's own once-per-run measurement
+        # latch is re-armed by the baseline stamp below, in the module that sets it.
         box.run_paused = False
         box.chunks_emitted_this_run = 0
         box.interrupt_reason = None
-        box.budget_measure_unavailable_logged = False
         # Run-scoped progress counters for the paused banner's "X of Y games done"
         # (#1383). The total is stamped at plan time below; the done count grows with
         # the skipped + committed work as the run proceeds.
         box.run_total_items = None
         box.run_done_items = 0
-        # Run-start RSS baseline for the last-run memory delta (#1383). A RAW read
-        # (no GC — the settle isn't worth it for an informational number) captured
-        # UNCONDITIONALLY at run start, before any chunk is applied, so even a
-        # fully-incremental-skip run (nothing to apply, no chunk gate ever fires)
-        # still records a baseline and reports an honest ≈ "+0.0 GB" delta instead of
-        # wiping it to None. Fail-open: an unavailable reading leaves it None (the
-        # delta is then unmeasurable). ``last_run_delta_kb`` is deliberately NOT reset
-        # (it retains the previous clean run's delta for QAM remounts).
-        box.run_start_rss_kb = None
-        try:
-            box.run_start_rss_kb = await self._loop.run_in_executor(None, self._renderer_rss)
-        except Exception as e:  # fail-open: the baseline read must never block a sync
-            self._logger.debug(f"Session-budget run-start baseline read skipped: {e}")
+        # Re-arm the gate's measurement latch and stamp the run-start RSS baseline
+        # for the last-run memory delta (#1383) — UNCONDITIONALLY, before any chunk is
+        # applied, so even a fully-incremental-skip run reports an honest delta.
+        await self._session_budget.record_run_start_baseline()
         # Capture the run id up front so the terminal SyncRun writes and the
         # ``finally`` reset below operate on a stable id for the lifetime of
         # this run. Every terminal IDLE/None reset for this run is collapsed
@@ -838,7 +747,7 @@ class SyncOrchestrator:
             if cancelled:
                 if box.run_paused:
                     await self._loop.run_in_executor(
-                        None, self._mark_sync_run_paused, run_id, box.interrupt_reason or _SYNC_PAUSED_BUDGET
+                        None, self._mark_sync_run_paused, run_id, box.interrupt_reason or SYNC_PAUSED_BUDGET
                     )
                 elif box.run_interrupted:
                     reason = box.interrupt_reason or _SYNC_INTERRUPTED
@@ -1402,9 +1311,9 @@ class SyncOrchestrator:
                 box.clear_active_unit()
                 return applied_count
 
-            # Session-budget gate (#1383): at every chunk boundary force a renderer
-            # GC + measure RSS and pause here — a clean chunk boundary — if applying
-            # this chunk would cross Steam's per-session heap budget. On pause the
+            # Session-budget gate (#1383): at every chunk boundary ask the monitor
+            # whether applying this chunk would cross Steam's per-session heap budget,
+            # and pause here — a clean chunk boundary — if it would. On pause the
             # gate sets ``run_paused`` + ``interrupt_reason`` and requests
             # cancel, so the check just below returns cleanly with the prior chunks
             # committed — the terminal finalize then records the resumable ``paused``
@@ -1424,16 +1333,16 @@ class SyncOrchestrator:
             #    chunk of cover-applying creates, each priced create + cover) and can
             #    never be projected past it; at/above that it re-pauses with zero
             #    progress and the banner directs the user to restart Steam.
-            # Composition-aware pricing (#1383): now that emitted = new + changed
-            # only, price this chunk's creates at the create+cover rate and its
-            # updates (changed + rebind) at the lighter Set*-walk rate, instead of
-            # pricing every item as a cover-applying create. The frontend decides
-            # create-vs-update itself via its existing-shortcut scan; a small
-            # backend/frontend mismatch only ever overprices (worst-case safe).
+            # The chunk is priced by composition, so the gate needs its creates and
+            # updates apart. The frontend decides create-vs-update itself via its
+            # existing-shortcut scan; a small backend/frontend mismatch only ever
+            # overprices (worst-case safe).
             creates = sum(1 for e in chunk.emitted if e["rom_id"] in new_ids)
             updates = len(chunk.emitted) - creates
             budget_limit_kb = CLIFF_KB if box.chunks_emitted_this_run == 0 else EFFECTIVE_CEILING_KB
-            rss_kb = await self._maybe_pause_for_budget(box, creates=creates, updates=updates, limit_kb=budget_limit_kb)
+            rss_kb = await self._session_budget.maybe_pause_for_budget(
+                creates=creates, updates=updates, limit_kb=budget_limit_kb
+            )
             if box.is_cancelling():
                 box.clear_active_unit()
                 return applied_count
@@ -1547,89 +1456,6 @@ class SyncOrchestrator:
             box.stash_abandoned_chunk(chunk_rows)
             box.run_interrupted = True
             box.request_cancel()
-
-    async def _gc_then_measure_rss(self, box: LibrarySyncStateBox) -> int | None:
-        """Read RSS, GC-settling it first only when it matters — the measure seam.
-
-        Reads RSS raw first (no GC). When the raw reading is already below
-        :data:`GC_SKIP_BELOW_KB` it is returned as-is: a raw reading still holds
-        transient garbage, so the true settled value can only be lower, and below
-        that floor even the most conservative check passes every threshold — the
-        ~5 s GC round-trip could not change any decision, so a small sync pays zero
-        GC cost. Only a raw reading at/above the floor pays for a GC and a re-read,
-        so the gate reasons about the settled heap near the ceiling.
-
-        Returns the RSS in KB, or ``None`` when measurement is unavailable or any
-        seam raises (fail-open). Once a run finds RSS unavailable it stays that way
-        (no ``steamwebhelper`` / unreadable ``/proc``), so the once-per-run flag
-        both suppresses repeat logging AND short-circuits further read attempts for
-        the rest of the run.
-        """
-        if box.budget_measure_unavailable_logged:
-            return None
-        try:
-            raw_kb = await self._loop.run_in_executor(None, self._renderer_rss)
-            if raw_kb is None:
-                box.budget_measure_unavailable_logged = True
-                self._logger.debug("Session-budget measurement unavailable: renderer RSS not readable")
-                return None
-            if raw_kb < GC_SKIP_BELOW_KB:
-                return raw_kb
-            await self._loop.run_in_executor(None, self._renderer_gc)
-            rss_kb = await self._loop.run_in_executor(None, self._renderer_rss)
-        except Exception as e:  # fail-open: measurement must never block a sync
-            self._logger.debug(f"Session-budget measurement skipped: {e}")
-            return None
-        if rss_kb is None:
-            box.budget_measure_unavailable_logged = True
-            self._logger.debug("Session-budget measurement unavailable: renderer RSS not readable")
-        return rss_kb
-
-    async def _maybe_pause_for_budget(
-        self, box: LibrarySyncStateBox, *, creates: int, updates: int, limit_kb: int = EFFECTIVE_CEILING_KB
-    ) -> int | None:
-        """GC, measure renderer RSS, and pause the run if this chunk would cross ``limit_kb``.
-
-        Fired at a chunk boundary before emitting the next chunk's *creates* +
-        *updates* shortcuts. The chunk is priced by composition
-        (:func:`domain.session_budget.chunk_worst_cost_kb`): creates at the
-        create+cover rate, updates (changed / rebind) at the lighter Set*-walk rate
-        — the delta apply no longer prices every item as a cover-applying create.
-        :func:`domain.session_budget.gate_decision` decides whether the projected
-        cost crosses ``limit_kb`` — the effective ceiling for a later chunk, or the
-        cliff itself for the run's first chunk (whose forward-progress guarantee is
-        allowed to spend the safety margin but is still projected to stop before the
-        crash line). On a pause it sets ``run_paused`` with the distinct
-        session-budget reason and requests cancel — the chunk loop's next
-        ``is_cancelling`` check returns cleanly with the prior chunks committed, and
-        the terminal finalize records the resumable ``paused`` state.
-
-        Returns the settled RSS reading (KB) so the caller can budget additive
-        chunk work (the #1386 cover-refresh clip) against the same measurement,
-        or ``None`` when measurement was unavailable / the gate errored.
-
-        Fail-open throughout: an unavailable reading or any seam error skips the gate
-        entirely — measurement must never block a sync.
-        """
-        try:
-            rss_kb = await self._gc_then_measure_rss(box)
-            if rss_kb is None:
-                return None
-            cost_kb = chunk_worst_cost_kb(creates, updates)
-            decision = gate_decision(rss_kb, cost_kb=cost_kb, limit_kb=limit_kb)
-            if decision.should_pause:
-                self._logger.info(
-                    f"Session-budget pause at chunk boundary: renderer RSS {rss_kb} KB + "
-                    f"{creates} creates + {updates} updates projects {decision.projected_kb} KB >= limit "
-                    f"{decision.threshold_kb} KB"
-                )
-                box.run_paused = True
-                box.interrupt_reason = _SYNC_PAUSED_BUDGET
-                box.request_cancel()
-            return rss_kb
-        except Exception as e:  # fail-open: the gate must never fail the run
-            self._logger.debug(f"Session-budget gate skipped: {e}")
-            return None
 
     def _clip_cover_refreshes(
         self,
@@ -1865,7 +1691,7 @@ class SyncOrchestrator:
         restart_recommended = False
         memory_delta_kb: int | None = None
         try:
-            rss_kb = await self._gc_then_measure_rss(self._sync_state)
+            rss_kb = await self._session_budget.measure_rss()
             memory_delta_kb = session_memory_delta(self._sync_state.run_start_rss_kb, rss_kb)
             if not cancelled:
                 restart_recommended = rss_kb is not None and post_run_advisory(rss_kb)
