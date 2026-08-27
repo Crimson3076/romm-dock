@@ -203,6 +203,27 @@ Format: **invariant** — tier — enforced by.
   UoW, which is what putting the three methods on one class makes cheapest — is that gate's documented blind spot and
   passes green. On the budget side the confinement holds `session_budget`'s stated promise that no renderer-RSS reading
   is taken anywhere else in the package
+- **A module declared read-only calls no repository write — `services/library/local_library_reader.py` to start** —
+  check — `scripts/check_read_only_module.py` (AST over the declared file's own calls, matching the two-attribute
+  `<...>.<repo>.<method>` shape against the eleven repositories the UoW exposes). Read or write is decided **by the
+  name's shape** — `get` / `get_*` / `iter_*` / `count` plus the explicitly listed reads — and
+  `tests/scripts/test_check_read_only_module.py` re-derives every method name from `services/protocols/repositories.py`
+  and pins its classification, so a new repository method fails there until it is classified. **The two directions are
+  not symmetric.** A read named outside the shapes is called a write: loud, safe. A **write named like a read is called
+  a read and passes in silence** — `uow.roms.get_or_create(...)` is green today, which is the very accident class this
+  entry is otherwise about, so "repository writes are named as writes" stays a prose rule the gate does not carry. It
+  also sees only calls the file itself makes, and only as calls: a write behind a helper it calls, a write **passed as a
+  bound method** (`run_in_executor(None, uow.roms.save, rom)` — an attribute, not a call, and the exact idiom this
+  module's own reads are invoked through), an aliased handle (`repo = uow.roms`), a `getattr`-reached repository, and a
+  repository name not in its list all pass green. What it does catch is the plain `uow.roms.save(...)` dropped into a
+  read module because a UoW was already open there. The declaration earns its keep by making the boundary checkable
+  rather than descriptive: these reads open their own short UoW and are offloaded to an executor at points chosen for
+  cheapness, so a write among them would land at a moment nobody picked. The platform stamp's DELETE stayed in
+  `sync_orchestrator.py` on those grounds — it is a write, so a read-only module cannot hold it, and it is cohesive with
+  the apply pipeline that performs it, not with the projections a run reasons about. **Why it sits exactly where it sits
+  in that pipeline is a property of its call site, not of its module** — after the fetch, after the artwork, after the
+  cancel guard, before the first chunk (ADR-0023 / #1025) — and that argument lives in full at the call site's own
+  comment, which is the only place a move could not have carried it away from
 - **An emitted `sync_progress` frame stops a run (`running: False`) only with a terminal stage, and a terminal stage is
   only ever emitted with the run stopped** — test — `tests/services/library/test_terminal_frame_contract.py`
   (structural, AST call sites and dict literals across all of `py_modules/services` — it covers the error paths a
