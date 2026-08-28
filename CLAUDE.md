@@ -220,9 +220,11 @@ Format: **invariant** — tier — enforced by.
   rather than descriptive: these reads open their own short UoW and are offloaded to an executor at points chosen for
   cheapness, so a write among them would land at a moment nobody picked. The platform stamp's DELETE stayed in
   `sync_orchestrator.py` on those grounds — it is a write, so a read-only module cannot hold it, and it is cohesive with
-  the apply pipeline that performs it, not with the projections a run reasons about. **Why it sits exactly where it sits
-  in that pipeline is a property of its call site, not of its module** — after the fetch, after the artwork, after the
-  cancel guard, before the first chunk (ADR-0023 / #1025) — and that argument lives in full at the call site's own
+  the half of the apply pipeline that performs it: the DELETE stayed with `_sync_one_unit`, which builds a unit's delta,
+  while the re-stamp went to `ChunkDispatcher._build_final_platform_stamp` with the final chunk whose commit UoW it
+  rides, so the stamp's two ends now sit in two modules and each names the other. **Why the DELETE sits exactly where it
+  sits in that pipeline is a property of its call site, not of its module** — after the fetch, after the artwork, after
+  the cancel guard, before the first chunk (ADR-0023 / #1025) — and that argument lives in full at the call site's own
   comment, which is the only place a move could not have carried it away from
 - **An emitted `sync_progress` frame stops a run (`running: False`) only with a terminal stage, and a terminal stage is
   only ever emitted with the run stopped** — test — `tests/services/library/test_terminal_frame_contract.py`
@@ -314,6 +316,17 @@ Format: **invariant** — tier — enforced by.
   is never mutated while the stash is pending (box IDLE) — every run-entry path passes `try_begin_run`, which clears the
   stash before any staging write** — prompt-only — the invariant holds today rather than being aspirational; mechanize
   via a staging-writer call-site audit
+- **An apply chunk's ack identity — `active_unit_id` / `active_chunk_index` and a fresh `unit_complete_event` — is
+  stamped on the box BEFORE that chunk's `sync_apply_unit` is emitted, with nothing awaited in between** — test +
+  prompt-only — `tests/services/library/test_chunk_dispatcher.py::TestAckIdentityPrecedesTheEmit`, which wraps
+  `ChunkDispatcher._emit` and records the box at call time over a two-chunk unit. The rule spans three modules and no
+  diff-scoped review sees it whole: `ChunkDispatcher` stamps, `services/library/_state.py` holds the fields and their
+  verbs, and `SyncReporter.report_unit_results` validates an incoming ack against them (#1041). **What the test pins is
+  the ordering inside the dispatcher, not the round-trip** — it observes a mock's call-time state, so a real frontend
+  ack racing a real emit is still unexercised, and every other suite lets the emit mock swallow the call. The failure
+  mode is why the entry exists rather than being left to the comment: stamp after the emit and a fast ack is rejected as
+  stray, the wait then stalls the full 60-second heartbeat window, and the run ends by stashing a chunk the frontend had
+  already applied — slow, plausible-looking, and silent (#1052 / #1367)
 - **A prune run's claim reservation and its refusal of every conflicting callable happen in one atomic gate hold (the
   preview rebuild does not), and frontend-owned Steam work holds a heartbeated, generation-tombstoned lease through
   every continuation's final write** — test + prompt-only — prune service/gate race tests + contract callable-entry
