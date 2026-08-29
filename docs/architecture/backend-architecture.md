@@ -288,7 +288,7 @@ The library sync subsystem is a façade over seven sub-services that coordinate 
 | `reporter.py`                 | `SyncReporter` — post-apply finalisation (artwork filenames, per-unit `roms` upsert + `SyncRun` lifecycle) and the `roms`-derived queries                                                                                                                                                                                                  |
 | `session_budget.py`           | `SessionBudgetMonitor` — Steam's per-session renderer-heap budget: the GC-settled RSS measurement, the chunk-boundary pause verdict, the headroom clip that trims a chunk's additive cover work to what that verdict left, the post-preview prognosis, the run-start baseline, and the `get_session_budget_status` payload                 |
 | `shortcut_launch_resolver.py` | `ShortcutLaunchResolver` — resolves each ROM's launch facts for the shortcut bake: the disc-resolved installed path and the active emulator, both handed to `build_shortcuts_data`                                                                                                                                                         |
-| `_state.py`                   | `LibrarySyncStateBox` — shared mutable in-flight sync state; single source of truth threaded through every sub-service, and the **sole owner** of the run-lifecycle pair (`sync_state` / `current_sync_id`) via its verb methods                                                                                                           |
+| `_state.py`                   | `LibrarySyncStateBox` — shared mutable in-flight sync state; single source of truth threaded through every sub-service, and the **sole owner** of the run-lifecycle pair (`sync_state` / `current_sync_id`) and of the staged preview snapshot (`pending_delta`, TTL and the run-in-flight withholding included) via its verb methods      |
 
 The pipeline is split **fetch (read-only) / apply (owns persistence)**: the fetcher never mutates the `roms` registry or
 `rom_metadata`, and the reporter's per-unit commit upserts each acked ROM's `roms` row and stamps its cached
@@ -576,7 +576,7 @@ recording the requested `run_id`, the active `current_sync_id`, and the `sync_st
 the run id from the backend-fed `sync_progress` store — its additive `runId` field (see below) — and passes it on the
 Cancel click; in the pre-run "Fetching library…" window the store's `runId` is still `""`, which maps to the
 unconditional cancel path rather than a stale prior-run id the backend would reject as a cross-run mismatch.
-`sync_cancel_preview` is **not** run-scoped: it only clears the pending preview delta (`pending_delta`), never touches
+`sync_cancel_preview` is **not** run-scoped: it only discards the pending preview delta (`pending_delta`), never touches
 `sync_state`, and `sync_apply_delta` independently validates the `preview_id`, so a stale preview-cancel cannot abort a
 fresh sync.
 
@@ -775,13 +775,97 @@ a fresh run's start and leave a half-reset id:
 
 `sync_preview` adds a final cancel checkpoint **after** the unit loop, immediately before it stages `pending_delta`, so
 a cancel landing in that last window routes into the cancelled branch (`{success: False, reason: "cancelled"}`,
-`pending_delta` left `None`) rather than staging a delta the user already cancelled. The confinement is enforced by
-`scripts/check_sync_lifecycle_owner.py` (an AST gate that fails CI if `sync_state` / `current_sync_id` is assigned
-anywhere outside `_state.py`).
+`pending_delta` left `None`) rather than staging a delta the user already cancelled. Nothing awaits between that
+checkpoint and the staging — the session-budget prognosis is taken before it, and the `done` frame emitted after it — so
+the window the checkpoint closes cannot reopen. The confinement is enforced by `scripts/check_sync_lifecycle_owner.py`
+(an AST gate that fails CI if `sync_state` / `current_sync_id` is assigned anywhere outside `_state.py`).
+
+**The preview outlives the panel that asked for it.** `PreviewDelta` carries the exact answer dict `sync_preview`
+returned, and `get_pending_preview` hands it back verbatim — the QAM card dies with its render, while the backend holds
+the snapshot for its full 30-minute TTL, so a user who steps into a submenu used to lose an Apply that was still
+perfectly valid. Storing the answer rather than re-assembling one is what guarantees the restored card is what the user
+was shown. The answer also carries `expires_at` — an absolute epoch — which the card counts down against; absolute
+rather than a remaining-seconds count because plugin and panel share a clock and a deadline survives a suspend.
+`get_pending_preview` answers `{"success": True, "preview": None}` for all three of nothing staged, a snapshot past its
+TTL (dropped on the spot), and **a run in flight** — "no preview" is a normal answer, not a failure.
+
+That third case is a backend guarantee rather than a frontend courtesy, because the panel cannot get it right on its
+own. It derives "a run is live" from the `sync_progress` store, and `abortOptimisticSync` retracts the optimistic
+`running: true` on **every** failed apply — including the `sync_in_progress` rejection, which is exactly the branch
+where the backend deliberately **keeps** the staged delta (#1202). The store therefore reads idle during a live run, and
+a panel that let the restored card decide the body would render it over the run's own progress rows, with the next Apply
+retracting the live run's UI a second time. A plugin reload mid-run reaches the same state through an empty store racing
+the `get_sync_status` seed. So the run-in-flight case is refused where the truth is:
+`LibrarySyncStateBox.read_restorable_preview`. The panel's own defence is a rendering rule rather than a second check on
+the read: a run in flight owns the body, so a preview held while one is going is **kept and not shown**, and its card
+appears the moment the run ends.
+
+**Frontend side: the pending preview is a module store, not panel state.** `src/utils/pendingPreviewStore.ts` owns it.
+The reason is the same lifetime mismatch from the other end — `sync_preview` is an awaited callable, so its answer is
+delivered to the closure of whichever `MainPage` pressed Sync, and leaving the main page unmounts that instance while
+the run carries on. The card then never appeared for the instance actually on screen: the panel showed the idle Sync
+buttons over a preview the backend was holding, and only the _next_ mount's `get_pending_preview` recovered it. The
+store is not a second source of truth — it holds the backend's answer verbatim, is only ever filled from `sync_preview`
+/ `get_pending_preview`, and never derives or repairs one. Its ordering rule (a write takes a ticket when its
+information was issued; an answer applies only if no later-issued write already has; a read only ever fills, because
+`preview: None` conflates three different situations) is stated in full in that module's docstring. Two triggers fill it
+— the panel's mount, and a preview run reaching its terminal stage with the store still empty — and, because both write
+to the same destination, the race between them is "who writes first", not "which copy wins".
+
+**Withheld, not discarded.** A run in flight suppresses the snapshot for the duration and nothing else — the same
+payload is handed back on the next mount after the run ends, as long as it is still inside its TTL. And the withholding
+belongs to that reader alone: `sync_apply_delta`'s age check goes through the run-blind `read_fresh_preview`, so an
+overlapping apply is still refused by the run-slot claim with `sync_in_progress` instead of being rewritten into a
+staleness verdict.
+
+**`pending_delta` is box-owned, like the run-lifecycle pair.** The staged snapshot's whole lifetime runs through the
+`LibrarySyncStateBox` verbs — `stage_preview` / `read_fresh_preview` / `read_restorable_preview` / `matches_preview` /
+`discard_preview` — and no module outside `_state.py` assigns the field (the façade exposes a getter only). The TTL
+lives with them: `PREVIEW_MAX_AGE_SECONDS` and the `preview_deadline` the answer's `expires_at` comes from are the
+box's, so the number the card counts down to and the verdict `read_fresh_preview` reaches cannot drift apart. "Too old"
+has exactly one expression, `PreviewDelta.is_expired`, reached only from `read_fresh_preview` — which both the pending
+read and `sync_apply_delta`'s age refusal go through, so the read can never offer an Apply the apply would reject.
+Unlike the run-lifecycle pair this has no CI gate; it is prose plus the box's own tests.
+
+In `sync_apply_delta` the ordering is load-bearing and deliberately left as three visible steps — identity check,
+run-slot claim, then discard — rather than one atomic "take" verb: a rapid second apply, or one landing while a run is
+in flight, is refused by `try_begin_run` **before** `discard_preview` runs, so the still-valid preview survives for the
+legitimate apply (#1202).
 
 **`sync_progress` carries `runId`.** Every `sync_progress` event (and the persisted `get_sync_status` snapshot) now
 includes an additive `runId: str` field — `str(current_sync_id or "")` — so the frontend reads the active run id from
 the authoritative backend store rather than minting or threading its own. The idle default snapshot carries `runId: ""`.
+
+**The snapshot describes an in-flight run only.** `finish_run` puts `sync_progress` back to the idle default as part of
+ending a run — after the terminal frame has gone out, since every path emits **or schedules** it before reaching the
+`finally: finish_run(run_id)` that lands there. (The per-unit error path schedules its emit through `create_task`, so
+that one may run _after_ the reset; it is safe because the coroutine binds the ERROR frame by value and the reset
+rebinds the attribute rather than mutating the dict a pending task is holding.) It exists so a remounting QAM can pick
+up a **live** run; a finished run's ending already reached the panel as an event, and a panel that merely _finds_ a
+terminal frame on a later mount is required to ignore it (#1019). Left in place, the frame answered every later mount
+with a run that had ended — message and run id included — and the panel took it for the state of the run it was actually
+watching: pressing Sync, then returning during the window before the new run's first frame, showed a green "Preview
+ready" over a preview that was still going, and dropped the panel back to the idle buttons in the meantime. The reset is
+not itself a frame: nothing emits it, so no `running: false` reaches the panel from it.
+
+**`get_sync_status` answers with the run lifecycle too.** The payload carries an additive `inFlight: bool` —
+`box.is_in_flight()`, the lifecycle state itself, not a re-reading of the frame. It rides this answer only, never an
+emitted `sync_progress` event, and the two legitimately disagree: during a cancel drain the CANCELLED frame already
+reads `running: False` while the run still owns the slot.
+
+The panel needs it because a frame alone cannot separate two questions it must answer differently. When the module store
+says a run is live and the answer says nothing is running, retracting is right if the run really ended (its terminal
+frame was lost) and wrong if the backend simply has not heard of it yet — which is exactly the start window, where the
+panel has written an optimistic frame and `sync_preview` has not yet claimed the run slot. So the seed retracts only
+where the answer is evidence about _that_ run: either it names it, or `inFlight` is explicitly `false` **and** the
+store's run carries a backend-stamped id. An idle answer against the panel's own unstamped optimistic frame is refused,
+and that cannot wedge, because the handler that wrote that frame always retracts it itself — from a dead instance too.
+
+Inferring the lifecycle from the frame instead would wedge the panel: with the snapshot reset above, a finished run and
+a run that never started are the same answer, so a lost terminal frame would leave every later mount believing a run is
+live. Nothing recovers from that state — the start controls all live in the idle branch, "Cancel Sync" for an unknown
+run is answered `{"success": True, "message": "No sync in progress"}` with no terminal to follow, and DangerZone and
+RemovedGamesCleanup gate four more actions on the same flag.
 
 The same `sync_plan` capture point also clears the frontend's per-run cancel flag (`_cancelRequested`). The per-unit
 handler resets that flag at its own start, but an incrementally-**skipped** unit never runs that handler, so a skip-only
@@ -1555,7 +1639,7 @@ documented in [Database Design](database-design.md). Selected modules:
 | `sync_action.py`                                                                  | The `SyncAction` union (`Skip` / `Upload` / `Download` / `Conflict`) the whole vertical dispatches on and the compiled core answers in. The decisions themselves are made in the core, not here. See [Save File Sync Architecture](save-file-sync-architecture.md).                                                            |
 | `sync_diff.py`                                                                    | ROM classification and platform/collection diff computation for the sync preview                                                                                                                                                                                                                                               |
 | `cover_refresh.py`                                                                | cover-fingerprint compare kernel (#1386) — `scan_cover_refresh_candidates` / `count_cover_refreshes`, shared by the apply-path invalidation pass and the preview's cover-work count so the two can never diverge                                                                                                               |
-| `preview_delta.py`                                                                | `PreviewDelta` shape for the sync preview                                                                                                                                                                                                                                                                                      |
+| `preview_delta.py`                                                                | `PreviewDelta` shape for the sync preview (the staged answer included) plus `is_expired` / `preview_expires_at`, the one expression of its TTL                                                                                                                                                                                 |
 | `work_unit.py`                                                                    | `WorkUnit` — the per-unit sync work item                                                                                                                                                                                                                                                                                       |
 | `rom_save_sync_state.py`                                                          | `RomSaveSyncState` aggregate + `FileSyncState` value object — per-ROM save-sync state, backed by `rom_save_sync_states` + `rom_save_files`                                                                                                                                                                                     |
 | `save_path.py` / `save_attribution.py` / `save_status*.py` / `save_extensions.py` | save path resolution, uploader attribution, status DTO building                                                                                                                                                                                                                                                                |

@@ -260,6 +260,42 @@ export interface SyncPreview {
    * ``false`` when the reading is unavailable or the run fits under the budget.
    */
   pause_likely?: boolean;
+  /**
+   * Absolute wall-clock deadline (epoch SECONDS) the backend stops accepting
+   * this preview at — 30 minutes after it was computed. Absolute rather than a
+   * remaining-seconds count because the plugin and the panel share a machine
+   * and a clock, and a deadline survives the Deck suspending where a locally
+   * counted-down number does not. Absent on older backends; the card then shows
+   * no countdown and behaves exactly as it did before.
+   */
+  expires_at?: number;
+}
+
+/**
+ * Answer of ``get_sync_status``: the latest progress frame, plus the backend's
+ * run-lifecycle state as a fact of its own.
+ *
+ * `inFlight` rides this answer only — never an emitted `sync_progress` event —
+ * and it is not a re-reading of the frame's `running`. The two disagree by
+ * design: during a cancel drain the terminal frame already reads
+ * `running: false` while the run still owns the slot. A panel needs the
+ * distinction because a frame cannot tell it "the backend has no run" apart from
+ * "the backend has not said anything about this run yet", and only the first of
+ * those licenses retracting a run the panel believes is live.
+ */
+export interface SyncStatusAnswer extends SyncProgress {
+  inFlight?: boolean;
+}
+
+/**
+ * Answer of ``get_pending_preview`` — the preview the backend is still holding,
+ * which is how a panel that was navigated away from gets its card back. A
+ * ``null`` preview is the normal "nothing pending" answer (including a snapshot
+ * the backend dropped as expired), not a failure.
+ */
+export interface PendingPreviewAnswer {
+  success: boolean;
+  preview: SyncPreview | null;
 }
 
 export interface SyncPlanUnit {

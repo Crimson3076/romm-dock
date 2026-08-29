@@ -33,7 +33,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from domain.cover_refresh import count_cover_refreshes
-from domain.preview_delta import PreviewDelta
 from domain.session_budget import post_run_advisory, session_memory_delta
 from domain.shortcut_data import build_shortcuts_data
 from domain.sibling_group import compute_component_group_keys
@@ -79,7 +78,6 @@ _SYNC_CANCELLED = "Sync cancelled"
 # ``sync_runs.error`` via ``mark_interrupted``; the status split lets the UI
 # report "(interrupted)" instead of "(cancelled)" for a crash.
 _SYNC_INTERRUPTED = "Sync interrupted (Steam UI stopped responding)"
-_PREVIEW_MAX_AGE_SECONDS = 1800  # 30 minutes — preview snapshots stale beyond this
 
 
 def _collection_membership_key(unit: WorkUnit) -> tuple[str, str]:
@@ -338,6 +336,16 @@ class SyncOrchestrator:
             # short-circuit the apply and strand a changed cover forever.
             cover_refresh_count = count_cover_refreshes(all_roms, registry)
 
+            # Post-preview session-budget prognosis (#1383): warn up front when the
+            # planned work would walk the renderer heap past the budget ceiling. The
+            # gate is fail-open, so an unreadable renderer simply yields no warning.
+            #
+            # Taken here rather than after the DONE frame so that nothing awaits
+            # between the cancel checkpoint below and the staging that follows it.
+            pause_likely = await self._session_budget.predict_pause_likely(
+                new_items=len(new), changed_items=len(changed)
+            )
+
             # Final cancel checkpoint: a cancel can land after the unit loop's
             # last per-unit check but before the preview is staged. Re-check
             # here so a late cancel routes into the SyncCancelled branch (which
@@ -347,25 +355,11 @@ class SyncOrchestrator:
                 raise SyncCancelled(_SYNC_CANCELLED)
 
             preview_id = self._uuid_gen.uuid4()
+            created_at = self._clock.time()
             platforms_count = sum(1 for u in work_queue if u.type == "platform")
             collections_count = sum(1 for u in work_queue if u.type == "collection")
-            box.pending_delta = PreviewDelta(
-                preview_id=preview_id,
-                created_at=self._clock.time(),
-                platforms_count=platforms_count,
-                total_roms=len(all_roms),
-            )
 
-            await self.emit_progress(SyncStage.DONE, message="Preview ready", running=False)
-
-            # Post-preview session-budget prognosis (#1383): warn up front when the
-            # planned work would walk the renderer heap past the budget ceiling. The
-            # gate is fail-open, so an unreadable renderer simply yields no warning.
-            pause_likely = await self._session_budget.predict_pause_likely(
-                new_items=len(new), changed_items=len(changed)
-            )
-
-            return {
+            answer = {
                 "success": True,
                 "pause_likely": pause_likely,
                 "summary": {
@@ -406,7 +400,22 @@ class SyncOrchestrator:
                 "new_names": [s["name"] for s in new[:10]],
                 "changed_names": [s["name"] for s in changed[:10]],
                 "preview_id": preview_id,
+                # Absolute wall-clock deadline (epoch seconds) the backend stops
+                # accepting this snapshot at. Absolute rather than a remaining-
+                # seconds count because the panel runs on the same machine and the
+                # same clock, and a deadline survives the Deck suspending where a
+                # locally counted-down number does not.
+                "expires_at": box.preview_deadline(created_at),
             }
+            box.stage_preview(
+                preview_id=preview_id,
+                created_at=created_at,
+                answer=answer,
+            )
+
+            await self.emit_progress(SyncStage.DONE, message="Preview ready", running=False)
+
+            return answer
         except SyncCancelled:
             # sync_preview is a Decky callable — the frontend awaits its return.
             # Re-raising leaves that promise unsettled, so a user-initiated
@@ -415,14 +424,14 @@ class SyncOrchestrator:
             # SyncCancelled is a BaseException (not Exception), so it skips the
             # generic ``except Exception`` below and lands here as a distinct
             # cooperative signal — never conflated with a real asyncio cancel.
-            box.pending_delta = None
+            box.discard_preview()
             await self._finish_sync(_SYNC_CANCELLED)
             return {"success": False, "reason": "cancelled", "message": _SYNC_CANCELLED}
         except Exception as e:
             import traceback
 
             self._logger.error(f"Sync preview failed: {e}\n{traceback.format_exc()}")
-            box.pending_delta = None
+            box.discard_preview()
             _reason, _msg = classify_error(e)
             await self.emit_progress(SyncStage.ERROR, message=_msg, running=False)
             return {"success": False, "reason": _reason, "message": _msg}
@@ -475,15 +484,15 @@ class SyncOrchestrator:
 
     async def sync_apply_delta(self, preview_id):
         box = self._sync_state
-        if not box.pending_delta or box.pending_delta.preview_id != preview_id:
+        if not box.matches_preview(preview_id):
             return {
                 "success": False,
                 "reason": ErrorCode.STALE_PREVIEW.value,
                 "message": "Preview expired, please re-sync",
             }
-        age = self._clock.time() - box.pending_delta.created_at
-        if age > _PREVIEW_MAX_AGE_SECONDS:
-            box.pending_delta = None
+        # The read drops an over-age snapshot on its way out, so a repeat apply
+        # can't pick it up.
+        if box.read_fresh_preview(self._clock.time()) is None:
             return {
                 "success": False,
                 "reason": ErrorCode.STALE_PREVIEW.value,
@@ -492,11 +501,11 @@ class SyncOrchestrator:
         # Admission guard: a rapid second apply (or an apply landing while a
         # sync is already in flight) must be rejected without consuming the
         # staged delta, so the still-valid preview survives for the legitimate
-        # apply (#1202). Claim the run slot before nulling ``pending_delta``.
+        # apply (#1202). Claim the run slot BEFORE discarding the preview.
         run_id = self._uuid_gen.uuid4()
         if not box.try_begin_run(run_id):
             return {"success": False, "reason": "sync_in_progress", "message": "Sync already in progress"}
-        box.pending_delta = None
+        box.discard_preview()
         box.sync_last_heartbeat = self._clock.monotonic()
 
         self._loop.create_task(self._do_sync_per_unit())
@@ -504,8 +513,18 @@ class SyncOrchestrator:
         return {"success": True, "message": "Applying changes"}
 
     def sync_cancel_preview(self):
-        self._sync_state.pending_delta = None
+        self._sync_state.discard_preview()
         return {"success": True}
+
+    def get_pending_preview(self):
+        """Hand back the staged preview answer, so a remounted panel can show its card again.
+
+        ``preview: None`` — nothing staged, a snapshot the read aged out, or a
+        run in flight (which withholds it rather than discarding it) — is a
+        normal answer, never the failure shape. Starts and cancels no run.
+        """
+        delta = self._sync_state.read_restorable_preview(self._clock.time())
+        return {"success": True, "preview": dict(delta.answer) if delta else None}
 
     # ── Progress & safety ────────────────────────────────────────
 
@@ -545,12 +564,23 @@ class SyncOrchestrator:
         await self._emit("sync_progress", self._sync_state.sync_progress)
 
     def get_sync_status(self) -> dict[str, Any]:
-        """Return the persisted progress snapshot — the authoritative sync state.
+        """Return the latest progress frame plus whether a run is actually in flight.
 
         Idle returns the default ``running: False`` snapshot; a live run
         returns the latest snapshot written by :meth:`emit_progress`.
+
+        ``inFlight`` is the run-lifecycle state itself, not a re-reading of the
+        frame, and it rides only this answer — never an emitted ``sync_progress``
+        event. The two can disagree, legitimately: during a cancel drain the
+        CANCELLED frame already says ``running: False`` while the slot is still
+        owned, and between ``try_begin_run`` and the run's first frame the
+        opposite holds. It exists because the frontend cannot tell "the backend
+        has no run" from "the backend has not said anything about this run yet"
+        by looking at a frame — and the difference decides whether a panel may
+        retract a run it believes is live. See ``src/components/MainPage.tsx``.
         """
-        return self._sync_state.sync_progress
+        box = self._sync_state
+        return {**box.sync_progress, "inFlight": box.is_in_flight()}
 
     # ── Sync termination ─────────────────────────────────────────
 

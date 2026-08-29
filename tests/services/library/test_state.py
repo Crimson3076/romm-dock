@@ -1,10 +1,15 @@
-"""Tests for the ``LibrarySyncStateBox`` run-lifecycle verb methods.
+"""Tests for the ``LibrarySyncStateBox`` verb methods.
 
-The box's four verbs (``try_begin_run`` / ``request_cancel`` / ``finish_run`` /
-``is_in_flight``) are the only writers of the run-lifecycle pair
-(``sync_state`` / ``current_sync_id``). These tests pin the compare-and-swap
-admission, the run-scoped cancel routing, and the compare-and-reset terminal so
-a rapid Sync/Cancel can't leave a half-reset run id (#1202).
+The box's four run-lifecycle verbs (``try_begin_run`` / ``request_cancel`` /
+``finish_run`` / ``is_in_flight``) are the only writers of the run-lifecycle
+pair (``sync_state`` / ``current_sync_id``). These tests pin the
+compare-and-swap admission, the run-scoped cancel routing, and the
+compare-and-reset terminal so a rapid Sync/Cancel can't leave a half-reset run
+id (#1202). The preview-snapshot verbs cover the staged snapshot's whole
+lifetime — ``stage_preview`` / ``read_fresh_preview`` /
+``read_restorable_preview`` / ``matches_preview`` / ``discard_preview`` — of
+which the three that write ``pending_delta`` (stage, the age-dropping read,
+discard) are its only writers, and carry the TTL with it.
 """
 
 from __future__ import annotations
@@ -12,7 +17,12 @@ from __future__ import annotations
 import asyncio
 
 from domain.sync_state import SyncState
-from services.library._state import AbandonedChunk, LibrarySyncStateBox
+from services.library._state import (
+    PREVIEW_MAX_AGE_SECONDS,
+    AbandonedChunk,
+    LibrarySyncStateBox,
+    _default_progress,
+)
 
 
 class TestTryBeginRun:
@@ -113,6 +123,37 @@ class TestFinishRun:
         assert box.finish_run("run-A") is False
         assert box.sync_state is SyncState.RUNNING
         assert box.current_sync_id == "run-B"
+
+    def test_owner_puts_the_progress_snapshot_back_to_the_idle_default(self):
+        """A finished run stops being answerable by ``get_sync_status``.
+
+        The snapshot exists so a remounting QAM can pick up an IN-FLIGHT run. A
+        terminal frame left in it answered every later mount with a run that
+        ended — message and run id included — which the panel then took for the
+        state of whatever run it was actually watching.
+        """
+        box = LibrarySyncStateBox()
+        box.try_begin_run("run-1")
+        box.sync_progress = {"running": False, "stage": "done", "message": "Preview ready", "runId": "run-1"}
+
+        assert box.finish_run("run-1") is True
+
+        assert box.sync_progress == _default_progress()
+        assert box.sync_progress["stage"] == ""
+        assert box.sync_progress["message"] == ""
+        assert box.sync_progress["runId"] == ""
+
+    def test_a_foreign_finish_leaves_the_live_run_s_snapshot_alone(self):
+        """The reset is the owner's alone — a late terminal from a previous run
+        must not blank the frame a remounting panel needs for the live one."""
+        box = LibrarySyncStateBox()
+        box.try_begin_run("run-B")
+        live = {"running": True, "stage": "fetching", "message": "Fetching GBA...", "runId": "run-B"}
+        box.sync_progress = live
+
+        assert box.finish_run("run-A") is False
+
+        assert box.sync_progress == live
 
     def test_try_begin_run_clears_a_prior_abandoned_chunk_stash(self):
         """A heartbeat-timed-out chunk whose late ack never arrived is dropped
@@ -255,6 +296,146 @@ class TestAbandonedChunkStash:
     def test_take_returns_none_when_no_stash(self):
         box = LibrarySyncStateBox()
         assert box.take_abandoned_chunk("run-1", 5, 2) is None
+
+
+class TestPreviewSnapshot:
+    """The staged preview's whole lifetime: stage, read-if-fresh, read-if-restorable, match, discard.
+
+    ``stage_preview``, ``read_fresh_preview`` (which drops an over-age
+    snapshot on its way out) and ``discard_preview`` are the only writers of
+    ``pending_delta``; ``read_restorable_preview`` reaches the field through
+    the fresh read, and ``matches_preview`` only reads. The TTL is the box's
+    (``PREVIEW_MAX_AGE_SECONDS``), applied against a caller-supplied ``now``
+    so the box stays clock-free.
+    """
+
+    _CREATED_AT = 1_700_000_000.0
+
+    def _staged_box(self, preview_id: str = "pv-1") -> LibrarySyncStateBox:
+        box = LibrarySyncStateBox()
+        box.stage_preview(
+            preview_id=preview_id,
+            created_at=self._CREATED_AT,
+            answer={"success": True, "preview_id": preview_id},
+        )
+        return box
+
+    def test_stage_holds_every_field_including_the_answer(self):
+        box = self._staged_box()
+
+        delta = box.pending_delta
+        assert delta is not None
+        assert delta.preview_id == "pv-1"
+        assert delta.created_at == self._CREATED_AT
+        assert delta.answer == {"success": True, "preview_id": "pv-1"}
+
+    def test_stage_replaces_an_earlier_snapshot(self):
+        box = self._staged_box("pv-old")
+
+        box.stage_preview(
+            preview_id="pv-new",
+            created_at=self._CREATED_AT,
+            answer={"success": True, "preview_id": "pv-new"},
+        )
+
+        assert box.matches_preview("pv-new") is True
+        assert box.matches_preview("pv-old") is False
+
+    def test_read_returns_the_snapshot_inside_the_ttl(self):
+        box = self._staged_box()
+
+        delta = box.read_fresh_preview(self._CREATED_AT + PREVIEW_MAX_AGE_SECONDS)
+
+        assert delta is not None
+        assert delta.preview_id == "pv-1"
+        # A read inside the window consumes nothing.
+        assert box.pending_delta is delta
+
+    def test_read_discards_the_snapshot_past_the_ttl(self):
+        box = self._staged_box()
+
+        assert box.read_fresh_preview(self._CREATED_AT + PREVIEW_MAX_AGE_SECONDS + 1) is None
+        # Dropped on the way out, so no later caller is handed one the apply
+        # would refuse.
+        assert box.pending_delta is None
+
+    def test_read_returns_none_when_nothing_staged(self):
+        box = LibrarySyncStateBox()
+        assert box.read_fresh_preview(self._CREATED_AT) is None
+
+    def test_restorable_read_withholds_while_a_run_is_in_flight(self):
+        """A panel remounting mid-run must show the run, not a card that would
+        render over its progress rows — but the snapshot is only withheld."""
+        box = self._staged_box()
+        box.try_begin_run("run-1")
+
+        assert box.read_restorable_preview(self._CREATED_AT) is None
+        # Withheld, NOT discarded.
+        assert box.pending_delta is not None
+        # A cancelling run is still in flight, so it withholds too.
+        box.request_cancel("run-1")
+        assert box.read_restorable_preview(self._CREATED_AT) is None
+        assert box.pending_delta is not None
+
+    def test_restorable_read_hands_the_snapshot_back_once_the_run_ends(self):
+        box = self._staged_box()
+        box.try_begin_run("run-1")
+        box.read_restorable_preview(self._CREATED_AT)
+
+        box.finish_run("run-1")
+
+        delta = box.read_restorable_preview(self._CREATED_AT)
+        assert delta is not None
+        assert delta.preview_id == "pv-1"
+
+    def test_restorable_read_still_refuses_an_over_age_snapshot(self):
+        box = self._staged_box()
+
+        assert box.read_restorable_preview(self._CREATED_AT + PREVIEW_MAX_AGE_SECONDS + 1) is None
+        assert box.pending_delta is None
+
+    def test_in_flight_withholding_does_not_reach_the_apply_path_read(self):
+        """``read_fresh_preview`` is the apply's age check and must stay
+        run-blind: an overlapping apply is refused by the run-slot claim with
+        its own reason, never rewritten into a staleness verdict."""
+        box = self._staged_box()
+        box.try_begin_run("run-1")
+
+        assert box.read_fresh_preview(self._CREATED_AT) is not None
+
+    def test_matches_is_identity_only_and_consumes_nothing(self):
+        box = self._staged_box()
+
+        assert box.matches_preview("pv-1") is True
+        assert box.matches_preview("pv-other") is False
+        # The verb takes no ``now`` at all: age is the read's verdict, never
+        # this one's, so a match is a signature comparison and nothing else.
+        assert box.pending_delta is not None
+
+    def test_matches_is_false_when_nothing_staged(self):
+        box = LibrarySyncStateBox()
+        assert box.matches_preview("pv-1") is False
+
+    def test_discard_drops_the_snapshot_and_is_idempotent(self):
+        box = self._staged_box()
+
+        box.discard_preview()
+        assert box.pending_delta is None
+        box.discard_preview()
+        assert box.pending_delta is None
+
+    def test_preview_verbs_leave_the_run_lifecycle_alone(self):
+        """The staged preview is not run state: staging or dropping it must never
+        admit, cancel or end a run."""
+        box = self._staged_box()
+        assert box.sync_state is SyncState.IDLE
+        assert box.current_sync_id is None
+
+        box.read_fresh_preview(self._CREATED_AT)
+        box.discard_preview()
+
+        assert box.sync_state is SyncState.IDLE
+        assert box.current_sync_id is None
 
 
 class TestIsInFlight:

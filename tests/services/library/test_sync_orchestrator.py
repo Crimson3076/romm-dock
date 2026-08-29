@@ -34,7 +34,6 @@ import pytest
 from adapters.persistence import (
     PersistenceAdapter,
 )
-from domain.preview_delta import PreviewDelta
 from domain.sync_diff import BIND_ROM_ID_KEY
 from domain.sync_stage import SyncStage
 from domain.sync_state import SyncState
@@ -226,6 +225,49 @@ class TestSyncPreview:
         assert "preview_id" in result
 
     @pytest.mark.asyncio
+    async def test_terminal_frame_is_emitted_before_the_snapshot_goes_idle(self, plugin, fake_romm_api):
+        """The run's ending reaches the panel as an EVENT; what it leaves behind is idle.
+
+        Ordering, not merely outcome: the terminal frame is emitted while the run
+        still owns the slot, and only the ``finally: finish_run`` that follows it
+        puts the snapshot back to the idle default. A panel remounting after this
+        run must not be handed its terminal frame as the state of whatever run it
+        is watching now — that frame's message and run id were what turned a live
+        preview into a green "Preview ready" over its own progress rows.
+        """
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        decky.emit.reset_mock()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 1, "name": "Game A", "fs_name": "a.z64"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+
+        result = await plugin.sync_preview()
+        assert result["success"] is True
+
+        frames = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_progress"]
+        assert frames[-1]["stage"] == "done"
+        assert frames[-1]["message"] == "Preview ready"
+        assert frames[-1]["running"] is False
+        # The lifecycle flag rides the get_sync_status answer alone — an event
+        # carrying it would make the two look interchangeable, which they are not.
+        assert "inFlight" not in frames[-1]
+        # ...and the run id it named is gone from what the next mount reads.
+        assert frames[-1]["runId"] != ""
+        status = plugin._sync_service.get_sync_status()
+        assert status["running"] is False
+        assert status["stage"] == ""
+        assert status["message"] == ""
+        assert status["runId"] == ""
+
+    @pytest.mark.asyncio
     async def test_populates_pending_delta(self, plugin, fake_romm_api):
         import decky
 
@@ -246,8 +288,6 @@ class TestSyncPreview:
         assert plugin._sync_service._pending_delta is not None
         assert plugin._sync_service._pending_delta.preview_id == result["preview_id"]
         assert plugin._sync_service._pending_delta.created_at == plugin._sync_service._orchestrator._clock.time()
-        assert plugin._sync_service._pending_delta.platforms_count == 1
-        assert plugin._sync_service._pending_delta.total_roms == 1
 
     @pytest.mark.asyncio
     async def test_does_not_write_metadata(self, plugin, fake_romm_api):
@@ -563,12 +603,11 @@ class TestSyncApplyDelta:
     """
 
     def _setup_pending_delta(self, plugin, preview_id="test-preview-123"):
-        """Helper to populate _pending_delta with valid data."""
-        plugin._sync_service._pending_delta = PreviewDelta(
+        """Helper to stage a valid pending delta through the box's own verb."""
+        plugin._sync_service._box.stage_preview(
             preview_id=preview_id,
             created_at=plugin._sync_service._orchestrator._clock.time(),
-            platforms_count=1,
-            total_roms=3,
+            answer={"success": True, "preview_id": preview_id},
         )
 
     @pytest.mark.asyncio
@@ -708,11 +747,10 @@ class TestSyncCancelPreview:
 
     @pytest.mark.asyncio
     async def test_clears_pending_delta(self, plugin):
-        plugin._sync_service._pending_delta = PreviewDelta(
+        plugin._sync_service._box.stage_preview(
             preview_id="some-id",
             created_at=plugin._sync_service._orchestrator._clock.time(),
-            platforms_count=0,
-            total_roms=0,
+            answer={"success": True, "preview_id": "some-id"},
         )
         result = await plugin.sync_cancel_preview()
         assert plugin._sync_service._pending_delta is None
@@ -722,6 +760,128 @@ class TestSyncCancelPreview:
     async def test_returns_success(self, plugin):
         result = await plugin.sync_cancel_preview()
         assert result == {"success": True}
+
+
+class TestGetPendingPreview:
+    """Tests for get_pending_preview().
+
+    The staged snapshot is what a panel that was navigated away from asks
+    for on its next mount, so the read hands back the preview answer
+    verbatim, answers "nothing pending" as a success, and drops a snapshot
+    the apply would refuse anyway.
+    """
+
+    @staticmethod
+    def _preview_setup(plugin, fake_romm_api):
+        import decky
+
+        plugin.loop = asyncio.get_event_loop()
+        decky.emit.reset_mock()
+        _use_fake_romm(plugin, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 1, "name": "Game A", "fs_name": "a.z64"}],
+        )
+        plugin.settings["enabled_platforms"] = {"1": True}
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_nothing_pending(self, plugin):
+        assert plugin._sync_service._pending_delta is None
+        assert await plugin.get_pending_preview() == {"success": True, "preview": None}
+
+    @pytest.mark.asyncio
+    async def test_withholds_the_snapshot_while_a_run_is_in_flight(self, plugin, fake_romm_api):
+        """A panel that remounts mid-run must not be handed a card to render over
+        the run's own progress rows. The snapshot is withheld, not discarded —
+        the frontend's own store guard can be wrong about a live run exactly
+        when it matters (an apply refused with ``sync_in_progress`` retracts the
+        optimistic running flag while the backend keeps the delta), so the
+        backend is the one that has to be right.
+        """
+        self._preview_setup(plugin, fake_romm_api)
+        await plugin.sync_preview()
+        box = plugin._sync_service._box
+        assert box.try_begin_run("run-1") is True
+
+        assert await plugin.get_pending_preview() == {"success": True, "preview": None}
+        assert box.pending_delta is not None
+
+    @pytest.mark.asyncio
+    async def test_hands_the_snapshot_back_once_the_run_is_over(self, plugin, fake_romm_api):
+        self._preview_setup(plugin, fake_romm_api)
+        fresh = await plugin.sync_preview()
+        box = plugin._sync_service._box
+        box.try_begin_run("run-1")
+        assert await plugin.get_pending_preview() == {"success": True, "preview": None}
+
+        box.finish_run("run-1")
+
+        assert await plugin.get_pending_preview() == {"success": True, "preview": fresh}
+
+    @pytest.mark.asyncio
+    async def test_hands_back_the_exact_answer_sync_preview_returned(self, plugin, fake_romm_api):
+        """The restored card must be what the user was shown — the same payload,
+        not a second assembly of it that can drift from the first."""
+        self._preview_setup(plugin, fake_romm_api)
+
+        fresh = await plugin.sync_preview()
+        restored = await plugin.get_pending_preview()
+
+        assert fresh["success"] is True
+        assert restored == {"success": True, "preview": fresh}
+
+    @pytest.mark.asyncio
+    async def test_answer_carries_the_absolute_expiry_deadline(self, plugin, fake_romm_api):
+        self._preview_setup(plugin, fake_romm_api)
+        clock = plugin._sync_service._orchestrator._clock
+
+        fresh = await plugin.sync_preview()
+
+        assert fresh["expires_at"] == clock.time() + 1800
+
+    @pytest.mark.asyncio
+    async def test_over_age_snapshot_is_dropped_and_answered_as_none(self, plugin, fake_romm_api):
+        """Past the TTL the read answers "nothing pending" AND clears the box —
+        the apply refuses the same snapshot, so leaving it staged would only
+        offer the user an Apply that cannot succeed."""
+        self._preview_setup(plugin, fake_romm_api)
+        await plugin.sync_preview()
+        assert plugin._sync_service._pending_delta is not None
+        plugin._sync_service._orchestrator._clock.advance(1801)
+
+        assert await plugin.get_pending_preview() == {"success": True, "preview": None}
+        assert plugin._sync_service._pending_delta is None
+
+    @pytest.mark.asyncio
+    async def test_just_under_the_ttl_is_still_handed_back(self, plugin, fake_romm_api):
+        self._preview_setup(plugin, fake_romm_api)
+        fresh = await plugin.sync_preview()
+        plugin._sync_service._orchestrator._clock.advance(1799)
+
+        assert await plugin.get_pending_preview() == {"success": True, "preview": fresh}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_preview_leaves_nothing_to_hand_back(self, plugin, fake_romm_api):
+        """A cancel landing after the unit loop stages no delta (#1202), so the
+        read has nothing to restore — the panel comes back to an idle page."""
+        self._preview_setup(plugin, fake_romm_api)
+        orch = plugin._sync_service._orchestrator
+        box = plugin._sync_service._box
+        orig_fetch = orch._fetch_preview_unit
+
+        async def fetch_then_cancel(unit, *args, **kwargs):
+            await orig_fetch(unit, *args, **kwargs)
+            box.request_cancel()
+
+        orch._fetch_preview_unit = fetch_then_cancel
+
+        result = await plugin.sync_preview()
+
+        assert result["success"] is False
+        assert await plugin.get_pending_preview() == {"success": True, "preview": None}
 
 
 # ── Tests for uncovered helper methods in library_sync.py ──────────
@@ -869,12 +1029,52 @@ class TestGetSyncStatus:
             "totalSteps": 2,
         }
         plugin._sync_service._sync_progress = snapshot
+        plugin._sync_service._box.try_begin_run("run-live")
 
         status = plugin._sync_service.get_sync_status()
 
-        assert status == snapshot
+        assert status == {**snapshot, "inFlight": True}
         assert status["running"] is True
         assert status["stage"] == "applying"
+
+    def test_in_flight_is_the_lifecycle_not_a_reading_of_the_frame(self, plugin):
+        """The two answer different questions and are allowed to disagree.
+
+        A cancel drain is the standing example: ``_finish_sync`` writes the
+        CANCELLED frame — ``running: False`` — while the run still owns the slot,
+        so a frontend inferring "no run" from the frame would retract a run that
+        is still winding down. It reads ``inFlight`` instead.
+        """
+        box = plugin._sync_service._box
+        box.try_begin_run("run-1")
+        box.request_cancel("run-1")
+        plugin._sync_service._sync_progress = {
+            "running": False,
+            "stage": "cancelled",
+            "message": "Sync cancelled",
+            "runId": "run-1",
+        }
+
+        status = plugin._sync_service.get_sync_status()
+
+        assert status["running"] is False
+        assert status["inFlight"] is True
+
+    def test_in_flight_is_false_once_the_run_is_finished(self, plugin):
+        """And the panel's licence to retract: the run is over, said plainly.
+
+        Without this the reset above makes a finished run and one that never
+        started the same answer, so a lost terminal frame would leave every later
+        mount believing a run is live with nothing on the page to escape it.
+        """
+        box = plugin._sync_service._box
+        box.try_begin_run("run-1")
+        box.finish_run("run-1")
+
+        status = plugin._sync_service.get_sync_status()
+
+        assert status["inFlight"] is False
+        assert status["running"] is False
 
     @pytest.mark.asyncio
     async def test_emit_progress_sub_stage_rides_event_and_status(self, plugin):
@@ -5654,7 +5854,9 @@ class TestProcessedGamesNumerator:
         complete = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_complete"]
         assert complete[-1]["total_games"] == 3, "1 wholesale-skipped + 1 delta-skipped + 1 committed"
         assert complete[-1]["interrupted"] is True
-        progress = plugin._sync_service._sync_progress
+        # The terminal frame as EMITTED — the snapshot the box holds is back at
+        # the idle default by now, because the run has finished (``finish_run``).
+        progress = [c[0][1] for c in decky.emit.call_args_list if c[0][0] == "sync_progress"][-1]
         assert progress["stage"] == "cancelled"
         assert progress["message"] == "Sync interrupted: 3 of 4 games processed"
         assert progress["current"] == 3

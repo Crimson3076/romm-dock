@@ -14,6 +14,13 @@ field assignment from a sub-service. Confining those two writes to the box
 keeps run admission, cancellation, and termination a single
 compare-and-swap on the one event loop, so a rapid Sync/Cancel can't leave
 a half-reset run id (#1202). Enforced by ``scripts/check_sync_lifecycle_owner.py``.
+
+``pending_delta`` is held to the same discipline, unenforced: the staged
+preview snapshot is written only through ``stage_preview`` /
+``read_fresh_preview`` / ``discard_preview``, so its whole lifetime — when it
+appears, when it ages out, when it is consumed — is readable in one place
+rather than inferred from assignments scattered across the orchestrator. The
+TTL lives here with it.
 """
 
 from __future__ import annotations
@@ -21,12 +28,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from domain.preview_delta import PreviewDelta, preview_expires_at
 from domain.sync_state import SyncState
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Mapping
 
-    from domain.preview_delta import PreviewDelta
+
+PREVIEW_MAX_AGE_SECONDS = 1800  # 30 minutes — preview snapshots stale beyond this
 
 
 def _default_progress() -> dict[str, Any]:
@@ -104,6 +114,14 @@ class LibrarySyncStateBox:
     sync_state: SyncState = SyncState.IDLE
     current_sync_id: str | None = None
     sync_last_heartbeat: float = 0.0
+    # The latest progress frame, which ``get_sync_status`` hands a remounting
+    # QAM so it can recover a live run without waiting for the next event. It
+    # describes an IN-FLIGHT run only: ``finish_run`` puts it back to the idle
+    # default, because a finished run's terminal frame is an event the panel was
+    # already sent, and a panel that merely FINDS one on a later mount is
+    # required to ignore it (#1019) — so leaving it here answered every mount
+    # with a run that ended, message and run id included, for as long as the
+    # plugin stayed loaded.
     sync_progress: dict[str, Any] = field(default_factory=_default_progress)
     pending_sync: dict[int, dict[str, Any]] = field(default_factory=dict)
     # Every fetched ROM of the active unit (built shortcut-shape, keyed by
@@ -123,6 +141,8 @@ class LibrarySyncStateBox:
     # ``ChunkDispatcher`` and reset with it; kept across the heartbeat-timeout
     # abandon window so a late ack still stamps the confirmed values.
     pending_cover_sources: dict[int, str] = field(default_factory=dict)
+    # The staged preview snapshot, between ``sync_preview`` and the apply that
+    # consumes it. Written only through the preview-lifecycle verbs below.
     pending_delta: PreviewDelta | None = None
     # Per-run collection-membership accumulator, keyed by a collision-free
     # ``(collection_kind, collection_id)`` identity (never the display name), so
@@ -295,12 +315,25 @@ class LibrarySyncStateBox:
         Resets to IDLE + nulls ``current_sync_id`` only when ``run_id`` equals
         the active ``current_sync_id``; a late, foreign, or doubled terminal is
         a no-op and can never null a freshly-started run. Returns ``True`` when
-        it reset.
+        it reset. The progress snapshot goes back to the idle default with it,
+        so ``get_sync_status`` answers a finished run the way it answers a
+        plugin that has never run — see :attr:`sync_progress`.
         """
         if str(run_id) != str(self.current_sync_id):
             return False
         self.sync_state = SyncState.IDLE
         self.current_sync_id = None
+        # Ordering: every run emits or SCHEDULES its terminal frame before
+        # reaching the ``finally: finish_run(run_id)`` that lands here, so this
+        # drops a snapshot the frontend has already been sent as an event — never
+        # one it is still waiting for. The per-unit error path schedules its emit
+        # through ``create_task``, which may run after this line; that is safe
+        # only because the coroutine binds the ERROR frame BY VALUE and this
+        # rebinds the attribute rather than mutating the dict it holds. A future
+        # in-place edit here would corrupt a frame already handed to a pending
+        # task. Not itself a frame either way: nothing emits this one, so no
+        # ``running: False`` reaches the panel mid-run from this line.
+        self.sync_progress = _default_progress()
         return True
 
     def is_in_flight(self) -> bool:
@@ -310,6 +343,75 @@ class LibrarySyncStateBox:
     def is_cancelling(self) -> bool:
         """True while a cancel has been requested for the in-flight run."""
         return self.sync_state is SyncState.CANCELLING
+
+    # ── Preview snapshot — the only writers of pending_delta ──
+
+    def stage_preview(
+        self,
+        *,
+        preview_id: str,
+        created_at: float,
+        answer: Mapping[str, Any],
+    ) -> None:
+        """Hold the computed preview for the apply — and for a panel that comes back to it.
+
+        ``answer`` is the exact dict ``sync_preview`` returned; a restored card
+        is that payload, never a second assembly of it. Replaces any snapshot
+        already staged: only the newest preview is appliable.
+        """
+        self.pending_delta = PreviewDelta(
+            preview_id=preview_id,
+            created_at=created_at,
+            answer=answer,
+        )
+
+    def preview_deadline(self, created_at: float) -> float:
+        """The wall clock this box stops accepting a snapshot taken at ``created_at``.
+
+        The frontend counts down against it, so the number it shows and the
+        verdict :meth:`read_fresh_preview` reaches come from the same TTL.
+        """
+        return preview_expires_at(created_at, PREVIEW_MAX_AGE_SECONDS)
+
+    def read_fresh_preview(self, now: float) -> PreviewDelta | None:
+        """The staged snapshot while it is still appliable, else ``None``.
+
+        A snapshot past its TTL at wall-clock ``now`` is discarded here rather
+        than returned, so no caller can be handed one the apply would refuse.
+        """
+        delta = self.pending_delta
+        if delta is None:
+            return None
+        if delta.is_expired(now, PREVIEW_MAX_AGE_SECONDS):
+            self.pending_delta = None
+            return None
+        return delta
+
+    def read_restorable_preview(self, now: float) -> PreviewDelta | None:
+        """The staged snapshot a returning panel may put back on screen, else ``None``.
+
+        Everything :meth:`read_fresh_preview` refuses, plus one more: while a
+        run is in flight the snapshot is **withheld, never discarded**. A panel
+        that remounts mid-run must show that run, not a card that would render
+        over its progress rows — and the same snapshot is handed back on the
+        next mount after the run ends, as long as it is still inside its TTL.
+        Withholding is this reader's alone: the apply path must keep answering
+        an overlapping apply with its own refusal, not this one's silence.
+        """
+        if self.is_in_flight():
+            return None
+        return self.read_fresh_preview(now)
+
+    def matches_preview(self, preview_id: str) -> bool:
+        """Whether the staged snapshot is the one ``preview_id`` names.
+
+        Identity only — a match says nothing about the snapshot's age.
+        """
+        return self.pending_delta is not None and self.pending_delta.preview_id == preview_id
+
+    def discard_preview(self) -> None:
+        """Drop the staged snapshot — consumed by an apply, cancelled, or failed."""
+        self.pending_delta = None
 
     # ── Abandoned-chunk stash — the heartbeat-timeout recovery seam ──
 
