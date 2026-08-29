@@ -26,6 +26,9 @@ class FakePlatformSyncStateRepository:
     def delete(self, platform_slug: str) -> None:
         self._stamps.pop(platform_slug, None)
 
+    def has_any(self) -> bool:
+        return bool(self._stamps)
+
     def clear(self) -> None:
         self._stamps = {}
 

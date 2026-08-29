@@ -188,6 +188,32 @@ export interface SyncStats {
   collections?: number;
   roms: number;
   total_shortcuts: number;
+  /**
+   * Bound ROMs carrying a recorded launch command — the games the next run can
+   * pass over at apply time, and the number the resume line states.
+   *
+   * Bound AND recorded, never recorded alone: an unbound row is classified NEW
+   * before its recorded value is read, so a recorded command with no shortcut is
+   * not skip authority. That is what makes this fall to zero after a
+   * remove-all, where the rows (and their recorded commands) deliberately
+   * survive.
+   *
+   * Absent from an older backend, which reads as no recorded games — the safe
+   * direction, since the offer then understates rather than promises.
+   */
+  resumable_games?: number;
+  /**
+   * Whether ANY platform or collection still carries a completion stamp — the
+   * other kind of durable progress, which makes the next run pass over a whole
+   * unit at fetch time.
+   *
+   * A separate fact rather than an optimisation of {@link resumable_games},
+   * because neither implies the other. A run cancelled inside its first platform
+   * unit has recorded games and no stamp; a row predating migration 015 carries a
+   * NULL recorded value while its platform's stamp survives, so an upgraded
+   * install can hold stamps and no recorded games. Both are genuine resumes.
+   */
+  has_completion_stamp?: boolean;
 }
 
 export interface RegistryPlatform {

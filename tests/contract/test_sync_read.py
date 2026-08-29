@@ -65,11 +65,21 @@ async def test_sync_heartbeat_shape(harness):
 async def test_get_sync_stats_shape(harness):
     """Stats dict: every count key present and an int; last_sync + last_attempt None when never synced."""
     result = await harness.plugin.get_sync_stats()
-    assert set(result.keys()) == {"last_sync", "last_attempt", "platforms", "collections", "roms", "total_shortcuts"}
+    assert set(result.keys()) == {
+        "last_sync",
+        "last_attempt",
+        "platforms",
+        "collections",
+        "roms",
+        "total_shortcuts",
+        "resumable_games",
+        "has_completion_stamp",
+    }
     assert result["last_sync"] is None
     assert result["last_attempt"] is None
-    for key in ("platforms", "collections", "roms", "total_shortcuts"):
+    for key in ("platforms", "collections", "roms", "total_shortcuts", "resumable_games"):
         assert isinstance(result[key], int)
+    assert result["has_completion_stamp"] is False
 
 
 async def test_get_sync_stats_surfaces_cancelled_attempt(harness):
@@ -133,6 +143,36 @@ async def test_clear_sync_cache_preserves_last_sync(harness):
     stats = await harness.plugin.get_sync_stats()
     assert stats["last_sync"] == "2025-06-01T17:10:00"
     assert stats["last_attempt"] == {"finished_at": "2025-06-01T18:05:00", "status": "cancelled"}
+
+
+async def test_clear_sync_cache_takes_both_skip_authorities(harness):
+    """The counterpart to the history the clear preserves: the skip authority it takes.
+
+    The panel's "Resume Sync" offer reads both kinds of durable progress — the
+    per-unit completion stamps and the per-ROM recorded launch commands — so over
+    the real SQLite stack the clear has to move both from a genuine resume
+    situation to nothing, while leaving the shortcuts themselves alone. Otherwise
+    the button keeps offering to continue a run whose progress has just been
+    discarded (#1789).
+    """
+    seed_rom(harness, 11, platform_slug="snes")
+    seed_platform_stamp(harness, "snes", rom_count=3)
+    with harness.uow_factory() as uow:
+        rom = uow.roms.get(11)
+        rom.record_applied_launch_options("flatpak run app 'game.zip'")
+        uow.roms.set_applied_launch_options(11, rom.applied_launch_options)
+
+    before = await harness.plugin.get_sync_stats()
+    assert before["resumable_games"] == 1
+    assert before["has_completion_stamp"] is True
+
+    await harness.plugin.clear_sync_cache()
+
+    after = await harness.plugin.get_sync_stats()
+    assert after["resumable_games"] == 0
+    assert after["has_completion_stamp"] is False
+    # The shortcut survives the clear — only what the next run could skip is gone.
+    assert after["roms"] == 1
 
 
 # ── get_platforms ────────────────────────────────────────────────────────

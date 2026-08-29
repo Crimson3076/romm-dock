@@ -68,5 +68,8 @@ class SqliteCollectionSyncStateRepository(BaseRepository):
         for row in self._conn.execute(f"SELECT {_COLUMNS} FROM collection_sync_state").fetchall():
             yield self._row_to_state(row)
 
+    def has_any(self) -> bool:
+        return self._conn.execute("SELECT 1 FROM collection_sync_state LIMIT 1").fetchone() is not None
+
     def clear(self) -> None:
         self._conn.execute("DELETE FROM collection_sync_state")

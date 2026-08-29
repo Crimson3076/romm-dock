@@ -364,6 +364,18 @@ class PlatformSyncStateRepository(Protocol):
         """
         ...
 
+    def has_any(self) -> bool:
+        """Return whether ANY platform currently carries a completion stamp.
+
+        One of the two skip authorities the panel's resume offer reads: a
+        surviving stamp means the next run passes over that whole platform at
+        fetch time, so there is something to resume even when no individual game
+        carries a recorded launch command (a row predating migration 015). The run
+        history cannot answer this — Force Full Sync preserves it while clearing
+        every stamp (#1789). (library/reporter.py)
+        """
+        ...
+
     def clear(self) -> None:
         """Drop every stamp so no platform skips next run.
 
@@ -406,6 +418,16 @@ class CollectionSyncStateRepository(Protocol):
         Backs the removal flows' surgical invalidation: they scan the stamps and
         delete the ones whose ``member_rom_ids`` contain a removed ROM.
         (services/shortcut_removal.py)
+        """
+        ...
+
+    def has_any(self) -> bool:
+        """Return whether ANY collection currently carries a completion stamp.
+
+        The collection sibling of ``PlatformSyncStateRepository.has_any`` and read
+        with it: a collection unit is part of a sync's enabled scope exactly as a
+        platform unit is, so its surviving stamp answers the resume offer the same
+        way (#1789). (library/reporter.py)
         """
         ...
 

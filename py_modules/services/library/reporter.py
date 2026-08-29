@@ -87,6 +87,17 @@ class SyncReporterConfig:
     artwork: ArtworkManager
 
 
+@dataclass(frozen=True)
+class _SyncStatsReading:
+    """One read of everything ``get_sync_stats`` takes from SQLite."""
+
+    last_sync: str | None
+    last_attempt: dict[str, str] | None
+    rom_count: int
+    resumable_games: int
+    has_completion_stamp: bool
+
+
 class SyncReporter:
     """Post-apply reporter + the ``roms``-derived queries + cache reset."""
 
@@ -841,6 +852,13 @@ class SyncReporter:
         after a reset (#1318). Keeping it means a post-force preview shows
         collections/platforms as "unchanged" (they exist in Steam; membership
         did not change), which is correct.
+
+        What the preserved history does **not** carry is a resumable run. This
+        clear takes away BOTH kinds of skip authority — every completion stamp and
+        every recorded launch command — and the panel's "Resume Sync" offer reads
+        those, never the history, so the sync button falls back to "Sync Library"
+        here. That the two are cleared together is what makes the offer's rule
+        hold; see :meth:`_read_sync_stats_io` (#1789).
         """
         with self._uow_factory() as uow:
             uow.platform_sync_state.clear()
@@ -859,30 +877,81 @@ class SyncReporter:
             )
         else:
             enabled_collection_count = 0
-        last_sync, last_attempt, rom_count = self._read_sync_stats_io()
+        stats = self._read_sync_stats_io()
         return {
-            "last_sync": last_sync,
-            "last_attempt": last_attempt,
+            "last_sync": stats.last_sync,
+            "last_attempt": stats.last_attempt,
             "platforms": enabled_platform_count,
             "collections": enabled_collection_count,
-            "roms": rom_count,
-            "total_shortcuts": rom_count,
+            "roms": stats.rom_count,
+            "total_shortcuts": stats.rom_count,
+            "resumable_games": stats.resumable_games,
+            "has_completion_stamp": stats.has_completion_stamp,
         }
 
-    def _read_sync_stats_io(self) -> tuple[str | None, dict[str, str] | None, int]:
-        """Read ``(last_sync_iso, last_attempt, bound_rom_count)`` from SQLite.
+    def _read_sync_stats_io(self) -> _SyncStatsReading:
+        """Read the run history, the bound-ROM count and the surviving skip authority from SQLite.
 
         ``last_sync`` is the ``finished_at`` of the latest completed ``SyncRun``;
         ``last_attempt`` surfaces the newest cancelled/interrupted/paused/errored run when
         it is newer than that (see :meth:`_last_attempt`); the ROM count is the
         bound-shortcut count in ``roms``.
+
+        The last two are what makes the panel's "Resume Sync" offer honest, and
+        they are two facts rather than one because this plugin keeps **two** kinds
+        of durable progress. A **completion stamp** makes the next run pass over a
+        whole platform or collection at fetch time; a **recorded launch command**
+        makes it pass over one game at apply time. Both survive a stopped run and
+        both are cleared together by Force Full Sync, which is the entire #1789
+        defect: the offer used to be derived from the run history, which Force
+        Full Sync deliberately preserves (#1318), so it outlived the progress it
+        promised to continue.
+
+        Neither fact subsumes the other, so the offer reads both. A run cancelled
+        inside its very first platform unit has written shortcuts and recorded
+        their launch commands but reached no final chunk, so it holds recorded
+        games and no stamp — and it is a genuine resume, because the next run
+        really does less work. In the other direction, a row predating migration
+        015 carries a NULL recorded value while its platform's stamp survives, so
+        an upgraded install can hold stamps with zero recorded games and still
+        skip those platforms wholesale. Counting only one kind declares one of
+        these two a fresh start when it is not.
+
+        Everything here rides in the read UoW that already scans ``roms``: the
+        recorded-game count is one more condition inside that same loop (``iter_all``
+        already selects ``applied_launch_options``), and each stamp probe is a
+        ``SELECT 1 … LIMIT 1`` over a leaf table. The panel mount pays nothing
+        measurable for any of it.
         """
         with self._uow_factory() as uow:
             completed = uow.sync_runs.get_latest_completed()
             terminal = uow.sync_runs.get_latest_terminal()
-            rom_count = sum(1 for rom in uow.roms.iter_all() if rom.shortcut_app_id is not None)
-        last_sync = completed.finished_at if completed is not None else None
-        return last_sync, self._last_attempt(completed, terminal), rom_count
+            rom_count = 0
+            resumable_games = 0
+            for rom in uow.roms.iter_all():
+                if rom.shortcut_app_id is None:
+                    continue
+                rom_count += 1
+                # Bound AND recorded, never recorded alone. ``classify_roms``
+                # (``domain/sync_diff.py``) sends an unbound row down the NEW branch
+                # — ``if not reg or not reg.get("app_id")`` — before it ever reads
+                # the recorded value, so a recorded command with no shortcut is not
+                # skip authority: the next run has to mint the shortcut regardless.
+                # Requiring the binding is therefore what makes this count fall to
+                # zero after a DangerZone remove-all by construction: unbinding
+                # keeps the row and its recorded command on purpose (ADR-0007), so
+                # a count over all rows would keep offering a resume of shortcuts
+                # that no longer exist. Do not "simplify" this to every row.
+                if rom.applied_launch_options is not None:
+                    resumable_games += 1
+            has_completion_stamp = uow.platform_sync_state.has_any() or uow.collection_sync_state.has_any()
+        return _SyncStatsReading(
+            last_sync=completed.finished_at if completed is not None else None,
+            last_attempt=self._last_attempt(completed, terminal),
+            rom_count=rom_count,
+            resumable_games=resumable_games,
+            has_completion_stamp=has_completion_stamp,
+        )
 
     @staticmethod
     def _last_attempt(completed: SyncRun | None, terminal: SyncRun | None) -> dict[str, str] | None:

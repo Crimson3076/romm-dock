@@ -519,31 +519,34 @@ while paused) so the number tracks the climbing RSS and the blue paused banner n
 memory. That notice is driven by `resume_ready` on the callable (`domain.session_budget.resume_would_proceed`:
 `rss + RESUME_HEADROOM_CHUNKS × FULL_CHUNK_WORST_KB < ceiling` — room for TWO worst-case chunks, ≈1.2 GB bar, because a
 one-chunk bar sits exactly on the pause point where Steam's own small frees flicker the verdict; `None` when RSS is
-unreadable) — when it flips `true` the blue banner reads "Steam memory is free again — press Resume Sync" and hides the
-restart button. The callable also carries the paused run's progress (`run_done_items` / `run_total_items`), so that
-banner reads "1200 of 2001 games done": the counters are run-scoped fields on `LibrarySyncStateBox`, stamped with the
-plan's ROM total and grown by the delta-restricted apply's SKIPPED entries (already correct on their shortcut), each
-wholesale-skipped unit's ROMs, and every COMMITTED chunk's acked items — an emitted-but-uncommitted chunk (cancel /
-heartbeat timeout / the pause itself) never counts, so the number can't over-report. They live in the backend
-deliberately: the plugin process survives the Steam restart the banner asks for, while the frontend reloads. In-memory
-only — a plugin reload wipes them and both come back `None`, which the banner renders by dropping the sentence rather
-than showing a zero. That row also shows the **last run's signed RSS growth**, appended inline after the value ("X.X GB
-· last run ±Y"), measured at EVERY terminal (completed / paused / cancelled / interrupted) so a paused run reads as _its
-own_ consumption-so-far rather than a prior clean run's: a RAW read taken unconditionally at run start is the baseline
-(`run_start_rss_kb` — captured before any chunk, so even a fully-incremental-skip run still records one and reports ≈
-+0.0 GB), the terminal RSS read is the end, and `session_memory_delta` differences them (an approximation for
-information only, which a raw start baseline is fine for). The value is retained in `last_run_delta_kb` so
-`get_session_budget_status` surfaces it on a QAM remount (in-memory only, lost on reload, no migration; `None` when
-either endpoint was unmeasurable, so a stale delta is never shown); the UI reads it from that callable, so it is
-deliberately NOT put on the `sync_complete` wire. Both banners also offer a **Restart Steam now** button that calls
-`SteamClient.User.StartRestart` directly from the frontend — a deterministic full client restart that resets the
-renderer's per-session budget to the ~430 MB baseline. The button is disabled while a game is running and hard-guarded
-on click (`isAnyAppRunning`) so a restart can never close a game. The RSS reader and GC trigger are wired through
-`SessionBudgetMonitorConfig`; the gate's per-item cost is a parameter, and because the apply now pushes each created
-shortcut's cover through Steam's artwork API (`SetCustomArtworkForApp`, transiently resident but GC-reclaimable — hence
-the GC-before-measure), the monitor prices each create at the worst-case create rate **plus** the transient cover term
-(`COVER_TRANSIENT_KB`) at both the chunk gate and the preview prognosis, while a changed item stays at the lighter
-update rate.
+unreadable) — when it flips `true` the blue banner announces memory is free and hides the restart button. The callable
+also carries the paused run's progress (`run_done_items` / `run_total_items`), so that banner can read "1200 of 2001
+games done": the counters are run-scoped fields on `LibrarySyncStateBox`, stamped with the plan's ROM total and grown by
+the delta-restricted apply's SKIPPED entries (already correct on their shortcut), each wholesale-skipped unit's ROMs,
+and every COMMITTED chunk's acked items — an emitted-but-uncommitted chunk (cancel / heartbeat timeout / the pause
+itself) never counts, so the number can't over-report. They live in the backend deliberately: the plugin process
+survives the Steam restart the banner asks for, while the frontend reloads. In-memory only — a plugin reload wipes them
+and both come back `None`, which the banner renders by dropping the sentence rather than showing a zero. The banner
+**names no button of its own** (#1789): the panel hands it the sync button as one value — the label and whether pressing
+it resumes — so it quotes "Resume Sync" or "Sync Library" as the panel actually rendered it, rather than deciding from
+the paused status, which survives a Force Full Sync that the resume does not. When nothing can be resumed it also drops
+the progress sentence, because "1200 of 2001 games done" promises a head start the clear has just discarded. That row
+also shows the **last run's signed RSS growth**, appended inline after the value ("X.X GB · last run ±Y"), measured at
+EVERY terminal (completed / paused / cancelled / interrupted) so a paused run reads as _its own_ consumption-so-far
+rather than a prior clean run's: a RAW read taken unconditionally at run start is the baseline (`run_start_rss_kb` —
+captured before any chunk, so even a fully-incremental-skip run still records one and reports ≈ +0.0 GB), the terminal
+RSS read is the end, and `session_memory_delta` differences them (an approximation for information only, which a raw
+start baseline is fine for). The value is retained in `last_run_delta_kb` so `get_session_budget_status` surfaces it on
+a QAM remount (in-memory only, lost on reload, no migration; `None` when either endpoint was unmeasurable, so a stale
+delta is never shown); the UI reads it from that callable, so it is deliberately NOT put on the `sync_complete` wire.
+Both banners also offer a **Restart Steam now** button that calls `SteamClient.User.StartRestart` directly from the
+frontend — a deterministic full client restart that resets the renderer's per-session budget to the ~430 MB baseline.
+The button is disabled while a game is running and hard-guarded on click (`isAnyAppRunning`) so a restart can never
+close a game. The RSS reader and GC trigger are wired through `SessionBudgetMonitorConfig`; the gate's per-item cost is
+a parameter, and because the apply now pushes each created shortcut's cover through Steam's artwork API
+(`SetCustomArtworkForApp`, transiently resident but GC-reclaimable — hence the GC-before-measure), the monitor prices
+each create at the worst-case create rate **plus** the transient cover term (`COVER_TRANSIENT_KB`) at both the chunk
+gate and the preview prognosis, while a changed item stays at the lighter update rate.
 
 **Run/unit/chunk identity on the ack (#1041).** Every `sync_apply_unit` event carries the `run_id` (the run's
 `current_sync_id` UUID), the `unit_id` (the `WorkUnit.id`), and the `chunk_index`; the frontend echoes all three back on
@@ -751,6 +754,44 @@ exception (it leaves the stamp, since a server-dropped ROM lowers RomM's `rom_co
 which is the entire full-re-fetch + full-re-apply arm — the stamps are the fetcher's sole skip authority. The
 `sync_runs` history is deliberately **preserved** (#1318): it feeds no skip gate and is the source of the "Last sync"
 display, so deleting it forced nothing and only blanked the panel to "Never" right after a reset.
+
+That preservation is also why the panel's **"Resume Sync" offer is derived from the surviving skip authority, not from
+the run history** (#1789). The history says only that a run ended without completing, and after a Force Full Sync it
+says that while everything it implied is gone — so a history-derived offer promised to continue progress that had just
+been discarded. The condition it replaced measured the wrong thing in the same way: it paired the incomplete attempt
+with "bound shortcuts exist", but Force Full Sync does not delete shortcuts, it deletes the stamps and the recorded
+launch options.
+
+A resume rests on **skip authority**, and this plugin keeps two kinds, cleared together by that one reset: a
+**completion stamp** (whole platform or collection skipped at fetch time, ADR-0023) or a **recorded
+`applied_launch_options`** (one game skipped at apply time, ADR-0025). Neither subsumes the other, so the offer reads
+both. A run cancelled inside its first platform unit reached no final chunk and holds no stamp, but its committed chunks
+wrote shortcuts and recorded their launch commands — the next run genuinely does less work, so that is a resume. A row
+predating migration 015 carries a NULL recorded value while its platform's stamp survives, so an upgraded install can
+hold stamps and zero recorded games and still skip those platforms wholesale.
+
+`get_sync_stats` therefore carries two additive fields alongside the display ones: `resumable_games` (bound rows with a
+non-NULL `applied_launch_options`) and `has_completion_stamp` (`PlatformSyncStateRepository.has_any()` or
+`CollectionSyncStateRepository.has_any()`). Both ride in the read UoW that already scans `roms` — the game count is one
+more condition inside that loop, since `iter_all` already selects the column, and each stamp probe is a
+`SELECT 1 … LIMIT 1` over a leaf table — so the panel mount pays nothing measurable.
+
+**The game count is bound-AND-recorded, never recorded alone.** `classify_roms` (`domain/sync_diff.py`) sends an unbound
+row down the NEW branch — `if not reg or not reg.get("app_id")` — before it reads the recorded value, because the next
+run has to mint the shortcut regardless. Requiring the binding is what makes the count fall to zero after a DangerZone
+remove-all, where unbinding deliberately keeps the row and its recorded command (ADR-0007) — a count over every row
+would keep offering to resume shortcuts that no longer exist. The panel keeps `roms > 0` as a conjunct on top, and it is
+**load-bearing rather than a restatement**: `has_completion_stamp` asks whether any stamp survives anywhere, while the
+removal path is surgical — it deletes only the platform slugs its removed rows name, and only the collection stamps
+whose member set intersects those rows. A stamp naming nothing the `roms` table still holds outlives a remove-all. Prune
+makes that reachable: it deletes `roms` rows and never touches `platform_sync_state` (`PruneRegistry.delete_rows`
+invalidates intersecting collection stamps only), so a platform whose games RomM dropped keeps its stamp with no rows
+left to name it, and the next remove-all cannot see that slug to invalidate it. Verified end to end: with such a stamp
+standing, a remove-all leaves `roms == 0` and `has_completion_stamp == true`, so without the conjunct the panel would
+offer a resume over zero shortcuts. It carries the boundary rule too — a run stopped before a single shortcut was
+written begins from scratch. `resumable_games` is a count of what is **done**, never of what is left — naming the
+remainder needs the server's library — so the QAM line under the button states what a resume would skip, and is omitted
+when the count is zero.
 
 **Single-owner run lifecycle (#1202).** The run-lifecycle pair — `sync_state` (idle/running/cancelling) and
 `current_sync_id` — is mutated **only** through four verb methods on `LibrarySyncStateBox`, never by direct field

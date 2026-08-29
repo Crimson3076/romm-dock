@@ -31,6 +31,9 @@ class FakeCollectionSyncStateRepository:
     def iter_all(self) -> Iterator[CollectionSyncState]:
         return iter([copy.deepcopy(state) for state in self._stamps.values()])
 
+    def has_any(self) -> bool:
+        return bool(self._stamps)
+
     def clear(self) -> None:
         self._stamps = {}
 

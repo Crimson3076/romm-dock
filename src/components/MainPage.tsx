@@ -341,6 +341,22 @@ function formatSyncScope(s: SyncPreviewSummary): string {
 }
 
 /**
+ * The line under "Resume Sync" — how much of a resume there is, counted in the
+ * unit the user recognises: games whose shortcut the next run can pass over.
+ *
+ * It states what is already done, never what is left, and carries no total: the
+ * remainder needs the server's library, and this line renders on every panel
+ * mount. "already synced" is a claim about these games only — the clause that
+ * follows is what keeps it from reading as a claim that the library is complete.
+ *
+ * Omitted entirely when the count is zero, which a resume on a surviving
+ * completion stamp alone can be. Honest silence beats "0 games".
+ */
+function formatResumeScope(resumableGames: number): string {
+  return `${pluralize(resumableGames, "game")} already synced — a resume continues from there.`;
+}
+
+/**
  * The Library row's one-line summary — "N games · M platforms · K collections" —
  * each part correctly singular/plural, zero parts omitted. Games is always
  * present (the row renders only when ``roms > 0``).
@@ -1111,27 +1127,47 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   // started — both gate the Sync buttons off.
   const connectionUnavailable = connected === false || connected === "backend_failed";
 
-  // The stamp/chunk sync model makes every re-sync an effective resume: a
-  // cancelled or interrupted run's committed chunks survive on disk, so the next
-  // run's incremental skip picks up where it stopped. ``last_attempt`` is
-  // non-null exactly when the newest terminal run did NOT complete. "errored"
-  // stays "Sync Library": an errored run often fails before applying anything
-  // (e.g. a config error), so "resume" isn't the right mental model. A completed
-  // sync clears last_attempt on the stats refresh, flipping the label back.
+  // ``last_attempt`` is non-null exactly when the newest terminal run did NOT
+  // complete. "errored" stays "Sync Library": an errored run often fails before
+  // applying anything (e.g. a config error), so "resume" isn't the right mental
+  // model. A completed sync clears last_attempt on the stats refresh, flipping the
+  // label back.
   //
-  // But "resume" only holds while partial progress actually exists on disk. If
-  // the user removed all shortcuts after an incomplete run (e.g. DangerZone
-  // "remove all"), there are zero bound shortcuts and the next run is a full
-  // fresh import — nothing to resume — so the button must honestly read "Sync
-  // Library" again. ``stats.roms`` is the bound-shortcut count (registry-derived).
+  // An incomplete attempt alone is not enough, and the half that used to stand in
+  // for "progress survives" was measuring the wrong thing: it asked whether
+  // SHORTCUTS exist, and Force Full Sync does not delete shortcuts — it deletes
+  // the completion stamps and the recorded launch commands. So the offer survived
+  // a clear that had just discarded everything it offered to continue (#1789).
+  //
+  // What a resume actually rests on is skip authority, of which this plugin keeps
+  // two kinds and clears both together in that one place: a completion stamp
+  // (whole platform or collection skipped at fetch time) or a recorded launch
+  // command (one game skipped at apply time). Either is a real resume — a run
+  // cancelled inside its first platform has written shortcuts and recorded their
+  // commands without reaching a stamp, and the next run genuinely does less work.
   const incompleteAttempt =
     stats?.last_attempt?.status === "interrupted" ||
     stats?.last_attempt?.status === "cancelled" ||
     stats?.last_attempt?.status === "paused";
   // ``incompleteAttempt`` being true narrows ``stats`` non-null (it dereferenced
   // stats.last_attempt), and ``roms`` is a required number — no ``?.``/``??`` needed.
-  const canResume = incompleteAttempt && stats.roms > 0;
+  const resumableGames = stats?.resumable_games ?? 0;
+  const skipAuthoritySurvives = resumableGames > 0 || (stats?.has_completion_stamp ?? false);
+  // ``roms > 0`` is LOAD-BEARING, not a belt-and-braces restatement of the two
+  // branches. ``has_completion_stamp`` is a global "any stamp anywhere", while the
+  // removal path is surgical: it deletes only the platform slugs its removed rows
+  // name, and only the collection stamps whose member set intersects those rows. A
+  // stamp naming nothing the ``roms`` table still holds therefore outlives a
+  // remove-all. Prune is the reachable path — it deletes ``roms`` rows and never
+  // touches ``platform_sync_state`` (services/prune/registry.py ``delete_rows``),
+  // so a platform whose games RomM dropped keeps its stamp with no rows left to
+  // name it; the next remove-all cannot see that slug to invalidate it. Without
+  // this conjunct that state offers "Resume Sync" over zero shortcuts. It is also
+  // the rule in its own right: a run that stopped before a single shortcut was
+  // written starts from the beginning and must read "Sync Library".
+  const canResume = incompleteAttempt && stats.roms > 0 && skipAuthoritySurvives;
   const syncButtonLabel = canResume ? "Resume Sync" : "Sync Library";
+  const resumeScopeText = canResume && resumableGames > 0 ? formatResumeScope(resumableGames) : null;
 
   if (versionError) {
     return <VersionErrorCard message={versionError} compact />;
@@ -1381,11 +1417,15 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     syncBody = (
       <>
         {/* Persistent session-budget banner (#1383): blue while the last run was
-            paused (restart Steam, then Resume Sync), or yellow when the live heap
-            is high after a completed run. Only in the idle state, so it clears the
-            moment a resume/new sync starts. */}
+            paused (restart Steam, then press the sync button), or yellow when the
+            live heap is high after a completed run. Only in the idle state, so it
+            clears the moment a resume/new sync starts. It is HANDED the sync
+            button rather than working the name out from the same inputs — the
+            banner named it from a paused ``last_attempt`` alone, which survives a
+            Force Full Sync that the resume itself does not (#1789). */}
         <SessionBudgetBanner
           lastAttemptStatus={stats?.last_attempt?.status}
+          syncButton={{ label: syncButtonLabel, resumes: canResume }}
           rssKb={budgetStatus?.rss_kb ?? null}
           resumeReady={budgetStatus?.resume_ready ?? null}
           restartDisabled={connectionUnavailable}
@@ -1400,6 +1440,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
               detach(handleSync());
             }}
             disabled={connectionUnavailable}
+            description={resumeScopeText ?? undefined}
           >
             {syncButtonLabel}
           </ButtonItem>

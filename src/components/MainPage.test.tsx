@@ -171,8 +171,23 @@ vi.mock("@decky/ui", async () => {
     // Focusable wrappers around read-only rows (info fields, banners, progress) —
     // pass children through a plain div so the wrapped content stays queryable.
     Focusable: passthrough("div"),
-    ButtonItem: ({ children, onClick, disabled }: AnyProps & { onClick?: () => void; disabled?: boolean }) =>
-      ce("button", { onClick, disabled }, children as never),
+    // Mirrors the shared stub in src/test-setup.ts: the description rides in a
+    // SIBLING span, never inside the button, so it stays assertable (a dropped
+    // prop would make every assertion of its ABSENCE vacuously true) without
+    // leaking into the button's own textContent, which is how tests here identify
+    // buttons by label.
+    ButtonItem: ({
+      children,
+      onClick,
+      disabled,
+      description,
+    }: AnyProps & { onClick?: () => void; disabled?: boolean; description?: unknown }) =>
+      ce(
+        "div",
+        null,
+        ce("button", { onClick, disabled }, children as never),
+        description == null ? null : ce("span", { "data-testid": "button-desc" }, description as never),
+      ),
     Field: (p: AnyProps & { label?: unknown; description?: unknown }) =>
       ce(
         "div",
@@ -1381,10 +1396,16 @@ describe("MainPage", () => {
       rssKb: number | null,
       resumeReady: boolean | null = null,
       counts: { done: number | null; total: number | null } = { done: null, total: null },
+      resumableGames = 30,
     ): Promise<HTMLElement> {
       vi.mocked(backend.getSyncStats).mockResolvedValue({
         ...defaultStats(),
         roms: 42,
+        // Surviving progress by default, so the paused banner describes the resume
+        // situation it was written for. Pass 0 for the post-Force-Full-Sync state,
+        // where the run is still paused but the button beside it is not a resume.
+        resumable_games: resumableGames,
+        has_completion_stamp: false,
         last_attempt: lastAttemptStatus
           ? { finished_at: "2026-07-11T17:48:00", status: lastAttemptStatus as "paused" }
           : null,
@@ -1418,6 +1439,18 @@ describe("MainPage", () => {
       expect(banner).not.toBeNull();
       expect(banner?.textContent).toContain("Resume Sync");
       expect(banner?.textContent).not.toContain("GB");
+    });
+
+    it("points the paused banner at the plain sync button once a force-clear left nothing to resume", async () => {
+      // The panel-level half of #1789: the banner is handed the button rather than
+      // deciding its name from the paused status, which survives the clear that the
+      // resume does not. Without the wiring the panel says "Sync Library" on the
+      // button and "Resume Sync" in the banner directly above it.
+      const c = await renderIdle("paused", 2_299_000, false, { done: 1200, total: 2001 }, 0);
+      const banner = c.querySelector('[data-testid="budget-paused-banner"]');
+      expect(banner?.textContent).toContain("Steam memory is full (2.3 GB). Restart Steam, then Sync Library.");
+      expect(banner?.textContent).not.toContain("Resume Sync");
+      expect(buttonByExactText(c, "Sync Library")).not.toBeNull();
     });
 
     it("shows the yellow high-heap banner after a completed run with a high live heap", async () => {
@@ -1547,6 +1580,7 @@ describe("MainPage", () => {
         vi.mocked(backend.getSyncStats).mockResolvedValue({
           ...defaultStats(),
           roms: 42,
+          resumable_games: 30,
           last_attempt: { finished_at: "2026-07-11T17:48:00", status: "paused" },
         });
         // Before the restart: high RSS, resume would re-pause. After (poll tick):
@@ -3236,46 +3270,109 @@ describe("MainPage", () => {
   });
 
   describe("sync button label (resume vs fresh)", () => {
-    // roms > 0 = partial progress actually exists to resume. Every non-completed,
-    // non-errored terminal status resumes: interrupted, cancelled, and the #1383
-    // session-budget pause.
+    /** A resume situation: shortcuts on disk, and games the next run can pass
+     *  over. Recorded launch commands are the ordinary carrier — every stopped
+     *  run has committed chunks — so they, not a completion stamp, are the
+     *  default here. Without either kind the offer is off whatever the run
+     *  history says (#1789). */
+    function resumeStats(overrides: Partial<SyncStats> = {}): SyncStats {
+      return {
+        ...defaultStats(),
+        roms: 42,
+        last_attempt: { finished_at: "2026-06-01T17:48:00", status: "interrupted" },
+        resumable_games: 30,
+        has_completion_stamp: false,
+        ...overrides,
+      };
+    }
+
+    function buttonDescriptions(container: HTMLElement): string[] {
+      return Array.from(container.querySelectorAll('[data-testid="button-desc"]')).map((el) => el.textContent);
+    }
+
+    async function renderStats(stats: SyncStats): Promise<HTMLElement> {
+      vi.mocked(backend.getSyncStats).mockResolvedValue(stats);
+      const { container } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      return container;
+    }
+
+    // Every non-completed, non-errored terminal status resumes: interrupted,
+    // cancelled, and the #1383 session-budget pause.
     it.each(["interrupted", "cancelled", "paused"] as const)(
-      "reads 'Resume Sync' when the newest attempt was %s with bound shortcuts on disk",
+      "reads 'Resume Sync' when the newest attempt was %s and progress survives",
       async (status) => {
-        vi.mocked(backend.getSyncStats).mockResolvedValue({
-          ...defaultStats(),
-          roms: 42,
-          last_attempt: { finished_at: "2026-06-01T17:48:00", status },
-        });
-        const { container } = render(<MainPage onNavigate={vi.fn()} />);
-        await flushAsync();
-        expect(buttonByExactText(container, "Resume Sync")).not.toBeNull();
-        expect(buttonByExactText(container, "Sync Library")).toBeNull();
+        const c = await renderStats(resumeStats({ last_attempt: { finished_at: "2026-06-01T17:48:00", status } }));
+        expect(buttonByExactText(c, "Resume Sync")).not.toBeNull();
+        expect(buttonByExactText(c, "Sync Library")).toBeNull();
       },
     );
 
+    it("reads 'Sync Library' once a force-clear left NEITHER kind of progress", async () => {
+      // The #1789 regression. Force Full Sync deletes the completion stamps and
+      // the recorded launch commands but not the shortcuts, and it deliberately
+      // preserves the run history (#1318) — so the incomplete attempt and the
+      // bound shortcuts both survive while everything the next run could skip is
+      // gone. Whichever button is pressed the next run is a full one.
+      const c = await renderStats(resumeStats({ resumable_games: 0, has_completion_stamp: false }));
+      expect(buttonByExactText(c, "Sync Library")).not.toBeNull();
+      expect(buttonByExactText(c, "Resume Sync")).toBeNull();
+      expect(buttonDescriptions(c).join(" ")).not.toContain("already synced");
+    });
+
+    it("reads 'Resume Sync' on recorded games alone — a cancel inside the first platform", async () => {
+      // No unit reached its final chunk, so no stamp exists; the committed chunks
+      // still wrote shortcuts and recorded their launch commands, and the next run
+      // passes over every one of them. Keying the offer on stamps alone called
+      // this a fresh start, which it is not.
+      const c = await renderStats(resumeStats({ resumable_games: 12, has_completion_stamp: false }));
+      expect(buttonByExactText(c, "Resume Sync")).not.toBeNull();
+      expect(buttonDescriptions(c)).toContain("12 games already synced — a resume continues from there.");
+    });
+
+    it("reads 'Resume Sync' on a completion stamp alone, and says nothing under it", async () => {
+      // The mirror case: rows predating migration 015 carry no recorded command
+      // while their platform's stamp survives, so an upgraded install can hold
+      // stamps and zero recorded games — those platforms still skip wholesale.
+      // With no number to state, the line is omitted rather than reading "0 games".
+      const c = await renderStats(resumeStats({ resumable_games: 0, has_completion_stamp: true }));
+      expect(buttonByExactText(c, "Resume Sync")).not.toBeNull();
+      expect(buttonDescriptions(c).join(" ")).not.toContain("already synced");
+    });
+
+    it("counts the resume line in games, singular at one", async () => {
+      const c = await renderStats(resumeStats({ resumable_games: 1 }));
+      expect(buttonDescriptions(c)).toContain("1 game already synced — a resume continues from there.");
+    });
+
+    it("omits the line entirely when the button reads 'Sync Library'", async () => {
+      // No resume, nothing to describe — a count under a fresh-sync button would
+      // name progress the run is not going to skip.
+      const c = await renderStats(defaultStats());
+      expect(buttonByExactText(c, "Sync Library")).not.toBeNull();
+      expect(buttonDescriptions(c).join(" ")).not.toContain("already synced");
+    });
+
     it("reads 'Sync Library' when an interrupted attempt left ZERO bound shortcuts (all removed — nothing to resume)", async () => {
-      // The regression: after an interrupted run the user removed every shortcut
-      // (DangerZone "remove all"), so roms is 0 — the next run is a full fresh
-      // import, and the label must not falsely promise a resume.
-      vi.mocked(backend.getSyncStats).mockResolvedValue({
-        ...defaultStats(),
-        roms: 0,
-        last_attempt: { finished_at: "2026-06-01T17:48:00", status: "interrupted" },
-      });
-      const { container } = render(<MainPage onNavigate={vi.fn()} />);
-      await flushAsync();
-      expect(buttonByExactText(container, "Sync Library")).not.toBeNull();
-      expect(buttonByExactText(container, "Resume Sync")).toBeNull();
+      // After an interrupted run the user removed every shortcut (DangerZone
+      // "remove all"), so roms is 0 and the next run is a full fresh import. A
+      // surviving stamp alongside zero shortcuts is a REAL state, not a contrived
+      // fixture: removal invalidates only the platform slugs its removed rows name,
+      // and prune deletes rows without touching platform stamps, so a platform
+      // RomM dropped keeps a stamp no remaining row can point the removal at.
+      // `roms > 0` is the only thing that catches it.
+      const c = await renderStats(resumeStats({ roms: 0, resumable_games: 30, has_completion_stamp: true }));
+      expect(buttonByExactText(c, "Sync Library")).not.toBeNull();
+      expect(buttonByExactText(c, "Resume Sync")).toBeNull();
     });
 
     it("keeps 'Sync Library' when the newest attempt errored (resume isn't the model)", async () => {
       // An errored run often failed before applying anything (config error, etc.),
-      // so "resume" would mislead — the fresh label stays.
-      vi.mocked(backend.getSyncStats).mockResolvedValue({
-        ...defaultStats(),
-        last_attempt: { finished_at: "2026-06-01T17:48:00", status: "errored" },
-      });
+      // so "resume" would mislead — the fresh label stays. Shortcuts and both
+      // kinds of progress are present, so only the status can withhold the offer.
+      vi.mocked(backend.getSyncStats).mockResolvedValue(
+        resumeStats({ last_attempt: { finished_at: "2026-06-01T17:48:00", status: "errored" } }),
+      );
       const { container } = render(<MainPage onNavigate={vi.fn()} />);
       await flushAsync();
       expect(buttonByExactText(container, "Sync Library")).not.toBeNull();
@@ -3283,7 +3380,9 @@ describe("MainPage", () => {
     });
 
     it("keeps 'Sync Library' when there is no last attempt (clean state)", async () => {
-      // defaultStats() has no last_attempt → the fresh label.
+      // A fully-synced library carries recorded launch commands for every game, so
+      // the absent last_attempt is what has to withhold the offer.
+      vi.mocked(backend.getSyncStats).mockResolvedValue(resumeStats({ last_attempt: null }));
       const { container } = render(<MainPage onNavigate={vi.fn()} />);
       await flushAsync();
       expect(buttonByExactText(container, "Sync Library")).not.toBeNull();
@@ -3311,16 +3410,32 @@ describe("MainPage", () => {
       expect(buttonByExactText(container, "Force Full Sync")).toBeNull();
     });
 
-    it("keeps 'Resume Sync' and the Force button after a force-clear (history preserved, #1318)", async () => {
-      // Force Full Sync no longer deletes the run history — the backend preserves
-      // it so the Last-sync display stays truthful. Both stats reads (mount +
-      // post-clear) therefore return the SAME resume situation.
-      vi.mocked(backend.getSyncStats).mockResolvedValue({
-        ...defaultStats(),
-        roms: 42,
-        last_sync: null,
-        last_attempt: { finished_at: "2026-06-01T17:48:00", status: "interrupted" },
-      });
+    it("keeps the Force button after a force-clear while the label drops back to 'Sync Library'", async () => {
+      // Two things a force-clear does, deliberately opposite, and they are easy to
+      // merge into one. The run HISTORY is preserved (#1318) so the Last-sync line
+      // and this button both stay put — the button is idempotent, pressing it
+      // again just re-clears what is already cleared. The SHORTCUTS survive too.
+      // What goes is both kinds of skip authority, which is what the resume offer
+      // reads, so the label must NOT survive the clear: the next run is a full one
+      // either way, and continuing to offer a resume promises progress that has
+      // just been discarded (#1789).
+      vi.mocked(backend.getSyncStats)
+        .mockResolvedValueOnce({
+          ...defaultStats(),
+          roms: 42,
+          last_sync: null,
+          last_attempt: { finished_at: "2026-06-01T17:48:00", status: "interrupted" },
+          resumable_games: 30,
+          has_completion_stamp: true,
+        })
+        .mockResolvedValue({
+          ...defaultStats(),
+          roms: 42,
+          last_sync: null,
+          last_attempt: { finished_at: "2026-06-01T17:48:00", status: "interrupted" },
+          resumable_games: 0,
+          has_completion_stamp: false,
+        });
       vi.mocked(backend.clearSyncCache).mockResolvedValue({ success: true, message: "Cleared" });
       const { container } = render(<MainPage onNavigate={vi.fn()} />);
       await flushAsync();
@@ -3329,7 +3444,7 @@ describe("MainPage", () => {
       expect(buttonByExactText(container, "Force Full Sync")).not.toBeNull();
 
       // Press Force Full Sync → clearSyncCache succeeds → the stats refresh reads
-      // the SAME preserved history.
+      // the preserved history with both skip authorities gone.
       await act(async () => {
         fireEvent.click(buttonByExactText(container, "Force Full Sync")!);
         await Promise.resolve();
@@ -3337,10 +3452,8 @@ describe("MainPage", () => {
       });
       await flushAsync();
 
-      // History preserved: the label stays "Resume Sync" and the Force button
-      // stays visible (idempotent — the stamps are already cleared).
-      expect(buttonByExactText(container, "Resume Sync")).not.toBeNull();
-      expect(buttonByExactText(container, "Sync Library")).toBeNull();
+      expect(buttonByExactText(container, "Sync Library")).not.toBeNull();
+      expect(buttonByExactText(container, "Resume Sync")).toBeNull();
       expect(buttonByExactText(container, "Force Full Sync")).not.toBeNull();
     });
   });
@@ -5377,8 +5490,8 @@ describe("MainPage", () => {
     /** Stats that let EVERY start control render, so an assertion that none of
      *  them is on screen is carried by four absences rather than one. Without a
      *  recorded attempt "Force Full Sync" is hidden anyway, and without an
-     *  incomplete one plus bound shortcuts the sync button reads "Sync Library"
-     *  rather than "Resume Sync". */
+     *  incomplete one plus bound shortcuts plus surviving progress the sync button
+     *  reads "Sync Library" rather than "Resume Sync". */
     function statsWithEveryStartControl(): SyncStats {
       return {
         last_sync: null,
@@ -5387,6 +5500,7 @@ describe("MainPage", () => {
         roms: 12,
         total_shortcuts: 12,
         last_attempt: { finished_at: "2026-06-01T17:48:00", status: "cancelled" },
+        resumable_games: 12,
       };
     }
 

@@ -68,6 +68,32 @@ class TestDelete:
         assert uow.platform_sync_state.get("nope") is None
 
 
+class TestHasAny:
+    def test_false_when_no_stamps(self, uow: SqliteUnitOfWork):
+        assert uow.platform_sync_state.has_any() is False
+
+    def test_true_once_any_platform_is_stamped(self, uow: SqliteUnitOfWork):
+        uow.platform_sync_state.save(_stamp("n64"))
+
+        assert uow.platform_sync_state.has_any() is True
+
+    def test_follows_delete_down_to_the_last_stamp(self, uow: SqliteUnitOfWork):
+        uow.platform_sync_state.save(_stamp("n64"))
+        uow.platform_sync_state.save(_stamp("snes"))
+
+        uow.platform_sync_state.delete("n64")
+        assert uow.platform_sync_state.has_any() is True
+
+        uow.platform_sync_state.delete("snes")
+        assert uow.platform_sync_state.has_any() is False
+
+    def test_false_after_clear(self, uow: SqliteUnitOfWork):
+        uow.platform_sync_state.save(_stamp("n64"))
+        uow.platform_sync_state.clear()
+
+        assert uow.platform_sync_state.has_any() is False
+
+
 class TestClear:
     def test_clear_removes_every_stamp(self, uow: SqliteUnitOfWork):
         uow.platform_sync_state.save(_stamp("n64"))
