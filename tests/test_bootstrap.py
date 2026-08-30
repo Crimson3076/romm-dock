@@ -24,6 +24,7 @@ from fakes.fake_firmware_file_store import FakeFirmwareFileStore
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
 from fakes.fake_game_process_control import FakeGameProcessControlAdapter
 from fakes.fake_hostname_reader import FakeHostnameReader
+from fakes.fake_launcher_backend_factory import FakeLauncherBackendFactory
 from fakes.fake_machine_id_reader import FakeMachineIdReader
 from fakes.fake_migration_file_store import FakeMigrationFileStore
 from fakes.fake_path_exists_reader import FakePathExistsReader
@@ -398,6 +399,8 @@ class TestWireServices:
             "prune_artifacts": MagicMock(),
             "steam_recovery": MagicMock(),
             "proton_locator": MagicMock(),
+            "retrodeck_launcher_backend_factory": FakeLauncherBackendFactory("retrodeck"),
+            "emudeck_launcher_backend_factory": FakeLauncherBackendFactory("emudeck", installations=[]),
             "settings": settings,
             "loop": asyncio.new_event_loop(),
             "logger": logger,
@@ -466,6 +469,8 @@ class TestWireServices:
                 prune_artifacts=deps["prune_artifacts"],
                 steam_recovery=deps["steam_recovery"],
                 proton_locator=deps["proton_locator"],
+                retrodeck_launcher_backend_factory=deps["retrodeck_launcher_backend_factory"],
+                emudeck_launcher_backend_factory=deps["emudeck_launcher_backend_factory"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -570,6 +575,7 @@ class TestWireServices:
         assert "game_process_service" in result
         assert isinstance(result["game_process_service"], GameProcessService)
         assert "relaunch_options_resolver" in result
+        assert "launcher_backend_service" in result
         deps["loop"].close()
 
     def test_pending_sync_binding_observes_library_rebinds(self, tmp_path):

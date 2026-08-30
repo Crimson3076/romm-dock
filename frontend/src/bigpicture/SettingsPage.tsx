@@ -68,6 +68,7 @@ import { SaveSyncSection } from "./settings/SaveSyncSection";
 import { RegisteredDevicesSection } from "./settings/RegisteredDevicesSection";
 import { ControllerSection } from "./settings/ControllerSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
+import { LauncherBackendSection } from "./settings/LauncherBackendSection";
 import { LibrarySection, AUTO_REGION, DEFAULT_REGION_LABEL } from "./settings/LibrarySection";
 import { showPreferredRegionModal } from "./settings/PreferredRegionModal";
 
@@ -95,6 +96,7 @@ const SECTION_LABELS: Record<SettingsSection, string> = {
   "save-sync": "Save Sync",
   controller: "Controller",
   "steam-library": "Steam Library",
+  launcher: "Launcher",
   advanced: "Advanced",
 };
 
@@ -661,6 +663,8 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
             onNamingModeChange={handleNamingModeChange}
           />
         );
+      case "launcher":
+        return <LauncherBackendSection />;
       case "advanced":
         return <AdvancedSection logLevel={logLevel} onLogLevelChange={handleLogLevelChange} />;
     }

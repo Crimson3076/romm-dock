@@ -36,14 +36,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from domain.shortcut_data import build_launch_options, resolve_emulator_invocation
-
 if TYPE_CHECKING:
     from domain.rom import Rom
     from domain.rom_install import RomInstall
+    from lib.late_binding import LateBinding
     from services.protocols import (
         ActiveCoreReader,
         DiscResolver,
+        LaunchCommandRenderer,
         UnitOfWorkFactory,
         WindowsResolver,
     )
@@ -56,17 +56,21 @@ class RelaunchOptionsResolverConfig:
     Carries the SQLite Unit-of-Work factory (to snapshot the installed+bound
     ``(rom, install)`` pairs in one short read UoW), the shared ``active_core``
     resolver (which ``.so`` each ROM launches with), the shared ``disc_resolver``
-    (which file a multi-disc ROM launches given its persisted pick), and the
-    shared ``windows_resolver`` (which native-Windows ROMs — raw
+    (which file a multi-disc ROM launches given its persisted pick), the shared
+    ``windows_resolver`` (which native-Windows ROMs — raw
     ``platform_slug == "win"`` — resolve through instead, bypassing the other
-    two entirely) — the same seams every other launch-bake site resolves
-    through.
+    two entirely), and ``launch_renderer`` — the active launcher backend's
+    rendering seam (issue #918), late-bound because the backend service needs
+    this resolver as its own installed-relaunch-items seam, a construction
+    cycle. Every non-Windows ROM renders its invocation through it, so a
+    launcher-backend switch's re-bake and every other launch-bake site agree.
     """
 
     uow_factory: UnitOfWorkFactory
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
     windows_resolver: WindowsResolver
+    launch_renderer: LateBinding[LaunchCommandRenderer]
 
 
 class RelaunchOptionsResolver:
@@ -77,6 +81,7 @@ class RelaunchOptionsResolver:
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
         self._windows_resolver = config.windows_resolver
+        self._launch_renderer = config.launch_renderer
 
     def _resolve_bake_path(self, rom: Rom, install: RomInstall) -> str:
         """Resolve the launch target *rom* bakes — the bare path the run receives.
@@ -111,10 +116,11 @@ class RelaunchOptionsResolver:
                 "launch_options": self._windows_resolver.resolve_launch_options(install, rom.selected_exe),
             }
         emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
-        invocation = resolve_emulator_invocation({"id": rom.rom_id}, emulator)
+        renderer = self._launch_renderer.get()
+        invocation = renderer.resolve_invocation({"id": rom.rom_id}, emulator)
         return {
             "app_id": rom.shortcut_app_id,
-            "launch_options": build_launch_options(invocation, self._resolve_bake_path(rom, install)),
+            "launch_options": renderer.build_launch_options(invocation, self._resolve_bake_path(rom, install)),
         }
 
     def _bound_install(self, rom_id: int) -> tuple[Rom, RomInstall] | None:

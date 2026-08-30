@@ -18,6 +18,8 @@ The package is organised topically — consumers always deep-import via
   service subtree.
 - ``cross_service``: narrowly-typed multi-method seams one service
   exposes to another so services remain independent.
+- ``launcher_backend``: the launcher-backend rendering + detection seam
+  (issue #918) — RetroDECK and EmuDeck behind one Protocol pair.
 """
 
 from __future__ import annotations
@@ -94,6 +96,7 @@ from services.protocols.infra import (
     ResolvedPathFn,
     ResolveUploadConflictFn,
 )
+from services.protocols.launcher_backend import LaunchCommandRenderer, LauncherBackend, LauncherBackendFactory
 from services.protocols.paths import (
     CoreInfoProvider,
     CoreNameProviderFn,
@@ -181,10 +184,13 @@ __all__ = [
     "InstalledRomFilesRemoverFn",
     "InstalledRomRemoverFn",
     "KvConfigRepository",
+    "LaunchCommandRenderer",
     "LaunchGateDriftReader",
     "LaunchGateInstalledChecker",
     "LaunchGateRomLookup",
     "LaunchGateSaveStatusReader",
+    "LauncherBackend",
+    "LauncherBackendFactory",
     "MachineIdReader",
     "MigrationFileStore",
     "MigrationPendingFn",

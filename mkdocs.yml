@@ -89,6 +89,7 @@ nav:
       - Config Source Parsers: architecture/config-source-parsers.md
       - Core &amp; Emulator Selection: architecture/core-emulator-selection.md
       - Native-Windows Games &amp; Proton Launch: architecture/windows-proton-launch.md
+      - Launcher Backends: architecture/launcher-backends.md
       - Steam Non-Steam Shortcuts: architecture/steam-non-steam-shortcuts.md
       - QAM Panel: architecture/qam-panel.md
       - Frontend Bundles: architecture/frontend-bundles.md

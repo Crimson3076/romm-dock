@@ -91,6 +91,12 @@ vi.mock("./settings/AdvancedSection", () => ({
     return createElement("div", { "data-testid": "advanced-section" });
   },
 }));
+// LauncherBackendSection owns its own data/effects (no props from SettingsPage)
+// — stub it out like the other sub-sections so this file's own narrow @decky/ui
+// re-mock (no DropdownItem) isn't exercised by a component it doesn't test.
+vi.mock("./settings/LauncherBackendSection", () => ({
+  LauncherBackendSection: () => createElement("div", { "data-testid": "launcher-backend-section" }),
+}));
 vi.mock("./settings/LibrarySection", async (importOriginal) => {
   // Keep the real AUTO_REGION / DEFAULT_REGION_LABEL constants (SettingsPage
   // imports them), but stub the component to capture props.
@@ -2005,11 +2011,11 @@ describe("SettingsPage", () => {
   });
 
   describe("the section list", () => {
-    it("shows exactly the five sections, in order", async () => {
+    it("shows exactly the six sections, in order", async () => {
       const { getAllByTestId } = renderPage();
       await flushAsync();
       const labels = getAllByTestId("field").map((el) => el.textContent);
-      expect(labels).toEqual(["Connections", "Save Sync", "Controller", "Steam Library", "Advanced"]);
+      expect(labels).toEqual(["Connections", "Save Sync", "Controller", "Steam Library", "Launcher", "Advanced"]);
     });
 
     it("opens on the section a navigation names", async () => {
@@ -2068,6 +2074,7 @@ describe("SettingsPage", () => {
       ["save-sync", "savesync-section"],
       ["controller", "controller-section"],
       ["steam-library", "library-section"],
+      ["launcher", "launcher-backend-section"],
       ["advanced", "advanced-section"],
     ] as const)("reaches every section's content: %s", async (section, testId) => {
       const { getByTestId, queryByTestId } = renderPage();

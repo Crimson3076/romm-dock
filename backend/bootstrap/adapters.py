@@ -29,6 +29,7 @@ from adapters.atlas_saves import AtlasSaveLocationAdapter
 from adapters.cover_art_file_store import CoverArtFileStoreAdapter
 from adapters.debug_logger import SettingsAwareDebugLogger
 from adapters.download_file import DownloadFileAdapter
+from adapters.emudeck_launcher_backend import EmuDeckLauncherBackendFactory
 from adapters.es_find_rules import EsFindRulesAdapter
 from adapters.firmware_file import FirmwareFileAdapter
 from adapters.game_process import GameProcessAdapter
@@ -51,6 +52,7 @@ from adapters.renderer_rss import RendererRssAdapter
 from adapters.repositories.unit_of_work import SqliteUnitOfWork
 from adapters.retroarch_config import RetroArchConfigAdapter
 from adapters.retroarch_core_info import RetroArchCoreInfoAdapter
+from adapters.retrodeck_launcher_backend import RetroDeckLauncherBackendFactory
 from adapters.retrodeck_paths import RetroDeckPathsAdapter
 from adapters.rom_files import RomFileAdapter
 from adapters.romm.http import RommHttpAdapter
@@ -89,6 +91,7 @@ if TYPE_CHECKING:
         FirmwareResolver,
         GameProcessControl,
         HostnameReader,
+        LauncherBackendFactory,
         MachineIdReader,
         MigrationFileStore,
         PathExistsReader,
@@ -158,6 +161,8 @@ class AdapterBundle:
     prune_artifacts: PruneArtifactStore
     steam_recovery: SteamRecoveryStore
     proton_locator: ProtonLocator
+    retrodeck_launcher_backend_factory: LauncherBackendFactory
+    emudeck_launcher_backend_factory: LauncherBackendFactory
 
 
 @dataclass(frozen=True)
@@ -408,6 +413,16 @@ def bootstrap(
     proton_locator = ProtonLocatorAdapter(user_home=user_home, runtime_dir=directories.data_dir)
     romm_api = RommApiAdapter(http_adapter)
     steam_config = SteamConfigAdapter(user_home=user_home, logger=logger)
+    # The two launcher-backend factories (issue #918) — RetroDECK (behavior-
+    # preserving wrapper over retrodeck_paths) and EmuDeck (emu-atlas-backed).
+    # Both share http_adapter.resolve_system, the same platform->system seam
+    # CoreService's own bake resolves through.
+    retrodeck_launcher_backend_factory = RetroDeckLauncherBackendFactory(paths=retrodeck_paths)
+    emudeck_launcher_backend_factory = EmuDeckLauncherBackendFactory(
+        user_home=user_home,
+        resolve_system=http_adapter.resolve_system,
+        logger=logger,
+    )
     sgdb_adapter = SteamGridDbAdapter(settings=settings, logger=logger, user_agent=user_agent)
     cover_art_file_store = CoverArtFileStoreAdapter()
     sgdb_artwork_cache = SgdbArtworkCacheAdapter(cache_dir=directories.cache_dir)
@@ -496,6 +511,8 @@ def bootstrap(
         prune_artifacts=prune_artifacts,
         steam_recovery=steam_recovery,
         proton_locator=proton_locator,
+        retrodeck_launcher_backend_factory=retrodeck_launcher_backend_factory,
+        emudeck_launcher_backend_factory=emudeck_launcher_backend_factory,
     )
     stores = StateBundle(
         settings=settings,

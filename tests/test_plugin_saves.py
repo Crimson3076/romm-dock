@@ -12,6 +12,7 @@ from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_event_sink import FakeEventSink
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
 from fakes.fake_hostname_reader import FakeHostnameReader
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_machine_id_reader import FakeMachineIdReader
 from fakes.fake_relaunch_options_resolver import FakeRelaunchOptionsResolver
 from fakes.fake_renderer_gc import FakeRendererGc
@@ -93,6 +94,7 @@ def plugin(tmp_path):
             windows_resolver=FakeWindowsResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     decky.DECKY_USER_HOME = str(tmp_path)

@@ -28,6 +28,7 @@ from services.firmware import FirmwareService, FirmwareServiceConfig
 from services.game_detail import GameDetailService, GameDetailServiceConfig
 from services.game_process import GameProcessService, GameProcessServiceConfig
 from services.launch_gate import LaunchGateService, LaunchGateServiceConfig
+from services.launcher_backend import LauncherBackendRegistry, LauncherBackendService, LauncherBackendServiceConfig
 from services.library import LibraryService, LibraryServiceConfig
 from services.metadata import MetadataService, MetadataServiceConfig
 from services.migration import MigrationService, MigrationServiceConfig
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
     from models.shortcut_launcher import ShortcutLauncher
 
     from domain.app_directories import AppDirectories
-    from services.protocols import InstalledRomRemoverFn, SiblingSupersedeFn
+    from services.protocols import InstalledRomRemoverFn, LaunchCommandRenderer, SiblingSupersedeFn
 
     from .adapters import AdapterBundle, CallbackBundle, RuntimeBundle, StateBundle
 
@@ -177,6 +178,13 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         ),
     )
 
+    # LauncherBackendService (issue #918) needs this resolver as its
+    # installed-relaunch-items seam for the switch fan-out, but the resolver
+    # needs the service's rendering as its launch_renderer — a construction
+    # cycle. Bind the renderer after both exist, the same LateBinding pattern
+    # used for every other producer/consumer cycle in this function.
+    launch_renderer_binding: LateBinding[LaunchCommandRenderer] = LateBinding("launch_renderer")
+
     # The single installed+bound relaunch-items resolver (#1154): snapshots the
     # rows in one short read UoW it closes before resolving core + disc, so the
     # nested resolver UoW never deadlocks. Both the RetroDECK-home migration and
@@ -188,8 +196,30 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
             windows_resolver=windows_launch_resolver,
+            launch_renderer=launch_renderer_binding,
         ),
     )
+
+    # LauncherBackendService (issue #918): the active-launcher-backend seam
+    # every bake site renders through. Registered here rather than in
+    # bootstrap/adapters.py because it orchestrates settings + the relaunch
+    # seam above, not raw I/O — the two factories it registers ARE adapters
+    # and are built there.
+    launcher_backend_service = LauncherBackendService(
+        config=LauncherBackendServiceConfig(
+            registry=LauncherBackendRegistry(
+                [
+                    cfg.adapters.retrodeck_launcher_backend_factory,
+                    cfg.adapters.emudeck_launcher_backend_factory,
+                ]
+            ),
+            settings=cfg.stores.settings,
+            settings_persister=cfg.callbacks.settings_persister,
+            relaunch_items=relaunch_options_resolver,
+            logger=cfg.runtime.logger,
+        ),
+    )
+    launch_renderer_binding.set(lambda: launcher_backend_service)
 
     # MigrationService is constructed before SaveService so that
     # save_sync_service can receive a bound reference to
@@ -311,6 +341,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             windows_resolver=windows_launch_resolver,
             renderer_rss=cfg.adapters.renderer_rss,
             renderer_gc=cfg.adapters.renderer_gc,
+            launch_renderer=launcher_backend_service,
         ),
     )
     pending_sync_binding.set(lambda: sync_service.pending_sync)
@@ -324,6 +355,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
             windows_resolver=windows_launch_resolver,
+            launch_renderer=launcher_backend_service,
         ),
     )
 
@@ -472,6 +504,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             uow_factory=cfg.callbacks.uow_factory,
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
+            launch_renderer=launcher_backend_service,
         ),
     )
 
@@ -482,6 +515,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             uow_factory=cfg.callbacks.uow_factory,
             disc_resolver=disc_launch_resolver,
             active_core=active_core_resolver,
+            launch_renderer=launcher_backend_service,
         ),
     )
 
@@ -640,4 +674,5 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         "session_lifecycle_service": session_lifecycle_service,
         "game_process_service": game_process_service,
         "relaunch_options_resolver": relaunch_options_resolver,
+        "launcher_backend_service": launcher_backend_service,
     }
