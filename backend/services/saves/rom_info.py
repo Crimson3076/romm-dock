@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from services.protocols import (
         ActiveCoreReader,
         CoreNameProviderFn,
-        RetroDeckPaths,
+        LauncherPaths,
         SaveFileStore,
         SaveLocationReader,
         SystemResolver,
@@ -52,18 +52,18 @@ class RomInfoServiceConfig:
     Holds the Unit-of-Work factory (the ``rom_installs`` aggregate is the
     source of truth for installed-ROM file records — WS3 — and ``kv_config``
     holds the save-sort markers), the Protocol-typed filesystem adapter, the
-    RetroDECK runtime-path accessor, the per-ROM active-core resolver, the
-    save-location reader that answers what a game's save consists of, the
-    platform-slug-to-system resolver (which, with ``roms.fs_name``, builds the
-    path a ROM the library knows but has not installed WOULD occupy — a save
-    answer turns on the content file's extension, so omitting the path asks a
-    different question), the RetroArch core-name provider, and the
-    standard-library logger.
+    active launcher backend's runtime-path accessor, the per-ROM active-core
+    resolver, the save-location reader that answers what a game's save
+    consists of, the platform-slug-to-system resolver (which, with
+    ``roms.fs_name``, builds the path a ROM the library knows but has not
+    installed WOULD occupy — a save answer turns on the content file's
+    extension, so omitting the path asks a different question), the RetroArch
+    core-name provider, and the standard-library logger.
     """
 
     uow_factory: UnitOfWorkFactory
     save_file_store: SaveFileStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     active_core: ActiveCoreReader
     save_locations: SaveLocationReader
     resolve_system: SystemResolver
@@ -78,7 +78,7 @@ class RomInfoService:
         self._config = config
         self._uow_factory = config.uow_factory
         self._save_file_store = config.save_file_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._active_core = config.active_core
         self._save_locations = config.save_locations
         self._resolve_system = config.resolve_system
@@ -102,8 +102,8 @@ class RomInfoService:
             return None
         rom_name = os.path.splitext(os.path.basename(file_path))[0]
 
-        saves_base = self._retrodeck_paths.saves_path()
-        roms_base = self._retrodeck_paths.roms_path()
+        saves_base = self._launcher_paths.saves_path()
+        roms_base = self._launcher_paths.roms_path()
         sorting = self.current_save_sorting()
         sort_by_content = sorting.sort_by_content
         sort_by_core = sorting.sort_by_core
@@ -261,7 +261,7 @@ class RomInfoService:
             # any emulator.
             return unestablished_answer(shape=UNESTABLISHED_NOT_ASKED)
         system = self._resolve_system(rom.platform_slug)
-        content_path = os.path.join(self._retrodeck_paths.roms_path(), system, rom.fs_name)
+        content_path = os.path.join(self._launcher_paths.roms_path(), system, rom.fs_name)
         return self._ask_resolver(rom_id, system, content_path, installed=False)
 
     def _installed_answer(self, rom_id: int, info: dict[str, Any]) -> SaveAnswer:

@@ -23,10 +23,10 @@ if TYPE_CHECKING:
         Clock,
         EventEmitter,
         InstalledRomFilesRemoverFn,
+        LauncherPaths,
         PruneArtifactStore,
         PruneSaveCoordinator,
         RecoveryBundleStore,
-        RetroDeckPaths,
         RommLivenessApi,
         SaveDriftProbeFn,
         SteamRecoveryStore,
@@ -54,7 +54,7 @@ class PruneServiceConfig:
     recovery_store: RecoveryBundleStore
     prune_artifacts: PruneArtifactStore
     steam_recovery: SteamRecoveryStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     save_coordinator: PruneSaveCoordinator
     active_downloads: ActiveDownloadRomIdsFn
     drift_probe: SaveDriftProbeFn
@@ -106,7 +106,7 @@ class PruneService:
             config=PreviewBuilderConfig(
                 uow_factory=config.uow_factory,
                 recovery_store=config.recovery_store,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 settings=config.settings,
             )
         )
@@ -116,7 +116,7 @@ class PruneService:
                 recovery_store=config.recovery_store,
                 prune_artifacts=config.prune_artifacts,
                 steam_recovery=config.steam_recovery,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 clock=config.clock,
                 uuid_gen=config.uuid_gen,
             )

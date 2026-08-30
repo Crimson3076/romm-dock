@@ -22,11 +22,11 @@ if TYPE_CHECKING:
         DebugLogger,
         EventEmitter,
         HostnameReader,
+        LauncherPaths,
         MachineIdReader,
         MigrationPendingFn,
         ResolveUploadConflictFn,
         RetroArchSaveLayoutProvider,
-        RetroDeckPaths,
         RetryStrategy,
         RommSyncApi,
         SaveFileStore,
@@ -74,10 +74,10 @@ class SaveServiceConfig:
         The plugin's ``asyncio`` event loop (for ``run_in_executor``).
     logger:
         Standard-library logger, injected rather than fetched.
-    retrodeck_paths:
-        Bundled accessor for the four RetroDECK runtime directory
-        paths. SaveService consumes ``saves_path()`` and ``roms_path()``;
-        the BIOS and home accessors are unused here but the Protocol
+    launcher_paths:
+        Bundled accessor for the active launcher backend's four runtime
+        directory paths. SaveService consumes ``saves_path()`` and
+        ``roms_path()``; the BIOS accessor is unused here but the Protocol
         is bundled so every service shares a uniform shape.
     active_core:
         ``ActiveCoreReader`` seam resolving the active RetroArch core for a
@@ -153,7 +153,7 @@ class SaveServiceConfig:
     loop: asyncio.AbstractEventLoop
     logger: logging.Logger
     clock: Clock
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     active_core: ActiveCoreReader
     save_locations: SaveLocationReader
     resolve_system: SystemResolver

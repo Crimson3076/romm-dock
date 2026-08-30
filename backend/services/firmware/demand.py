@@ -26,7 +26,7 @@ if TYPE_CHECKING:
         FirmwareFileStore,
         FirmwarePlatformResolver,
         FirmwareResolver,
-        RetroDeckPaths,
+        LauncherPaths,
     )
 
 
@@ -36,14 +36,14 @@ class FirmwareDemandConfig:
 
     Holds the two resolver seams — the per-platform reading every status answer
     is built from, and the whole-machine one the two callers with no platform to
-    name fall back to — the RetroDECK path accessor the destinations are built
-    under, the file store the plugin's own presence probe goes through, and the
-    logger a poisoned entry is reported on.
+    name fall back to — the active launcher backend's path accessor the
+    destinations are built under, the file store the plugin's own presence
+    probe goes through, and the logger a poisoned entry is reported on.
     """
 
     firmware_resolver: FirmwareResolver
     platform_firmware_resolver: FirmwarePlatformResolver
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     firmware_file_store: FirmwareFileStore
     logger: logging.Logger
 
@@ -54,7 +54,7 @@ class FirmwareDemand:
     def __init__(self, *, config: FirmwareDemandConfig) -> None:
         self._firmware_resolver = config.firmware_resolver
         self._platform_firmware_resolver = config.platform_firmware_resolver
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._firmware_file_store = config.firmware_file_store
         self._logger = config.logger
 
@@ -117,7 +117,7 @@ class FirmwareDemand:
         ``pcsx2/bios``, which RetroDECK links onto the root. The read paths want
         exactly that; the write path would place a ``.tmp`` sibling of the root.
         """
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         if placement is not None:
             return safe_join(bios_base, placement.destination, allow_base=True)
         return safe_join(bios_base, firmware.get("file_name", ""))
@@ -195,7 +195,7 @@ class FirmwareDemand:
         one download either way: the destination comes from the placement, so
         fetching it anywhere satisfies every emulator that asked.
         """
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         items: list[dict[str, Any]] = []
         for placement in sorted(placements.values(), key=lambda entry: entry.file_name):
             if placement.file_name in in_library:

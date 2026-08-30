@@ -33,8 +33,8 @@ if TYPE_CHECKING:
         FirmwareFileStore,
         FirmwarePlatformResolver,
         FirmwareResolver,
+        LauncherPaths,
         PlatformCoreReader,
-        RetroDeckPaths,
         RommFirmwareApi,
         SystemResolver,
         UnitOfWorkFactory,
@@ -59,7 +59,7 @@ class FirmwareServiceConfig:
     firmware_file_store: FirmwareFileStore
     firmware_resolver: FirmwareResolver
     platform_firmware_resolver: FirmwarePlatformResolver
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     core_info: CoreInfoProvider
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
@@ -97,7 +97,7 @@ class FirmwareService:
             config=FirmwareDemandConfig(
                 firmware_resolver=config.firmware_resolver,
                 platform_firmware_resolver=config.platform_firmware_resolver,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 firmware_file_store=config.firmware_file_store,
                 logger=config.logger,
             )

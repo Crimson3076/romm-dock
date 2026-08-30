@@ -106,7 +106,7 @@ def plugin(tmp_path, fake_romm_api):
             firmware_file_store=FirmwareFileAdapter(),
             firmware_resolver=FakeFirmwareResolver(),
             platform_firmware_resolver=FakeFirmwareResolver(),
-            retrodeck_paths=FakeRetroDeckPaths(),
+            launcher_paths=FakeRetroDeckPaths(),
             core_info=FakeCoreInfoProvider(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             platform_core_reader=FakePlatformCoreReader(),

@@ -51,17 +51,21 @@ class TestResolveInvocationParity:
 
 
 class TestPathDelegation:
-    def test_roms_root_delegates_to_paths(self):
+    def test_roms_path_delegates_to_paths(self):
         backend = _backend(roms="/custom/roms")
-        assert backend.roms_root() == "/custom/roms"
+        assert backend.roms_path() == "/custom/roms"
 
-    def test_bios_root_delegates_to_paths(self):
+    def test_bios_path_delegates_to_paths(self):
         backend = _backend(bios="/custom/bios")
-        assert backend.bios_root() == "/custom/bios"
+        assert backend.bios_path() == "/custom/bios"
 
-    def test_saves_root_delegates_to_paths(self):
+    def test_saves_path_delegates_to_paths(self):
         backend = _backend(saves="/custom/saves")
-        assert backend.saves_root() == "/custom/saves"
+        assert backend.saves_path() == "/custom/saves"
+
+    def test_states_path_delegates_to_paths(self):
+        backend = _backend(states="/custom/states")
+        assert backend.states_path() == "/custom/states"
 
 
 class TestBackendIdentity:
@@ -141,7 +145,7 @@ class TestFactoryBind:
         factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths(roms="/roms"))
         backend = factory.bind(RETRODECK_BACKEND_ID)
         assert backend is not None
-        assert backend.roms_root() == "/roms"
+        assert backend.roms_path() == "/roms"
 
     def test_bind_unknown_installation_returns_none(self):
         factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths())

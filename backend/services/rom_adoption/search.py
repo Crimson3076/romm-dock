@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from services.protocols import (
         DebugLogger,
         DownloadFileStore,
-        RetroDeckPaths,
+        LauncherPaths,
         SystemKnownFn,
         SystemResolver,
         SystemSupportedExtensionsFn,
@@ -93,7 +93,7 @@ class CandidateSearchConfig:
     resolve_system: SystemResolver
     system_extensions: SystemSupportedExtensionsFn
     system_known: SystemKnownFn
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     uow_factory: UnitOfWorkFactory
     logger: logging.Logger
     log_debug: DebugLogger
@@ -107,7 +107,7 @@ class CandidateSearch:
         self._resolve_system = config.resolve_system
         self._system_extensions = config.system_extensions
         self._system_known = config.system_known
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._uow_factory = config.uow_factory
         self._logger = config.logger
         self._log_debug = config.log_debug
@@ -252,7 +252,7 @@ class CandidateSearch:
         ``safe_join`` refuses; the caller's answer is "no candidate", which is
         what an unresolvable directory honestly supports.
         """
-        roms_path = self._retrodeck_paths.roms_path()
+        roms_path = self._launcher_paths.roms_path()
         if not roms_path or not system:
             return None
         try:

@@ -113,7 +113,7 @@ def plugin(tmp_path):
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
             settings_persister=MagicMock(),
             save_file_store=SaveFileAdapter(logger=logging.getLogger("test")),
-            retrodeck_paths=FakeRetroDeckPaths(
+            launcher_paths=FakeRetroDeckPaths(
                 saves=saves_path,
                 roms=str(tmp_path / "retrodeck" / "roms"),
             ),
@@ -165,7 +165,7 @@ def plugin(tmp_path):
             firmware_file_store=FirmwareFileAdapter(),
             firmware_resolver=FakeFirmwareResolver(),
             platform_firmware_resolver=FakeFirmwareResolver(),
-            retrodeck_paths=FakeRetroDeckPaths(),
+            launcher_paths=FakeRetroDeckPaths(),
             core_info=FakeCoreInfoProvider(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             platform_core_reader=FakePlatformCoreReader(),
@@ -231,7 +231,7 @@ def game_detail_service(plugin, clock, active_core_resolver, path_probe):
             achievements=plugin._achievements_service,
             active_core=active_core_resolver,
             path_exists=path_probe,
-            retrodeck_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
+            launcher_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_fs_slug or platform_slug,
             candidate_probe=candidate_probe,
         ),
@@ -601,7 +601,7 @@ class TestTargetPathOccupied:
 
     @pytest.mark.asyncio
     async def test_false_when_the_roms_path_is_unknown(self, plugin, game_detail_service, path_probe):
-        game_detail_service._retrodeck_paths.roms = ""
+        game_detail_service._launcher_paths.roms = ""
         path_probe.exists = lambda _path: True
         _seed_rom(plugin, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
         result = game_detail_service.get_cached_game_detail(50000)
@@ -716,7 +716,9 @@ class TestGetCachedGameDetailCarriesNoBiosAnswer:
         ]
         listing._firmware_cache_epoch = 99.0
 
-        with patch.object(plugin._firmware_service._demand, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path))):
+        with patch.object(
+            plugin._firmware_service._demand, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path))
+        ):
             result = game_detail_service.get_cached_game_detail(50000)
 
         assert result["bios_status"] is None

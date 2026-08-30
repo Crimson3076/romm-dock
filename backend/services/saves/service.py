@@ -92,7 +92,7 @@ class SaveService:
             config=RomInfoServiceConfig(
                 uow_factory=config.uow_factory,
                 save_file_store=config.save_file_store,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 active_core=config.active_core,
                 save_locations=config.save_locations,
                 resolve_system=config.resolve_system,
@@ -198,7 +198,7 @@ class SaveService:
             config=PruneSaveSupportConfig(
                 uow_factory=config.uow_factory,
                 save_file_store=config.save_file_store,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 clock=config.clock,
                 rom_info=self._rom_info,
                 sync_engine=self._sync_engine,

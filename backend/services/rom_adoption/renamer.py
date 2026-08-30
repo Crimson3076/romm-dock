@@ -42,9 +42,9 @@ if TYPE_CHECKING:
         AdoptionMoveStore,
         CoreNameProviderFn,
         DownloadFileStore,
+        LauncherPaths,
         RetroArchSaveLayoutProvider,
         RetroArchSavestateLayoutProvider,
-        RetroDeckPaths,
         SaveQuarantineFn,
         SaveSortingProvider,
         SystemM3uSupportFn,
@@ -80,7 +80,7 @@ class AdoptionRenamerConfig:
     adoption_move: AdoptionMoveStore
     quarantine_save: SaveQuarantineFn
     download_file_store: DownloadFileStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     m3u_support: SystemM3uSupportFn
     save_layout: RetroArchSaveLayoutProvider
     save_sorting: SaveSortingProvider
@@ -97,7 +97,7 @@ class AdoptionRenamer:
         self._adoption_move = config.adoption_move
         self._quarantine_save = config.quarantine_save
         self._download_file_store = config.download_file_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._m3u_support = config.m3u_support
         self._save_layout = config.save_layout
         self._save_sorting = config.save_sorting
@@ -345,8 +345,8 @@ class AdoptionRenamer:
         # sorting only, so there is no "previous" savestate layout to honour and a
         # pending savefile migration says nothing about where savestates sit.
         layouts = (
-            (SAVE, self._savefile_layout(), self._retrodeck_paths.saves_path()),
-            (SAVESTATE, self._savestate_layout(), self._retrodeck_paths.states_path()),
+            (SAVE, self._savefile_layout(), self._launcher_paths.saves_path()),
+            (SAVESTATE, self._savestate_layout(), self._launcher_paths.states_path()),
         )
         core_name = (
             self._core_name_for(rom_id)
@@ -404,7 +404,7 @@ class AdoptionRenamer:
         """
         if not isinstance(layout, InSaveDir):
             return (os.path.dirname(launch_source), os.path.dirname(launch_target))
-        roms_base = self._retrodeck_paths.roms_path()
+        roms_base = self._launcher_paths.roms_path()
 
         def resolved(rom_path: str) -> str:
             return resolve_save_dir(

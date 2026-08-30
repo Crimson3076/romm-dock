@@ -18,7 +18,7 @@ _PREVIEW_BUDGET_BYTES = 48 * 1024
 if TYPE_CHECKING:
     from domain.rom import Rom
     from domain.rom_install import RomInstall
-    from services.protocols import RecoveryBundleStore, RetroDeckPaths, UnitOfWork, UnitOfWorkFactory
+    from services.protocols import LauncherPaths, RecoveryBundleStore, UnitOfWork, UnitOfWorkFactory
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class PreviewBuilderConfig:
 
     uow_factory: UnitOfWorkFactory
     recovery_store: RecoveryBundleStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     settings: dict[str, Any]
 
 
@@ -86,7 +86,7 @@ class PreviewBuilder:
     def __init__(self, *, config: PreviewBuilderConfig) -> None:
         self._uow_factory = config.uow_factory
         self._recovery_store = config.recovery_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._settings = config.settings
 
     def _installed_size(self, install: RomInstall | None, roms_root: str) -> tuple[int | None, str | None]:
@@ -111,7 +111,7 @@ class PreviewBuilder:
             ]
             fingerprint = self._fingerprint(relevant_groups, installs)
 
-        roms_root = self._retrodeck_paths.roms_path()
+        roms_root = self._launcher_paths.roms_path()
         entries: list[dict[str, Any]] = []
         for group in relevant_groups:
             group_id = str(group[0].sibling_group_key or f"rom:{group[0].rom_id}")

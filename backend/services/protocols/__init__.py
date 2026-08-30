@@ -96,7 +96,12 @@ from services.protocols.infra import (
     ResolvedPathFn,
     ResolveUploadConflictFn,
 )
-from services.protocols.launcher_backend import LaunchCommandRenderer, LauncherBackend, LauncherBackendFactory
+from services.protocols.launcher_backend import (
+    LaunchCommandRenderer,
+    LauncherBackend,
+    LauncherBackendFactory,
+    LauncherPaths,
+)
 from services.protocols.paths import (
     CoreInfoProvider,
     CoreNameProviderFn,
@@ -191,6 +196,7 @@ __all__ = [
     "LaunchGateSaveStatusReader",
     "LauncherBackend",
     "LauncherBackendFactory",
+    "LauncherPaths",
     "MachineIdReader",
     "MigrationFileStore",
     "MigrationPendingFn",
