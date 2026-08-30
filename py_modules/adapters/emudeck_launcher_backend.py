@@ -201,12 +201,12 @@ class EmuDeckLauncherBackend:
         default = select_default_option(options)
         if default is None:
             caveats = ", ".join(caveat.code for caveat in answer.caveats) or "none"
+            verdicts = "; ".join(f"{o.label!r}={o.status}/{o.reason}: {o.command!r}" for o in options) or "none"
             self._logger.warning(
-                "emudeck_launcher_backend: no bakeable option for system %r (%d catalogue entries, "
-                "statuses: %s, caveats: %s)",
+                "emudeck_launcher_backend: no bakeable option for system %r (%d catalogue entries: %s; caveats: %s)",
                 system,
                 len(options),
-                ", ".join(o.status for o in options) or "none",
+                verdicts,
                 caveats,
             )
         return default
