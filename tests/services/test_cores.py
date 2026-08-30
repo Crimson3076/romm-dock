@@ -10,6 +10,7 @@ import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, libretro_option, standalone_option
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
@@ -190,6 +191,7 @@ def service(
             uow_factory=uow_factory,
             active_core=active_core,
             disc_resolver=disc_resolver,
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 

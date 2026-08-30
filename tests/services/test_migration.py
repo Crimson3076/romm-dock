@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +14,7 @@ from _factories import _make_testable_plugin
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_migration_file_store import FakeMigrationFileStore
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_relaunch_options_resolver import FakeRelaunchOptionsResolver
@@ -28,11 +31,15 @@ from adapters.migration_file import MigrationFileAdapter
 from adapters.persistence import PersistenceAdapter
 from adapters.steam_config import SteamConfigAdapter
 from domain.save_layout import InSaveDir, SaveLayout
+from lib.late_binding import LateBinding
 from services.active_core_resolver import ActiveCoreResolver, ActiveCoreResolverConfig
 from services.firmware import FirmwareService, FirmwareServiceConfig
 from services.library import LibraryService, LibraryServiceConfig
 from services.migration import MigrationService, MigrationServiceConfig
 from services.relaunch_options_resolver import RelaunchOptionsResolver, RelaunchOptionsResolverConfig
+
+if TYPE_CHECKING:
+    from services.protocols import LaunchCommandRenderer
 
 
 class RecordingEmitter:
@@ -122,6 +129,7 @@ def plugin(tmp_path, fake_romm_api):
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 
@@ -134,11 +142,15 @@ def plugin(tmp_path, fake_romm_api):
     # Real RelaunchOptionsResolver over the shared fake UoW + p._active_core so
     # the migration relaunch-emit integration tests still bake real launch
     # commands from the relocated rom_installs.file_path.
+    launch_renderer = FakeLaunchCommandRenderer()
+    launch_renderer_binding: LateBinding[LaunchCommandRenderer] = LateBinding("launch_renderer")
+    launch_renderer_binding.set(lambda: launch_renderer)
     relaunch_options = RelaunchOptionsResolver(
         config=RelaunchOptionsResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
+            launch_renderer=launch_renderer_binding,
         ),
     )
 

@@ -11,6 +11,7 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_hostname_reader import FakeHostnameReader
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_machine_id_reader import FakeMachineIdReader
 from fakes.fake_path_exists_reader import FakePathExistsReader
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
@@ -86,6 +87,7 @@ def plugin(tmp_path):
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     decky.DECKY_USER_HOME = str(tmp_path)

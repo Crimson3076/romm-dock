@@ -18,6 +18,7 @@ import pytest
 from _factories import _make_testable_plugin
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
@@ -132,6 +133,7 @@ def plugin(tmp_path):
             disc_resolver=FakeDiscResolver(),
             renderer_rss=p._renderer_rss,
             renderer_gc=p._renderer_gc,
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 

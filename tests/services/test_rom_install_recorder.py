@@ -9,6 +9,7 @@ import logging
 import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.system_time import FakeClock
 
@@ -47,6 +48,7 @@ class _Harness:
                 system_extensions=lambda system_name: self._system_extensions.get(system_name, frozenset()),
                 active_core=FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=FakeDiscResolver(),
+                launch_renderer=FakeLaunchCommandRenderer(),
             ),
         )
 

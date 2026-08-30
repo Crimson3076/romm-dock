@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from domain.disc_selection import default_descriptor
-from domain.shortcut_data import build_launch_options, resolve_emulator_invocation
 from lib.list_result import ErrorCode
 
 if TYPE_CHECKING:
@@ -34,6 +33,7 @@ if TYPE_CHECKING:
     from services.protocols import (
         ActiveCoreReader,
         DiscResolver,
+        LaunchCommandRenderer,
         UnitOfWorkFactory,
     )
 
@@ -44,9 +44,11 @@ class DiscServiceConfig:
 
     Carries the runtime infrastructure (event loop, logger), the SQLite
     Unit-of-Work factory (to read the ROM + its install and write the disc pin),
-    the shared per-ROM disc resolver (enumeration + launch-path resolution), and
-    the shared per-ROM active-core resolver (so a re-baked launch command keeps
-    the ROM's full active core, not a plain launch).
+    the shared per-ROM disc resolver (enumeration + launch-path resolution), the
+    shared per-ROM active-core resolver (so a re-baked launch command keeps the
+    ROM's full active core, not a plain launch), and the active launcher
+    backend's rendering seam (issue #918) so the re-baked command matches
+    whichever backend is currently selected.
     """
 
     loop: asyncio.AbstractEventLoop
@@ -54,6 +56,7 @@ class DiscServiceConfig:
     uow_factory: UnitOfWorkFactory
     disc_resolver: DiscResolver
     active_core: ActiveCoreReader
+    launch_renderer: LaunchCommandRenderer
 
 
 class DiscService:
@@ -65,6 +68,7 @@ class DiscService:
         self._uow_factory = config.uow_factory
         self._disc_resolver = config.disc_resolver
         self._active_core = config.active_core
+        self._launch_renderer = config.launch_renderer
 
     async def get_disc_selection(self, rom_id: int) -> dict[str, Any]:
         """Report the disc picker's state for ``rom_id``.
@@ -176,4 +180,5 @@ class DiscService:
         """
         bake_path = self._disc_resolver.resolve_bake_path(install, discs, selected_disc)
         emulator = self._active_core.active_emulator_for_rom(rom_id)
-        return build_launch_options(resolve_emulator_invocation({"id": rom_id}, emulator), bake_path)
+        invocation = self._launch_renderer.resolve_invocation({"id": rom_id}, emulator)
+        return self._launch_renderer.build_launch_options(invocation, bake_path)

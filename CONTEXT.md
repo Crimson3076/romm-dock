@@ -280,6 +280,18 @@ plain-launches, letting RetroDECK resolve its own command
 ([ADR-0020](docs/adr/0020-live-es-systems-emulator-resolution.md)). The foil to **emulator override** (a user deviation
 from this default).
 
+### Launcher backend
+
+Which app a ROM's launch command actually runs through — **RetroDECK** (the default) or **EmuDeck**. Orthogonal to
+**default emulator** / **emulator override** / **active core**: those decide WHICH emulator a ROM resolves to, on any
+backend; the launcher backend decides HOW that resolved emulator is rendered into an OS-executable command
+(`LauncherBackend.resolve_invocation`, `services/protocols/launcher_backend.py`). Stored as the plugin's own
+deviation-free intent (`settings.json`'s `launcher_backend` / `launcher_backend_installation`, bucket-1 per the
+persistence boundary) — there is no "no backend" state, RetroDECK is the seeded default. Switching backends re-bakes
+every installed+bound shortcut's `launch_options` through the existing per-platform-core-change fan-out mechanism
+(ADR-0009's confirmed `SetAppLaunchOptions`), never a shortcut delete/recreate. See
+[Launcher Backends](docs/architecture/launcher-backends.md).
+
 ### Disc
 
 The launchable unit of a multi-disc ROM: a single-disc **container** file the emulator opens directly — a `.cue`, a

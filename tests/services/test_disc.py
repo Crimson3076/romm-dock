@@ -9,6 +9,7 @@ import logging
 import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
 from domain.disc_selection import Disc
@@ -95,6 +96,7 @@ def service(event_loop, uow_factory, disc_resolver) -> DiscService:
             uow_factory=uow_factory,
             disc_resolver=disc_resolver,
             active_core=FakeActiveCoreResolver(default=(None, None)),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 

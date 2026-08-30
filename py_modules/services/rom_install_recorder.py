@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 
 from domain.rom_files import is_launchable_target
 from domain.rom_install import RomInstall
-from domain.shortcut_data import build_launch_options, resolve_emulator_invocation
 
 if TYPE_CHECKING:
     import logging
@@ -31,6 +30,7 @@ if TYPE_CHECKING:
         ActiveCoreReader,
         Clock,
         DiscResolver,
+        LaunchCommandRenderer,
         SystemSupportedExtensionsFn,
         UnitOfWorkFactory,
     )
@@ -45,6 +45,9 @@ class RomInstallRecorderConfig:
     per-game core override and the persisted disc pick survive
     uninstall → reinstall and are honoured on adoption too. ``system_extensions``
     is the live per-system ES-DE accept-list the launchable verdict reads.
+    ``launch_renderer`` is the active launcher backend's rendering seam (issue
+    #918), so an install/adoption bakes the command for whichever backend is
+    currently selected.
     """
 
     logger: logging.Logger
@@ -53,6 +56,7 @@ class RomInstallRecorderConfig:
     system_extensions: SystemSupportedExtensionsFn
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
+    launch_renderer: LaunchCommandRenderer
 
 
 class RomInstallRecorder:
@@ -65,6 +69,7 @@ class RomInstallRecorder:
         self._system_extensions = config.system_extensions
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
+        self._launch_renderer = config.launch_renderer
 
     def do_record_install(
         self,
@@ -141,7 +146,8 @@ class RomInstallRecorder:
             install = uow.rom_installs.get(int(rom_id))
             selected_disc = rom.selected_disc if rom is not None else None
         if rom is None:
-            return (None, build_launch_options(resolve_emulator_invocation(rom_detail, None), file_path))
+            no_emulator = self._launch_renderer.resolve_invocation(rom_detail, None)
+            return (None, self._launch_renderer.build_launch_options(no_emulator, file_path))
         emulator = self._active_core.active_emulator_for_rom(int(rom_id))
         # The install record was committed just before this read, so it is
         # present in the normal flow; guard for the rare race where it is not and
@@ -149,7 +155,8 @@ class RomInstallRecorder:
         bake_path = (
             self._disc_resolver.resolve_for_install(install, selected_disc) if install is not None else file_path
         )
-        launch_options = build_launch_options(resolve_emulator_invocation(rom_detail, emulator), bake_path)
+        invocation = self._launch_renderer.resolve_invocation(rom_detail, emulator)
+        launch_options = self._launch_renderer.build_launch_options(invocation, bake_path)
         return (rom.shortcut_app_id, launch_options)
 
     def do_record_applied_launch_options(self, rom_id: int, launch_options: str) -> None:

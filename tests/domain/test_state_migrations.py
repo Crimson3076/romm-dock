@@ -12,6 +12,7 @@ from domain.state_migrations import (
     _migrate_v10_to_v11,
     _migrate_v11_to_v12,
     _migrate_v12_to_v13,
+    _migrate_v13_to_v14,
     fold_legacy_save_sync_settings,
     migrate_settings,
 )
@@ -23,28 +24,28 @@ class TestMigrateSettings:
         result = migrate_settings(data)
         assert result["steam_input_mode"] == "force_off"
         assert "disable_steam_input" not in result
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v0_disable_steam_input_false(self):
         data = {"version": 0, "disable_steam_input": False}
         result = migrate_settings(data)
         assert "disable_steam_input" not in result
         assert "steam_input_mode" not in result  # False → no override set
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v0_debug_logging_true(self):
         data = {"version": 0, "debug_logging": True}
         result = migrate_settings(data)
         assert result["log_level"] == "debug"
         assert "debug_logging" not in result
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v0_debug_logging_false(self):
         data = {"version": 0, "debug_logging": False}
         result = migrate_settings(data)
         assert "debug_logging" not in result
         assert "log_level" not in result  # False → no log_level override set
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v0_both_deprecated(self):
         data = {"version": 0, "disable_steam_input": True, "debug_logging": True}
@@ -53,13 +54,13 @@ class TestMigrateSettings:
         assert result["log_level"] == "debug"
         assert "disable_steam_input" not in result
         assert "debug_logging" not in result
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v0_no_deprecated_keys(self):
         data = {"version": 0, "romm_url": "http://example.com"}
         result = migrate_settings(data)
         assert result["romm_url"] == "http://example.com"
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v3_advances_through_token_seeding(self):
         """v3 → v10: version stamp advances and the token slots are seeded.
@@ -75,7 +76,7 @@ class TestMigrateSettings:
         data = {"version": 3, "romm_url": "http://example.com", "log_level": "warn"}
         result = migrate_settings(data)
         assert result == {
-            "version": 13,
+            "version": 14,
             "romm_url": "http://example.com",
             "log_level": "warn",
             "romm_api_token": None,
@@ -83,13 +84,15 @@ class TestMigrateSettings:
             "platform_cores": {},
             "romm_api_token_origin": None,
             "romm_api_token_source": None,
+            "launcher_backend": "retrodeck",
+            "launcher_backend_installation": "retrodeck",
         }
 
     def test_migrate_settings_v4_seeds_token_slots(self):
         data = {"version": 4, "romm_url": "http://example.com", "log_level": "warn"}
         result = migrate_settings(data)
         assert result == {
-            "version": 13,
+            "version": 14,
             "romm_url": "http://example.com",
             "log_level": "warn",
             "romm_api_token": None,
@@ -97,6 +100,8 @@ class TestMigrateSettings:
             "platform_cores": {},
             "romm_api_token_origin": None,
             "romm_api_token_source": None,
+            "launcher_backend": "retrodeck",
+            "launcher_backend_installation": "retrodeck",
         }
 
     def test_migrate_settings_v5_only_bumps_version(self):
@@ -110,7 +115,7 @@ class TestMigrateSettings:
         }
         result = migrate_settings(data)
         assert result == {
-            "version": 13,
+            "version": 14,
             "romm_url": "http://example.com",
             "log_level": "warn",
             "romm_api_token": "rmm_existing",
@@ -118,6 +123,8 @@ class TestMigrateSettings:
             "platform_cores": {},
             "romm_api_token_origin": None,
             "romm_api_token_source": "minted",
+            "launcher_backend": "retrodeck",
+            "launcher_backend_installation": "retrodeck",
         }
 
     def test_migrate_settings_v6_seeds_platform_cores(self):
@@ -131,7 +138,7 @@ class TestMigrateSettings:
         }
         result = migrate_settings(data)
         assert result == {
-            "version": 13,
+            "version": 14,
             "romm_url": "http://example.com",
             "log_level": "warn",
             "romm_api_token": "rmm_existing",
@@ -139,6 +146,8 @@ class TestMigrateSettings:
             "platform_cores": {},
             "romm_api_token_origin": None,
             "romm_api_token_source": "minted",
+            "launcher_backend": "retrodeck",
+            "launcher_backend_installation": "retrodeck",
         }
 
     def test_migrate_settings_v7_seeds_token_origin(self):
@@ -153,7 +162,7 @@ class TestMigrateSettings:
         }
         result = migrate_settings(data)
         assert result == {
-            "version": 13,
+            "version": 14,
             "romm_url": "http://example.com",
             "log_level": "warn",
             "romm_api_token": "rmm_existing",
@@ -161,14 +170,17 @@ class TestMigrateSettings:
             "platform_cores": {"snes": "bsnes"},
             "romm_api_token_origin": None,
             "romm_api_token_source": "minted",
+            "launcher_backend": "retrodeck",
+            "launcher_backend_installation": "retrodeck",
         }
 
-    def test_migrate_settings_v13_no_change(self):
+    def test_migrate_settings_v14_no_change(self):
         # A file already at the current version is returned untouched — including
         # an ``enabled_collections`` whose ``standard`` bucket the v12→v13 rename
-        # must not re-fire on.
+        # must not re-fire on, and an already-switched launcher backend the
+        # v13→v14 seed must not revert.
         data = {
-            "version": 13,
+            "version": 14,
             "romm_url": "http://example.com",
             "log_level": "warn",
             "romm_api_token": "rmm_existing",
@@ -177,6 +189,8 @@ class TestMigrateSettings:
             "romm_api_token_origin": "http://example.com",
             "romm_api_token_source": "minted",
             "enabled_collections": {"standard": {"1": True}, "smart": {}, "virtual": {}},
+            "launcher_backend": "emudeck",
+            "launcher_backend_installation": "emudeck:/home/deck",
         }
         result = migrate_settings(data)
         assert result == data
@@ -187,7 +201,7 @@ class TestMigrateSettings:
         result = migrate_settings(data)
         assert result["romm_api_token"] == "rmm_keep"
         assert result["romm_api_token_id"] == 3
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_v0_to_v5_seeds_token_slots(self):
         """A pre-versioning file runs the whole chain and ends with token slots."""
@@ -195,12 +209,12 @@ class TestMigrateSettings:
         result = migrate_settings(data)
         assert result["romm_api_token"] is None
         assert result["romm_api_token_id"] is None
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_fresh_empty(self):
         data = {}
         result = migrate_settings(data)
-        assert result["version"] == 13
+        assert result["version"] == 14
         assert "disable_steam_input" not in result
         assert "debug_logging" not in result
 
@@ -208,7 +222,7 @@ class TestMigrateSettings:
         data = {"romm_url": "http://example.com", "disable_steam_input": True}
         result = migrate_settings(data)
         assert result["steam_input_mode"] == "force_off"
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_debug_logging_true_overrides_log_level(self):
         """When debug_logging=True is being migrated, log_level is set to 'debug' unconditionally.
@@ -220,7 +234,7 @@ class TestMigrateSettings:
         result = migrate_settings(data)
         assert result["log_level"] == "debug"
         assert "debug_logging" not in result
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_migrate_settings_idempotent(self):
         data = {"version": 0, "disable_steam_input": True, "debug_logging": True}
@@ -243,7 +257,7 @@ class TestMigrateSettingsV5Token:
         result = migrate_settings(data)
         assert result["romm_api_token"] is None
         assert result["romm_api_token_id"] is None
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_idempotent_across_two_runs(self):
         data = {"version": 4, "romm_url": "x"}
@@ -318,7 +332,7 @@ class TestMigrateSettingsV6LegacyCredentials:
         """
         data = {"version": 4, "romm_url": "http://example.com", "romm_user": "alice", "romm_pass": "secret"}
         result = migrate_settings(data)
-        assert result["version"] == 13
+        assert result["version"] == 14
         assert result["romm_api_token"] is None
         assert result["romm_user"] == "alice"
         assert result["romm_pass"] == "secret"
@@ -396,7 +410,7 @@ class TestMigrateSettingsV8TokenOrigin:
         data = {"version": 0, "romm_url": "http://example.com"}
         result = migrate_settings(data)
         assert result["romm_api_token_origin"] is None
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_idempotent_via_full_chain(self):
         data = {"version": 7, "romm_api_token_origin": "https://romm.local"}
@@ -475,7 +489,7 @@ class TestMigrateSettingsV9PurgeCredentials:
         result = migrate_settings(data)
         assert "romm_user" not in result
         assert "romm_pass" not in result
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_full_chain_tokenless_real_password_survives(self):
         """A token-less legacy install keeps its real creds for the startup mint."""
@@ -483,7 +497,7 @@ class TestMigrateSettingsV9PurgeCredentials:
         result = migrate_settings(data)
         assert result["romm_user"] == "alice"
         assert result["romm_pass"] == "secret"
-        assert result["version"] == 13
+        assert result["version"] == 14
 
 
 class TestMigrateSettingsV10TokenSource:
@@ -534,13 +548,13 @@ class TestMigrateSettingsV10TokenSource:
         }
         result = migrate_settings(data)
         assert result["romm_api_token_source"] == "minted"
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_full_chain_tokenless_stamps_none(self):
         data = {"version": 0, "romm_url": "http://example.com"}
         result = migrate_settings(data)
         assert result["romm_api_token_source"] is None
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_idempotent_via_full_chain(self):
         data = {"version": 9, "romm_api_token": "rmm_x", "romm_api_token_source": "minted"}
@@ -569,7 +583,7 @@ class TestMigrateSettingsV3Collections:
             "smart": {},
             "virtual": {},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_base64_keys_move_to_virtual_bucket(self):
         b64 = "eyJuYW1lIjogIlN5bnRoZXRpYyBTZXJpZXMifQ=="
@@ -591,7 +605,7 @@ class TestMigrateSettingsV3Collections:
             "smart": {},
             "virtual": {b64: True},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_smart_bucket_always_starts_empty(self):
         """Pre-v3 users had no smart collections — bucket must start empty."""
@@ -609,7 +623,7 @@ class TestMigrateSettingsV3Collections:
         data = {"version": 1, "romm_url": "x"}
         result = migrate_settings(data)
         assert "enabled_collections" not in result
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_already_nested_value_is_not_resplit_only_renamed(self):
         """Defensive: a half-stamped v3-shaped value must not be re-split.
@@ -631,7 +645,7 @@ class TestMigrateSettingsV3Collections:
             "smart": {"5": True},
             "virtual": {"abc": False},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_partial_nested_value_normalized_with_missing_buckets(self):
         """A partial-nested value (only one bucket present) is normalized to all three buckets."""
@@ -642,7 +656,7 @@ class TestMigrateSettingsV3Collections:
             "smart": {},
             "virtual": {},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_partial_nested_two_buckets_fills_missing_third(self):
         """Partial-nested with two bucket keys — missing bucket is filled empty.
@@ -660,7 +674,7 @@ class TestMigrateSettingsV3Collections:
             "smart": {},
             "virtual": {"abc": True},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_v0_to_v3_runs_both_steps(self):
         """A v0 file with both deprecated keys AND old enabled_collections gets both migrations."""
@@ -677,7 +691,7 @@ class TestMigrateSettingsV3Collections:
             "smart": {},
             "virtual": {},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_negative_numeric_string_keys_go_to_standard(self):
         """``key.lstrip('-').isdigit()`` accepts ``-1`` as a numeric id."""
@@ -698,7 +712,7 @@ class TestMigrateSettingsV3Collections:
         }
         result = migrate_settings(data)
         assert result["enabled_collections"] == {"standard": {"1": True}, "smart": {}, "virtual": {}}
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_v3_migration_does_not_mutate_caller_dict(self):
         data = {"version": 1, "enabled_collections": {"1": True, "abc": True}}
@@ -842,12 +856,12 @@ class TestMigrateSettingsV11Virtual:
             "virtual": {b64: True},
         }
         assert "franchise" not in result["enabled_collections"]
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_v10_without_enabled_collections_only_stamps_version(self):
         data = {"version": 10, "romm_url": "http://example.com"}
         result = migrate_settings(data)
-        assert result["version"] == 13
+        assert result["version"] == 14
         assert "enabled_collections" not in result
 
     def test_full_chain_v2_flat_lands_in_virtual_bucket(self):
@@ -860,7 +874,7 @@ class TestMigrateSettingsV11Virtual:
             "smart": {},
             "virtual": {b64: True},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_v11_virtual_bucket_survives_forward_migration(self):
         """A v11 file advances to v13 with its virtual bucket intact.
@@ -879,7 +893,7 @@ class TestMigrateSettingsV11Virtual:
             "smart": {},
             "virtual": {"vc-1": True},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_merges_into_existing_virtual_bucket_franchise_ids_win(self):
         """If a ``virtual`` bucket somehow already exists, franchise ids union in."""
@@ -935,13 +949,13 @@ class TestMigrateSettingsV12DefaultSlot:
         """A pre-versioning file with the legacy default lands on ``autosave`` at v13."""
         result = migrate_settings({"version": 0, "default_slot": "default"})
         assert result["default_slot"] == "autosave"
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_full_chain_preserves_user_chosen_slot(self):
         """A user-chosen slot survives the whole chain unchanged."""
         result = migrate_settings({"version": 0, "default_slot": "desktop"})
         assert result["default_slot"] == "desktop"
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_idempotent_via_full_chain(self):
         once = migrate_settings({"version": 11, "default_slot": "default"})
@@ -992,7 +1006,7 @@ class TestMigrateSettingsV13Standard:
             "smart": {},
             "virtual": {},
         }
-        assert result["version"] == 13
+        assert result["version"] == 14
 
     def test_v13_standard_bucket_survives_forward_migration(self):
         """An already-``standard`` bucket rides through untouched — the rename must not re-run."""
@@ -1026,7 +1040,7 @@ class TestMigrateSettingsV13Standard:
         twice = migrate_settings(dict(once))
         assert once["enabled_collections"] == twice["enabled_collections"]
         assert once["enabled_collections"]["standard"] == {"1": True}
-        assert once["version"] == 13
+        assert once["version"] == 14
 
     def test_does_not_mutate_caller_dict(self):
         original = {
@@ -1039,3 +1053,38 @@ class TestMigrateSettingsV13Standard:
         }
         migrate_settings(data)
         assert data == original
+
+
+class TestMigrateSettingsV14LauncherBackend:
+    """v13 → v14 migration: seed the launcher-backend selection (issue #918)."""
+
+    def test_seeds_retrodeck_defaults(self):
+        data = {"version": 13}
+        result = _migrate_v13_to_v14(data)
+        assert result["launcher_backend"] == "retrodeck"
+        assert result["launcher_backend_installation"] == "retrodeck"
+        assert result["version"] == 14
+
+    def test_does_not_overwrite_an_already_chosen_backend(self):
+        """An already-switched EmuDeck install is not silently reverted."""
+        data = {
+            "version": 13,
+            "launcher_backend": "emudeck",
+            "launcher_backend_installation": "emudeck:/home/deck",
+        }
+        result = _migrate_v13_to_v14(data)
+        assert result["launcher_backend"] == "emudeck"
+        assert result["launcher_backend_installation"] == "emudeck:/home/deck"
+
+    def test_preserves_unrelated_keys(self):
+        data = {"version": 13, "romm_url": "http://example.com", "log_level": "warn"}
+        result = _migrate_v13_to_v14(data)
+        assert result["romm_url"] == "http://example.com"
+        assert result["log_level"] == "warn"
+
+    def test_full_chain_from_v0_seeds_retrodeck(self):
+        """A pre-versioning file runs the whole chain and still defaults to RetroDECK."""
+        result = migrate_settings({"version": 0})
+        assert result["launcher_backend"] == "retrodeck"
+        assert result["launcher_backend_installation"] == "retrodeck"
+        assert result["version"] == 14

@@ -12,6 +12,7 @@ import pytest
 from _factories import _make_testable_plugin
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
@@ -173,6 +174,7 @@ def plugin():
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     retrodeck_paths = FakeRetroDeckPaths(
@@ -191,6 +193,7 @@ def plugin():
             system_extensions=lambda system_name: p._system_extensions.get(system_name, frozenset()),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     p._rom_adoption_service = RomAdoptionService(

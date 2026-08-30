@@ -79,6 +79,7 @@ nav:
       - Removed-Game Cleanup: architecture/removed-game-cleanup.md
       - Config Source Parsers: architecture/config-source-parsers.md
       - Core &amp; Emulator Selection: architecture/core-emulator-selection.md
+      - Launcher Backends: architecture/launcher-backends.md
       - Steam Non-Steam Shortcuts: architecture/steam-non-steam-shortcuts.md
       - Steam Remote Play & Cross-Device: architecture/steam-remote-play.md
   - Contributing:

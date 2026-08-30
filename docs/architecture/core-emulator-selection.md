@@ -517,18 +517,26 @@ unchanged, so the previously-baked default survives. A **Force Full Sync** re-ba
 default. A core the user sets through the plugin (per-game pin or per-platform picker) re-bakes immediately, so only an
 externally-changed RetroDECK default carries this caveat.
 
-## RetroDECK is the V1 target
+## RetroDECK is the default launcher backend; EmuDeck is the second
 
 The `-e` flag, the `%EMULATOR_RETROARCH%` / `%ROM%` placeholders, and the `/var/config/retroarch/cores` path are
-**RetroDECK-adapter concerns**, isolated at the single seam `resolve_emulator_invocation`. RetroDECK is the supported
-launcher for V1 — this is the correct V1 shape, not a placeholder. The per-ROM **selection** (which emulator does this
-ROM resolve to?) is a service-layer read; the seam only **renders** the chosen `EmulatorInvocation` into a command
-string. Standalone-emulator support ([#129](https://github.com/danielcopper/decky-romm-sync/issues/129)) is the first
-half of the multi-emulator lift: a standalone emulator is still launched **through RetroDECK's `-e`**, so the RetroDECK
-flatpak invocation remains the single seam — only the `-e` payload changed (a verbatim ES-DE command instead of the
-RetroArch `-L` form). The remaining lift ([#918](https://github.com/danielcopper/decky-romm-sync/issues/918)) — a
-non-RetroDECK launcher behind a `Frontend`-style port — is net-new work and is not built until a second launcher is
-concrete.
+**RetroDECK-adapter concerns**, isolated at the single seam `resolve_emulator_invocation`. RetroDECK is the default,
+behavior-preserving launcher backend — this is the correct default shape, not a placeholder. The per-ROM **selection**
+(which emulator does this ROM resolve to?) is a service-layer read, unchanged by which backend is active; the seam
+only **renders** the chosen `EmulatorInvocation` into a command string. Standalone-emulator support
+([#129](https://github.com/danielcopper/decky-romm-sync/issues/129)) is the first half of the multi-emulator lift: a
+standalone emulator is still launched **through RetroDECK's `-e`** on the RetroDECK backend, so the RetroDECK flatpak
+invocation remains that backend's single seam — only the `-e` payload changed (a verbatim ES-DE command instead of the
+RetroArch `-L` form).
+
+[#918](https://github.com/danielcopper/romm-tender/issues/918) generalized `resolve_emulator_invocation` behind a
+`LauncherBackend` Protocol (`services/protocols/launcher_backend.py`) once EmuDeck became a concrete second target — a
+`LauncherBackendService` renders through whichever backend `settings.json`'s `launcher_backend` names, RetroDECK by
+default. This page's read-path precedence (`ActiveCoreResolver`, the per-game/per-platform override layering, the
+es_systems default) is entirely backend-independent — it decides WHICH `EmulatorInvocation` a ROM resolves to; the
+launcher-backend seam decides how that invocation is RENDERED into an OS-executable command on the currently-selected
+backend. See [Launcher Backends](launcher-backends.md) for the seam itself, EmuDeck's rendering via emu-atlas, and the
+backend-switch fan-out.
 
 The **core picker now lists standalone emulators alongside libretro cores** (#1210 / ADR-0020) — you _can_ choose
 standalone PCSX2 vs the LRPS2 libretro core in the UI, at both per-game and per-platform scope. One follow-up stays out

@@ -90,6 +90,12 @@ vi.mock("./settings/AdvancedSection", () => ({
     return createElement("div", { "data-testid": "advanced-section" });
   },
 }));
+// LauncherBackendSection owns its own data/effects (no props from SettingsPage)
+// — stub it out like the other sub-sections so this file's own narrow @decky/ui
+// re-mock (no DropdownItem) isn't exercised by a component it doesn't test.
+vi.mock("./settings/LauncherBackendSection", () => ({
+  LauncherBackendSection: () => createElement("div", { "data-testid": "launcher-backend-section" }),
+}));
 vi.mock("./settings/LibrarySection", async (importOriginal) => {
   // Keep the real AUTO_REGION / DEFAULT_REGION_LABEL constants (SettingsPage
   // imports them), but stub the component to capture props.

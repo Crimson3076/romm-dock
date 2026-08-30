@@ -22,11 +22,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from domain.emulator_commands import label_to_invocation, options_to_payload
-from domain.shortcut_data import (
-    EmulatorInvocation,
-    build_launch_options,
-    resolve_emulator_invocation,
-)
 from lib.list_result import ErrorCode
 
 if TYPE_CHECKING:
@@ -35,11 +30,13 @@ if TYPE_CHECKING:
 
     from domain.rom import Rom
     from domain.rom_install import RomInstall
+    from domain.shortcut_data import EmulatorInvocation
     from services.protocols import (
         ActiveCoreReader,
         BiosChecker,
         CoreInfoProvider,
         DiscResolver,
+        LaunchCommandRenderer,
         SettingsPersister,
         SystemResolver,
         UnitOfWorkFactory,
@@ -56,9 +53,11 @@ class CoreServiceConfig:
     cross-service BIOS checker, the SQLite Unit-of-Work factory (to read the ROM
     + its install and write the per-game pin), the shared per-ROM
     active-core resolver (the menu's active marker + the source of every
-    re-baked launch command), and the shared per-ROM disc resolver (so a re-baked
+    re-baked launch command), the shared per-ROM disc resolver (so a re-baked
     launch command keeps the ROM's pinned disc rather than reverting to disc 1 /
-    the m3u). Bundled here so the ctor stays within the S107 parameter budget.
+    the m3u), and the active launcher backend's rendering seam (issue #918) so
+    a re-bake matches whichever backend is currently selected. Bundled here so
+    the ctor stays within the S107 parameter budget.
     """
 
     loop: asyncio.AbstractEventLoop
@@ -71,6 +70,7 @@ class CoreServiceConfig:
     uow_factory: UnitOfWorkFactory
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
+    launch_renderer: LaunchCommandRenderer
 
 
 class CoreService:
@@ -87,6 +87,7 @@ class CoreService:
         self._uow_factory = config.uow_factory
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
+        self._launch_renderer = config.launch_renderer
 
     async def get_platform_core_info(self, rom_id: int) -> dict[str, Any]:
         """Return the emulators available for ``rom_id``'s platform + the active one.
@@ -182,7 +183,7 @@ class CoreService:
         rebake_items: list[dict[str, Any]] = []
         for rom, install in pending:
             emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
-            invocation = resolve_emulator_invocation({}, emulator)
+            invocation = self._launch_renderer.resolve_invocation({}, emulator)
             # Fold the ROM's persisted disc pick over the install so a
             # per-platform core change re-bakes the pinned disc, not disc 1 /
             # the m3u. A single-disc ROM resolves to its own file_path.
@@ -190,7 +191,7 @@ class CoreService:
             rebake_items.append(
                 {
                     "app_id": rom.shortcut_app_id,
-                    "launch_options": build_launch_options(invocation, bake_path),
+                    "launch_options": self._launch_renderer.build_launch_options(invocation, bake_path),
                 }
             )
         return rebake_items
@@ -337,12 +338,12 @@ class CoreService:
         app_id = rom.shortcut_app_id
         if app_id is None or install is None:
             return (None, None)
-        invocation = resolve_emulator_invocation({}, emulator)
+        invocation = self._launch_renderer.resolve_invocation({}, emulator)
         # Fold the ROM's persisted disc pick over the install so a per-game core
         # pin/clear re-bakes the pinned disc, not disc 1 / the m3u. A single-disc
         # ROM resolves to its own file_path.
         bake_path = self._disc_resolver.resolve_for_install(install, rom.selected_disc)
-        return (build_launch_options(invocation, bake_path), app_id)
+        return (self._launch_renderer.build_launch_options(invocation, bake_path), app_id)
 
     def _read_rom(self, rom_id: int) -> Rom | None:
         with self._uow_factory() as uow:

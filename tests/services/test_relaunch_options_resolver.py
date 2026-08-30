@@ -12,14 +12,21 @@ entry points that share the one resolve body.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
 from domain.disc_selection import Disc
 from domain.rom import Rom
 from domain.rom_install import RomInstall
+from lib.late_binding import LateBinding
 from services.relaunch_options_resolver import RelaunchOptionsResolver, RelaunchOptionsResolverConfig
+
+if TYPE_CHECKING:
+    from services.protocols import LaunchCommandRenderer
 
 
 def _make_rom(rom_id: int, *, shortcut_app_id: int | None) -> Rom:
@@ -63,12 +70,17 @@ def _make_resolver(
     uow: FakeUnitOfWork,
     active_core: FakeActiveCoreResolver | None = None,
     disc_resolver: FakeDiscResolver | None = None,
+    launch_renderer: FakeLaunchCommandRenderer | None = None,
 ) -> RelaunchOptionsResolver:
+    renderer = launch_renderer if launch_renderer is not None else FakeLaunchCommandRenderer()
+    launch_renderer_binding: LateBinding[LaunchCommandRenderer] = LateBinding("launch_renderer")
+    launch_renderer_binding.set(lambda: renderer)
     return RelaunchOptionsResolver(
         config=RelaunchOptionsResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
             active_core=active_core if active_core is not None else FakeActiveCoreResolver(),
             disc_resolver=disc_resolver if disc_resolver is not None else FakeDiscResolver(),
+            launch_renderer=launch_renderer_binding,
         ),
     )
 

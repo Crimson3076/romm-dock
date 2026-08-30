@@ -22,6 +22,7 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_adoption_move import FakeAdoptionMoveStore
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_download_file_store import FakeDownloadFileStore
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_romm_api import FakeRommApi
 from fakes.fake_save_quarantine import FakeSaveQuarantine
@@ -169,6 +170,7 @@ class Harness:
                 system_extensions=lambda system_name: self.system_extensions.get(system_name, frozenset()),
                 active_core=FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=FakeDiscResolver(),
+                launch_renderer=FakeLaunchCommandRenderer(),
             ),
         )
         self.paths = FakeRetroDeckPaths(roms=_ROMS, saves=_SAVES, states=_STATES)
