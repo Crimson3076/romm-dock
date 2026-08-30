@@ -326,7 +326,12 @@ class TestUnbakeableCommandFallthrough:
         backend = _backend(tmp_path, installation, system="n3ds")
         with caplog.at_level(logging.WARNING):
             assert backend.resolve_invocation(_ROM, None) == ""
-        assert any("no bakeable option" in record.message for record in caplog.records)
+        assert any(
+            "no bakeable option" in record.message
+            and "no_rom_target" in record.message
+            and "%EMULATOR_AZAHAR% %BASENAME%" in record.message
+            for record in caplog.records
+        )
 
     def test_empty_catalogue_logs_a_warning_naming_the_caveats(self, tmp_path, caplog):
         # The exact silent failure a real EmuDeck arrangement with no ES-DE
