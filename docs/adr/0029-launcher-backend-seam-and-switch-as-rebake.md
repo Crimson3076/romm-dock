@@ -119,6 +119,26 @@ got there — a pre-#918 RetroDECK bake or a stale EmuDeck one) to the newly-sel
 > pure-Python, expat-backed path exactly as `adapters/es_de_config.py`'s own hand-written parsing already does. See
 > `_vendor/README.md`'s `atlas` and `elementtree` entries for the full account. This is a real gap in this ADR's own
 > verification, not a design change: no consequence stated above moves.
+>
+> **Errata (2026-08-30).** The Decision section above scoped `LauncherBackend` to rendering only (`resolve_invocation`,
+> `build_launch_options`, plus path getters that existed on the Protocol but were not yet consumed by anything besides
+> `RetroDeckLauncherBackend` itself). That left every downloads/BIOS/save/cleanup/adoption path consumer reading
+> `RetroDeckPaths` directly regardless of the active backend — an EmuDeck-only install (no RetroDECK present at all)
+> could launch games but would still download ROMs, fetch BIOS files, and place saves under RetroDECK's paths, which
+> do not exist on such a machine. Closed by renaming the path getters for naming consistency (`roms_root`/`bios_root`/
+> `saves_root` → `roms_path`/`bios_path`/`saves_path`, plus a new `states_path`) and introducing `LauncherPaths`, a
+> Protocol narrower than `RetroDeckPaths` (the same four getters, omitting `retrodeck_home`/`config_path`/
+> `config_health`), which `LauncherBackendService` implements by delegating to the active backend exactly as it
+> already does for `LaunchCommandRenderer`. Eleven services (`DownloadService`, `GameDetailService`,
+> `FirmwareService`, `RomRemovalService`, `RomAdoptionService` and its `AdoptionRenamer`/`CandidateSearch`
+> sub-services, `SaveService` and its `RomInfoService`/`PruneSaveSupport` sub-services, `PruneService` and its
+> `PreviewBuilder`/`RecoveryCoordinator` sub-services) now take `launcher_paths: LauncherPaths` instead of
+> `retrodeck_paths: RetroDeckPaths`. `MigrationService` and `StartupHealingService` are unaffected — both read
+> `retrodeck_home()`/`config_path()`/`config_health()`, which stay RetroDECK-migration-specific concepts with no
+> backend-neutral equivalent, so they keep the concrete `RetroDeckPaths`. See
+> [launcher-backends.md](../architecture/launcher-backends.md) for the current-truth account. No consequence stated
+> above moves — this closes the "let the user install what they want and only what they want" gap the Decision
+> section's `LauncherBackend` scope left open, it does not change the seam's shape.
 
 ## Alternatives considered
 

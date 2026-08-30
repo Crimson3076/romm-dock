@@ -54,7 +54,7 @@ def make_service(tmp_path, fake_api=None, *, emit=None, **overrides) -> tuple["S
         "loop": asyncio.get_event_loop(),
         "logger": logging.getLogger("test"),
         "clock": FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
-        "retrodeck_paths": FakeRetroDeckPaths(
+        "launcher_paths": FakeRetroDeckPaths(
             saves=str(tmp_path / "saves"),
             roms=str(tmp_path / "retrodeck" / "roms"),
         ),

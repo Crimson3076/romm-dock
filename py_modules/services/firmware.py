@@ -33,8 +33,8 @@ if TYPE_CHECKING:
         Clock,
         CoreInfoProvider,
         FirmwareFileStore,
+        LauncherPaths,
         PlatformCoreReader,
-        RetroDeckPaths,
         RommFirmwareApi,
         SystemResolver,
         UnitOfWorkFactory,
@@ -60,7 +60,7 @@ class FirmwareServiceConfig:
     plugin_dir: str
     clock: Clock
     firmware_file_store: FirmwareFileStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     core_info: CoreInfoProvider
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
@@ -81,7 +81,7 @@ class FirmwareService:
         self._plugin_dir = config.plugin_dir
         self._clock = config.clock
         self._firmware_file_store = config.firmware_file_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._core_info = config.core_info
         self._resolve_system = config.resolve_system
         self._platform_core_reader = config.platform_core_reader
@@ -168,7 +168,7 @@ class FirmwareService:
         (``download_firmware``) turns that into a canonical failure; the
         read paths skip the poisoned entry.
         """
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         file_name = firmware.get("file_name", "")
         reg_entry = self.bios_files_index.get(file_name)
         if reg_entry and reg_entry.get("firmware_path"):
@@ -202,7 +202,7 @@ class FirmwareService:
         path is logged and skipped — the panel stays up minus the poisoned
         entry, mirroring ``_safe_firmware_dest_path``.
         """
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         try:
             return safe_join(bios_base, firmware_path)
         except PathTraversalError as e:

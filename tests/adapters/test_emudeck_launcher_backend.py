@@ -389,29 +389,34 @@ class TestPerGamePin:
 
 
 class TestPathDelegation:
-    def test_roms_root_delegates(self, tmp_path):
+    def test_roms_path_delegates(self, tmp_path):
         backend = _backend(tmp_path, _FakeInstallation(roms="/emu/roms"))
-        assert backend.roms_root() == "/emu/roms"
+        assert backend.roms_path() == "/emu/roms"
 
-    def test_bios_root_delegates(self, tmp_path):
+    def test_bios_path_delegates(self, tmp_path):
         backend = _backend(tmp_path, _FakeInstallation(bios="/emu/bios"))
-        assert backend.bios_root() == "/emu/bios"
+        assert backend.bios_path() == "/emu/bios"
 
-    def test_saves_root_delegates(self, tmp_path):
+    def test_saves_path_delegates(self, tmp_path):
         backend = _backend(tmp_path, _FakeInstallation(saves="/emu/saves"))
-        assert backend.saves_root() == "/emu/saves"
+        assert backend.saves_path() == "/emu/saves"
 
-    def test_roms_root_degrades_to_empty_string_on_none(self, tmp_path):
+    def test_roms_path_degrades_to_empty_string_on_none(self, tmp_path):
         backend = _backend(tmp_path, _FakeInstallation(roms=None))
-        assert backend.roms_root() == ""
+        assert backend.roms_path() == ""
 
-    def test_bios_root_degrades_to_empty_string_on_none(self, tmp_path):
+    def test_bios_path_degrades_to_empty_string_on_none(self, tmp_path):
         backend = _backend(tmp_path, _FakeInstallation(bios=None))
-        assert backend.bios_root() == ""
+        assert backend.bios_path() == ""
 
-    def test_saves_root_degrades_to_empty_string_on_none(self, tmp_path):
+    def test_saves_path_degrades_to_empty_string_on_none(self, tmp_path):
         backend = _backend(tmp_path, _FakeInstallation(saves=None))
-        assert backend.saves_root() == ""
+        assert backend.saves_path() == ""
+
+    def test_states_path_is_always_empty(self, tmp_path):
+        # atlas has no flat savestates root for EmuDeck — resolved per-content, not as a directory.
+        backend = _backend(tmp_path, _FakeInstallation())
+        assert backend.states_path() == ""
 
 
 class TestValidate:
@@ -514,11 +519,11 @@ class TestFactoryBind:
         assert backend.backend_id == EMUDECK_BACKEND_ID
         assert backend.installation_id == f"emudeck:{tmp_path}"
         # bios/saves resolve to EmuDeck's documented default subtree — no ES-DE
-        # install on this fixture, so roms_root degrades to "" (atlas's
+        # install on this fixture, so roms_path degrades to "" (atlas's
         # documented None contract for an absent frontend).
-        assert backend.bios_root() == os.path.join(str(tmp_path), "Emulation", "bios")
-        assert backend.saves_root() == os.path.join(str(tmp_path), "Emulation", "saves")
-        assert backend.roms_root() == ""
+        assert backend.bios_path() == os.path.join(str(tmp_path), "Emulation", "bios")
+        assert backend.saves_path() == os.path.join(str(tmp_path), "Emulation", "saves")
+        assert backend.roms_path() == ""
 
     def test_bound_backend_is_a_real_atlas_emudeck_installation(self, tmp_path):
         _write_settings_sh(tmp_path)

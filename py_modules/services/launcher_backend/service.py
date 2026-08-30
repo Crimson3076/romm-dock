@@ -75,6 +75,20 @@ class LauncherBackendService:
             return ""
         return self._active.build_launch_options(invocation, path)
 
+    # -- LauncherPaths ------------------------------------------------------
+
+    def roms_path(self) -> str:
+        return self._active.roms_path() if self._active is not None else ""
+
+    def bios_path(self) -> str:
+        return self._active.bios_path() if self._active is not None else ""
+
+    def saves_path(self) -> str:
+        return self._active.saves_path() if self._active is not None else ""
+
+    def states_path(self) -> str:
+        return self._active.states_path() if self._active is not None else ""
+
     # -- QAM surface --------------------------------------------------------
 
     def active_backend_id(self) -> str:

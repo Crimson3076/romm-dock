@@ -351,7 +351,7 @@ async def harness() -> Harness:
             recovery_store=recovery,
             prune_artifacts=artifacts,
             steam_recovery=steam_recovery,
-            retrodeck_paths=FakeRetroDeckPaths(saves="/saves", roms="/roms", bios="/bios", home="/retrodeck"),
+            launcher_paths=FakeRetroDeckPaths(saves="/saves", roms="/roms", bios="/bios", home="/retrodeck"),
             save_coordinator=saves,
             active_downloads=lambda: set(active),
             drift_probe=drift,

@@ -101,14 +101,18 @@ class EmuDeckLauncherBackend:
 
     # -- LauncherBackend: paths ------------------------------------------------
 
-    def roms_root(self) -> str:
+    def roms_path(self) -> str:
         return self._installation.roms_dir() or ""
 
-    def bios_root(self) -> str:
+    def bios_path(self) -> str:
         return self._installation.bios_dir() or ""
 
-    def saves_root(self) -> str:
+    def saves_path(self) -> str:
         return self._installation.saves_root() or ""
+
+    def states_path(self) -> str:
+        """EmuDeck has no flat savestate root — atlas resolves it per-content, not as a directory."""
+        return ""
 
     def validate(self) -> BackendValidation:
         """EmuDeck is switchable only when its own health finding is clean.

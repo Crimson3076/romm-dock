@@ -44,14 +44,17 @@ class RetroDeckLauncherBackend:
     def build_launch_options(self, invocation: str, path: str) -> str:
         return build_launch_options(invocation, path)
 
-    def roms_root(self) -> str:
+    def roms_path(self) -> str:
         return self._paths.roms_path()
 
-    def bios_root(self) -> str:
+    def bios_path(self) -> str:
         return self._paths.bios_path()
 
-    def saves_root(self) -> str:
+    def saves_path(self) -> str:
         return self._paths.saves_path()
+
+    def states_path(self) -> str:
+        return self._paths.states_path()
 
     def validate(self) -> BackendValidation:
         """RetroDECK is switchable unless its config is known-broken.

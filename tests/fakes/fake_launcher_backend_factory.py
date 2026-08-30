@@ -19,6 +19,7 @@ class FakeLauncherBackend:
         roms: str = "",
         bios: str = "",
         saves: str = "",
+        states: str = "",
         validation: BackendValidation | None = None,
     ) -> None:
         self.backend_id = backend_id
@@ -26,6 +27,7 @@ class FakeLauncherBackend:
         self.roms = roms
         self.bios = bios
         self.saves = saves
+        self.states = states
         self.validation = validation if validation is not None else BackendValidation(ok=True)
 
     def resolve_invocation(self, rom: dict[str, Any], emulator: Any) -> str:
@@ -34,14 +36,17 @@ class FakeLauncherBackend:
     def build_launch_options(self, invocation: str, path: str) -> str:
         return build_launch_options(invocation, path)
 
-    def roms_root(self) -> str:
+    def roms_path(self) -> str:
         return self.roms
 
-    def bios_root(self) -> str:
+    def bios_path(self) -> str:
         return self.bios
 
-    def saves_root(self) -> str:
+    def saves_path(self) -> str:
         return self.saves
+
+    def states_path(self) -> str:
+        return self.states
 
     def validate(self) -> BackendValidation:
         return self.validation

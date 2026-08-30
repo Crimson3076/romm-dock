@@ -32,8 +32,14 @@ class LauncherBackend(Protocol):
     renders the CHOSEN :class:`~domain.shortcut_data.EmulatorInvocation`
     (selection stays :class:`services.active_core_resolver.ActiveCoreResolver`'s
     job, unchanged by which backend is active) into an OS-executable command
-    line. The path getters are best-effort and never raise, mirroring
-    :class:`RetroDeckPaths`.
+    line. The path getters use the same names as :class:`RetroDeckPaths` on
+    purpose — same shape, same best-effort/never-raise contract, so a backend
+    is a drop-in behind :class:`LauncherPaths` wherever a service used to read
+    RetroDECK's paths directly. ``states_path`` may return ``""`` where a
+    backend has no flat savestate root to offer (EmuDeck's savestate location
+    is per-core/per-content, not a single directory the way saves/roms/bios
+    are) — callers already treat an empty path as "nothing here", the same
+    degradation an unresolved RetroDECK root uses.
     """
 
     backend_id: str
@@ -43,11 +49,13 @@ class LauncherBackend(Protocol):
 
     def build_launch_options(self, invocation: str, path: str) -> str: ...
 
-    def roms_root(self) -> str: ...
+    def roms_path(self) -> str: ...
 
-    def bios_root(self) -> str: ...
+    def bios_path(self) -> str: ...
 
-    def saves_root(self) -> str: ...
+    def saves_path(self) -> str: ...
+
+    def states_path(self) -> str: ...
 
     def validate(self) -> BackendValidation: ...
 
@@ -68,6 +76,32 @@ class LaunchCommandRenderer(Protocol):
     def resolve_invocation(self, rom: dict[str, Any], emulator: EmulatorInvocation | None) -> str: ...
 
     def build_launch_options(self, invocation: str, path: str) -> str: ...
+
+
+class LauncherPaths(Protocol):
+    """The live-active backend's ROM/BIOS/save/savestate roots, injected wherever
+    a service used to read ``RetroDeckPaths`` directly for file placement.
+
+    ``LauncherBackendService`` implements this the same way it implements
+    :class:`LaunchCommandRenderer` — delegating to whichever
+    :class:`LauncherBackend` is currently bound — so switching backends moves
+    where downloads, BIOS files, and saves land on the very next call, with no
+    re-wiring. Deliberately narrower than :class:`RetroDeckPaths`: it omits
+    ``retrodeck_home``/``config_path``/``config_health``, which are RetroDECK's
+    own migration-detection and health-banner vocabulary with no backend-
+    neutral equivalent — ``MigrationService`` and ``StartupHealingService``
+    keep depending on the concrete ``RetroDeckPaths`` for those, unaffected by
+    which backend is active (RetroDECK-home migration is a RetroDECK concept
+    regardless of which backend currently launches games).
+    """
+
+    def roms_path(self) -> str: ...
+
+    def bios_path(self) -> str: ...
+
+    def saves_path(self) -> str: ...
+
+    def states_path(self) -> str: ...
 
 
 class LauncherBackendFactory(Protocol):

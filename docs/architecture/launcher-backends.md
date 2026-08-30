@@ -3,11 +3,16 @@
 ## Overview
 
 Tender launches every ROM through a **launcher backend** — RetroDECK by default, or EmuDeck. A launcher backend
-answers, per (system, emulator, rom): the launch invocation and the roms/bios/saves roots, plus its own installation
-detection and pre-switch validation. This is [#918](https://github.com/danielcopper/romm-tender/issues/918)'s seam,
-built once EmuDeck became a concrete second target (see
+answers, per (system, emulator, rom): the launch invocation and the roms/bios/saves/savestates roots, plus its own
+installation detection and pre-switch validation. This is [#918](https://github.com/danielcopper/romm-tender/issues/918)'s
+seam, built once EmuDeck became a concrete second target (see
 [ADR-0029](../adr/0029-launcher-backend-seam-and-switch-as-rebake.md) for the full decision record, including why it
 does not reintroduce the runtime-dispatch shape ADR-0009 retired).
+
+The seam covers two independent things a backend answers: **rendering** (`LaunchCommandRenderer` — how an
+`EmulatorInvocation` becomes an OS-executable command) and **file placement** (`LauncherPaths` — where downloads,
+BIOS files, saves, and savestates land on disk). An install that has only EmuDeck — no RetroDECK at all — needs both:
+rendering alone would launch games but still write every downloaded ROM and BIOS file under RetroDECK's paths.
 
 **Nothing about emulator selection changes.** [Core & Emulator Selection](core-emulator-selection.md)'s
 `ActiveCoreResolver` — the per-game/per-platform override layered over the es_systems default — decides WHICH
@@ -23,18 +28,37 @@ Two Protocols in `services/protocols/launcher_backend.py`:
   (`services/launcher_backend/registry.py`) — the extensibility point a third backend registers against with no
   call-site change anywhere else.
 - **`LauncherBackend`** — a factory-bound instance: `resolve_invocation(rom, emulator)`, `build_launch_options(invocation,
-  path)`, `roms_root()`, `bios_root()`, `saves_root()`, `validate()`.
+  path)`, `roms_path()`, `bios_path()`, `saves_path()`, `states_path()`, `validate()`. The path getters use the same
+  names as `RetroDeckPaths` on purpose — same shape, same best-effort/never-raise contract — so a backend is a
+  drop-in behind `LauncherPaths` wherever a service used to read RetroDECK's paths directly. `states_path()` may
+  return `""` where a backend has no flat savestate root (EmuDeck's savestate location is per-core/per-content via
+  atlas, not a single directory the way saves/roms/bios are).
 
 `LauncherBackendService` (`services/launcher_backend/service.py`) owns the **active** binding — read from
 `settings.json`'s `launcher_backend` / `launcher_backend_installation` keys (seeded to `"retrodeck"` by migration
-v14) — and implements the narrower `LaunchCommandRenderer` Protocol (`resolve_invocation` /
-`build_launch_options` only) by delegating to whichever `LauncherBackend` is currently bound. Five call sites take
-this renderer as an injected config field instead of importing `domain.shortcut_data`'s RetroDECK functions
-directly: `DiscService`, `RelaunchOptionsResolver`, `CoreService`, `RomInstallRecorder`, and
-`SyncOrchestrator` (via `domain.shortcut_data.build_shortcuts_data`'s `resolve_invocation`/`render_launch_options`
-keyword parameters, which default to the RetroDECK functions so every caller that doesn't opt in is unaffected).
+v14) — and implements two narrower Protocols by delegating to whichever `LauncherBackend` is currently bound:
+
+- **`LaunchCommandRenderer`** (`resolve_invocation` / `build_launch_options` only). Five call sites take this
+  renderer as an injected config field instead of importing `domain.shortcut_data`'s RetroDECK functions directly:
+  `DiscService`, `RelaunchOptionsResolver`, `CoreService`, `RomInstallRecorder`, and `SyncOrchestrator` (via
+  `domain.shortcut_data.build_shortcuts_data`'s `resolve_invocation`/`render_launch_options` keyword parameters,
+  which default to the RetroDECK functions so every caller that doesn't opt in is unaffected).
+- **`LauncherPaths`** (`roms_path` / `bios_path` / `saves_path` / `states_path`, deliberately omitting
+  `retrodeck_home`/`config_path`/`config_health`, which stay RetroDECK-specific vocabulary). Eleven services take
+  this as an injected `launcher_paths` config field instead of `RetroDeckPaths` directly — every downloads, BIOS,
+  save, and cleanup/adoption/removal path consumer: `DownloadService`, `GameDetailService`, `FirmwareService`,
+  `RomRemovalService`, `RomAdoptionService` (+ its `AdoptionRenamer`/`CandidateSearch` sub-services), `SaveService`
+  (+ its `RomInfoService`/`PruneSaveSupport` sub-services), and `PruneService` (+ its `PreviewBuilder`/
+  `RecoveryCoordinator` sub-services). `MigrationService` and `StartupHealingService` are the deliberate exceptions —
+  both read `retrodeck_home()`/`config_path()`/`config_health()`, RetroDECK-home-migration concepts with no
+  backend-neutral equivalent, so they keep depending on the concrete `RetroDeckPaths` regardless of which backend is
+  active.
+
 Because the service is the thing injected — not a snapshot of the active backend — a switch takes effect at every
-bake site's very next call, with no re-wiring.
+bake site's and every path consumer's very next call, with no re-wiring. This is what makes an EmuDeck-only install
+(no RetroDECK present at all) work end-to-end: downloads, BIOS files, and saves land under EmuDeck's own
+`Emulation/roms` / `Emulation/bios` / `Emulation/saves` subtree from the moment EmuDeck is the active backend,
+not just the launch command.
 
 `RelaunchOptionsResolverConfig`'s `launch_renderer` field is a `LateBinding[LaunchCommandRenderer]`
 (`lib/late_binding.py`), not the service itself: `LauncherBackendService` needs `RelaunchOptionsResolver` as its
@@ -65,8 +89,9 @@ provenance (pinned tag, and why its internal imports needed a mechanical rewrite
 
 `EmuDeckLauncherBackendFactory.detect_installations()` probes the one resolved user home (`decky.DECKY_USER_HOME` —
 never a hardcoded username or a Bazzite-specific `/home` vs `/var/home` guess) via `atlas.detect`, filtering to the
-`EmuDeck` handle. `roms_root()` / `bios_root()` / `saves_root()` delegate to `installation.roms_dir()` /
-`bios_dir()` / `saves_root()`; `validate()` delegates to `installation.health()`.
+`EmuDeck` handle. `roms_path()` / `bios_path()` / `saves_path()` delegate to `installation.roms_dir()` /
+`bios_dir()` / `saves_root()`; `states_path()` always returns `""` — atlas has no flat savestates root for EmuDeck,
+resolving savestate location per-core/per-content instead; `validate()` delegates to `installation.health()`.
 
 ### Rendering: reusing the plugin's own ES-DE classifier against atlas's catalogue
 
@@ -115,8 +140,9 @@ No `eval`, no shell-string concatenation beyond the same trusted-invocation + es
   (ADR-0020) — EmuDeck's unsandboxed layout has no equivalent probe yet, so a bakeable EmuDeck entry whose emulator
   the user has not installed bakes anyway; the launcher script itself reports the failure at launch rather than the
   picker disabling it up front.
-- **BIOS badge / firmware coverage** for EmuDeck is out of scope for this pass — firmware detection still reads
-  RetroDECK's paths regardless of the active backend.
+- **Savestates have no flat root on EmuDeck.** `states_path()` returns `""` for the EmuDeck backend (atlas resolves
+  savestate location per-core/per-content, not as a single directory) — save-sync flows that need a savestate
+  base directory degrade the same way they already do for an unresolved RetroDECK root.
 
 ## Switching backends: the existing fan-out re-bake, not a new migration
 

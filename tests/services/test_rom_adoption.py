@@ -206,7 +206,7 @@ class Harness:
                 adoption_move=self.move,
                 quarantine_save=self.quarantine,
                 resolve_system=lambda platform_slug, platform_fs_slug=None: platform_fs_slug or platform_slug,
-                retrodeck_paths=self.paths,
+                launcher_paths=self.paths,
                 install_recorder=self.recorder,
                 m3u_support=lambda system_name: self.m3u_supported,
                 system_extensions=lambda system_name: self.system_extensions.get(system_name, frozenset()),

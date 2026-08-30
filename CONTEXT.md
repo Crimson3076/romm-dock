@@ -285,7 +285,10 @@ from this default).
 Which app a ROM's launch command actually runs through — **RetroDECK** (the default) or **EmuDeck**. Orthogonal to
 **default emulator** / **emulator override** / **active core**: those decide WHICH emulator a ROM resolves to, on any
 backend; the launcher backend decides HOW that resolved emulator is rendered into an OS-executable command
-(`LauncherBackend.resolve_invocation`, `services/protocols/launcher_backend.py`). Stored as the plugin's own
+(`LauncherBackend.resolve_invocation`, `services/protocols/launcher_backend.py`) AND WHERE downloads, BIOS files, and
+saves live on disk (`LauncherBackend.roms_path`/`bios_path`/`saves_path`/`states_path`, consumed as `LauncherPaths` by
+every file-placement service) — an EmuDeck-only machine with no RetroDECK installed works end-to-end once EmuDeck is
+the active backend. Stored as the plugin's own
 deviation-free intent (`settings.json`'s `launcher_backend` / `launcher_backend_installation`, bucket-1 per the
 persistence boundary) — there is no "no backend" state, RetroDECK is the seeded default. Switching backends re-bakes
 every installed+bound shortcut's `launch_options` through the existing per-platform-core-change fan-out mechanism

@@ -108,7 +108,7 @@ def plugin(tmp_path):
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
             settings_persister=MagicMock(),
             save_file_store=save_file_adapter,
-            retrodeck_paths=FakeRetroDeckPaths(
+            launcher_paths=FakeRetroDeckPaths(
                 saves=saves_path,
                 roms=str(tmp_path / "retrodeck" / "roms"),
             ),

@@ -21,7 +21,7 @@ def _coordinator(uow: FakeUnitOfWork) -> RecoveryCoordinator:
             recovery_store=unused,
             prune_artifacts=unused,
             steam_recovery=unused,
-            retrodeck_paths=unused,
+            launcher_paths=unused,
             clock=FakeClock(),
             uuid_gen=FakeUuidGen(),
         )

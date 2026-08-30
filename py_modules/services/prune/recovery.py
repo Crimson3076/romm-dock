@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from domain.rom import Rom
     from services.protocols import (
         Clock,
+        LauncherPaths,
         PruneArtifactStore,
         RecoveryBundleStore,
-        RetroDeckPaths,
         SteamRecoveryStore,
         UnitOfWorkFactory,
         UuidGen,
@@ -33,7 +33,7 @@ class RecoveryCoordinatorConfig:
     recovery_store: RecoveryBundleStore
     prune_artifacts: PruneArtifactStore
     steam_recovery: SteamRecoveryStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     clock: Clock
     uuid_gen: UuidGen
 
@@ -46,7 +46,7 @@ class RecoveryCoordinator:
         self._recovery_store = config.recovery_store
         self._prune_artifacts = config.prune_artifacts
         self._steam_recovery = config.steam_recovery
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._clock = config.clock
         self._uuid_gen = config.uuid_gen
 
@@ -162,7 +162,7 @@ class RecoveryCoordinator:
         rom_ids = [row.rom_id for row in rows]
         artifacts: list[RecoveryArtifact] = list(save_inventory["artifacts"])
         artifacts.extend(self._prune_artifacts.recovery_artifacts(sorted(delete_ids)))
-        roms_root = self._retrodeck_paths.roms_path()
+        roms_root = self._launcher_paths.roms_path()
         raw_installs = snapshot.get("installs")
         installs = raw_installs if isinstance(raw_installs, list) else []
         installs_by_id = {

@@ -190,6 +190,10 @@ The **Installation** dropdown only matters when a launcher has more than one det
 most setups show exactly one and there's nothing to choose. If EmuDeck isn't installed, it still appears in the
 Launcher dropdown, but its Installation list is empty and you can't select it until EmuDeck is set up.
 
+Whichever launcher is active also decides where Tender puts things: game downloads, BIOS files, and saves all go
+under that launcher's own folders. You do not need RetroDECK installed at all to use Tender with EmuDeck — pick
+EmuDeck as your launcher and everything (downloads, BIOS management, save sync) follows it.
+
 Switching launchers re-applies to every game already synced — Tender rebuilds each installed game's launch command
 for the new launcher in one pass (the same mechanism a per-platform core change already uses), so you don't need to
 re-sync or lose any Steam artwork, playtime, or collections. It can take a little while on a large library; let it

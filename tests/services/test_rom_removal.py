@@ -75,7 +75,7 @@ def service(logger, queue_cleanup, rom_files, uow, emitter):
             clock=FakeClock(),
             emit=emitter,
             rom_file_store=rom_files,
-            retrodeck_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
+            launcher_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
             download_queue_cleanup=queue_cleanup,
             uow_factory=FakeUnitOfWorkFactory(uow),
         ),
@@ -261,7 +261,7 @@ class TestDeleteRomFiles:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
-                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                launcher_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )
@@ -287,7 +287,7 @@ class TestDeleteRomFiles:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
-                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                launcher_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )
@@ -332,7 +332,7 @@ class TestDeleteRomFiles:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
-                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                launcher_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )
@@ -376,7 +376,7 @@ class TestDeleteRomFiles:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=store,
-                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                launcher_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )
@@ -863,7 +863,7 @@ class TestDownloadQueueCleanup:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=rom_files,
-                retrodeck_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
+                launcher_paths=FakeRetroDeckPaths(roms=_ROMS_BASE),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             ),
@@ -976,7 +976,7 @@ class TestClaimDiscipline:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
-                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                launcher_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )
@@ -1006,7 +1006,7 @@ class TestInterruptedStagingRecovery:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
-                retrodeck_paths=FakeRetroDeckPaths(roms=str(roms)),
+                launcher_paths=FakeRetroDeckPaths(roms=str(roms)),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )
