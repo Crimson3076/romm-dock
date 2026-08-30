@@ -198,7 +198,18 @@ class EmuDeckLauncherBackend:
             pinned = next((o for o in options if o.label == emulator.label and o.status == "bakeable"), None)
             if pinned is not None:
                 return pinned
-        return select_default_option(options)
+        default = select_default_option(options)
+        if default is None:
+            caveats = ", ".join(caveat.code for caveat in answer.caveats) or "none"
+            self._logger.warning(
+                "emudeck_launcher_backend: no bakeable option for system %r (%d catalogue entries, "
+                "statuses: %s, caveats: %s)",
+                system,
+                len(options),
+                ", ".join(o.status for o in options) or "none",
+                caveats,
+            )
+        return default
 
     def _render_option(self, option: EmulatorOption) -> str | None:
         command = option.command
@@ -208,6 +219,11 @@ class EmuDeckLauncherBackend:
             )
             return None
         if not command.endswith(_ROM_TOKEN):
+            self._logger.warning(
+                "emudeck_launcher_backend: %r does not end with %%ROM%%, refusing to bake: %r",
+                option.label,
+                command,
+            )
             return None
         body = command[: -len(_ROM_TOKEN)].rstrip()
         if _CORE_RETROARCH_TOKEN in body:

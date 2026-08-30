@@ -43,13 +43,14 @@ class _FakeEntry:
 
 
 @dataclass
-class _FakeCatalogueAnswer:
-    entries: tuple[_FakeEntry, ...] = ()
+class _FakeIssue:
+    code: str
 
 
 @dataclass
-class _FakeIssue:
-    code: str
+class _FakeCatalogueAnswer:
+    entries: tuple[_FakeEntry, ...] = ()
+    caveats: tuple[_FakeIssue, ...] = ()
 
 
 @dataclass
@@ -318,12 +319,36 @@ class TestUnbakeableCommandFallthrough:
         backend = _backend(tmp_path, installation, find_rules_path=xml_path, system="n3ds")
         assert backend.resolve_invocation(_ROM, None) == str(azahar_sh)
 
-    def test_falls_through_to_empty_when_it_was_the_only_entry(self, tmp_path):
+    def test_falls_through_to_empty_when_it_was_the_only_entry(self, tmp_path, caplog):
         installation = _FakeInstallation(
             entries_by_system={"n3ds": [_FakeEntry(label="Unbakeable", command="%EMULATOR_AZAHAR% %BASENAME%")]}
         )
         backend = _backend(tmp_path, installation, system="n3ds")
-        assert backend.resolve_invocation(_ROM, None) == ""
+        with caplog.at_level(logging.WARNING):
+            assert backend.resolve_invocation(_ROM, None) == ""
+        assert any("no bakeable option" in record.message for record in caplog.records)
+
+    def test_empty_catalogue_logs_a_warning_naming_the_caveats(self, tmp_path, caplog):
+        # The exact silent failure a real EmuDeck arrangement with no ES-DE
+        # catalogue hits: zero entries at all, never even reaching a status to
+        # classify. Reproduces the empty-launch_options report from #918's
+        # real-hardware follow-up.
+        installation = _FakeInstallation(entries_by_system={})
+        answer_with_caveat = _FakeCatalogueAnswer(
+            entries=(), caveats=(_FakeIssue(code="emulator-catalogue-unestablished"),)
+        )
+
+        def emulators_for(system: str, *, content_path: str | None = None) -> _FakeCatalogueAnswer:
+            return answer_with_caveat
+
+        installation.emulators_for = emulators_for  # type: ignore[method-assign]
+        backend = _backend(tmp_path, installation, system="gbc")
+        with caplog.at_level(logging.WARNING):
+            assert backend.resolve_invocation(_ROM, None) == ""
+        assert any(
+            "no bakeable option" in record.message and "emulator-catalogue-unestablished" in record.message
+            for record in caplog.records
+        )
 
 
 class TestPerGamePin:
