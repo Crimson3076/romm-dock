@@ -281,7 +281,7 @@ def _record(key: str, entry: Any) -> SaveMemoryRecord:
 
 def _packaged_text() -> str:
     return (
-        importlib.resources.files("atlas")
+        importlib.resources.files("_vendor.atlas")
         .joinpath("data", "save_memory.json")
         .read_text(encoding="utf-8")
     )

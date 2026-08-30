@@ -128,7 +128,7 @@ def load_arrangement_evidence(text: str | None = None) -> dict[str, ArrangementE
     """Load the packaged evidence records (or *text* when supplied, for tests)."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "arrangement_evidence.json")
             .read_text(encoding="utf-8")
         )

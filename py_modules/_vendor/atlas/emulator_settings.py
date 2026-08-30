@@ -385,7 +385,7 @@ def load_emulator_settings(text: str | None = None) -> dict[str, EmulatorEntry]:
     """Load the packaged table (or *text* when supplied, for tests)."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "emulator_settings.json")
             .read_text(encoding="utf-8")
         )

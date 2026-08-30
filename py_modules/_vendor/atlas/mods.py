@@ -483,7 +483,7 @@ def _standalone_mod_card(token: str, entry: Any) -> StandaloneModCard:
 
 def _packaged_text() -> str:
     return (
-        importlib.resources.files("atlas").joinpath("data", "mods.json").read_text(encoding="utf-8")
+        importlib.resources.files("_vendor.atlas").joinpath("data", "mods.json").read_text(encoding="utf-8")
     )
 
 

@@ -52,7 +52,7 @@ def _load_document(text: str | None) -> tuple[frozenset[str], dict[str, tuple[st
     """The whole packaged document, validated fail-closed: ids and platform tags."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "system_ids.json")
             .read_text(encoding="utf-8")
         )

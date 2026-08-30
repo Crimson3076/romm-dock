@@ -210,7 +210,7 @@ def load_standalone_firmware(text: str | None = None) -> tuple[StandaloneFirmwar
     """Load the packaged standalone firmware cards (or *text* when supplied, for tests)."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "standalone_firmware.json")
             .read_text(encoding="utf-8")
         )

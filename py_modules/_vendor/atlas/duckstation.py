@@ -512,7 +512,7 @@ def load_bios_table(text: str | None = None) -> BiosTable:
     """Load the packaged table (or *text* when supplied, for tests)."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "duckstation_bios.json")
             .read_text(encoding="utf-8")
         )

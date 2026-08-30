@@ -137,7 +137,7 @@ def load_platform_crosswalk(text: str | None = None) -> dict[str, PlatformIdenti
     """
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "platform_ids_crosswalk.json")
             .read_text(encoding="utf-8")
         )

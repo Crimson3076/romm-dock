@@ -107,7 +107,7 @@ def load_content_tree_wiring(text: str | None = None) -> dict[str, ArrangementWi
     """Load the packaged wiring table (or *text* when supplied, for tests)."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "content_tree_wiring.json")
             .read_text(encoding="utf-8")
         )

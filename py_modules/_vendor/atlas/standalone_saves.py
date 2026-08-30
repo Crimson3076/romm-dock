@@ -102,7 +102,7 @@ def load_standalone_saves(text: str | None = None) -> tuple[StandaloneSaveCard, 
     """Load the packaged standalone save cards (or *text* when supplied, for tests)."""
     if text is None:
         text = (
-            importlib.resources.files("atlas")
+            importlib.resources.files("_vendor.atlas")
             .joinpath("data", "standalone_saves.json")
             .read_text(encoding="utf-8")
         )

@@ -531,3 +531,41 @@ class TestFactoryBind:
         backend = factory.bind(f"emudeck:{tmp_path}")
         assert backend is not None
         assert isinstance(backend._installation, atlas.EmuDeck)
+
+
+class TestRealAtlasVendoringIntegrity:
+    """``validate()``/``resolve_invocation()`` against a REAL bound ``atlas.EmuDeck``.
+
+    Every other test in this file drives rendering through a hand-built fake
+    ``installation`` (module docstring above) — deliberately, to isolate this
+    backend's own placeholder logic from atlas's own catalogue-reading
+    correctness. That isolation has a blind spot: ``validate()`` calls the
+    real ``installation.health()`` and ``resolve_invocation()`` calls the real
+    ``installation.emulators_for()``, both of which read atlas's own bundled
+    JSON data via ``importlib.resources.files("_vendor.atlas")`` internally
+    (arrangement-caveat and catalogue lookups) — a vendoring regression there
+    (see ``_vendor/README.md``'s `importlib.resources.files` patch note) would
+    raise ``ModuleNotFoundError: No module named 'atlas'`` from deep inside
+    atlas, never from this backend's own code, so no fake-installation test
+    can catch it. This class is the one place that goes through the real
+    thing end-to-end, on the same minimal fixture ``TestFactoryBind`` uses.
+    """
+
+    def test_validate_runs_real_health_without_a_vendoring_error(self, tmp_path):
+        _write_settings_sh(tmp_path)
+        factory = _factory(tmp_path)
+        backend = factory.bind(f"emudeck:{tmp_path}")
+        assert backend is not None
+        validation = backend.validate()
+        assert validation.ok is False  # this bare fixture has no ES-DE / RetroArch — expected
+        assert validation.reason == "unhealthy"
+
+    def test_resolve_invocation_runs_real_emulators_for_without_a_vendoring_error(self, tmp_path):
+        _write_settings_sh(tmp_path)
+        factory = _factory(tmp_path)
+        backend = factory.bind(f"emudeck:{tmp_path}")
+        assert backend is not None
+        # No ES-DE catalogue on this fixture, so nothing bakes — the point is
+        # that resolving gets there and back without atlas's own data loaders
+        # raising, not that this bare fixture has anything to launch.
+        assert backend.resolve_invocation(_ROM, None) == ""

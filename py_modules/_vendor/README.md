@@ -35,6 +35,20 @@ rather than "diff and pray". See the `_vendor/` rules in [`CLAUDE.md`](../../CLA
     one-line-per-file import swap, and both those modules parse through `xml.parsers.expat` internally on the
     pure-Python path (proven exercised, not just present — see that entry). No other line in either file changed; a
     re-pin re-applies both rewrites (the `sed` above, plus this one, done by hand since it is two occurrences total).
+  - Every `importlib.resources.files("atlas")` call rewritten to `importlib.resources.files("_vendor.atlas")` — 16
+    occurrences across 15 files (`content_tree_wiring.py`, `emulator_settings.py`, `evidence.py`, `firmware.py`,
+    `launch_formats.py`, `mods.py`, `oddities.py` (×2), `platforms.py`, `save_memory.py`, `standalone_firmware.py`,
+    `standalone_saves.py`, `standalone_savestates.py`, `systems.py`, `textures.py`), all loading a bundled JSON file
+    under `data/`. The `from atlas...` sed rewrite above only touches Python import statements — a package name
+    passed as a string literal to `importlib.resources.files(...)` is invisible to it, so every one of these sites
+    still asked the resource-loader for a top-level `atlas` package that does not exist under vendoring, failing
+    `ModuleNotFoundError: No module named 'atlas'` (confirmed on real hardware from a ROM download that triggered
+    EmuDeck arrangement-caveat lookups, 2026-08-30). `machine.py`'s `python -m atlas._core_probe` subprocess call is
+    NOT one of these — `_probe_environment()` deliberately prepends this package's own parent directory (`_vendor/`)
+    to the child's `PYTHONPATH`, so the subprocess's bare `import atlas` resolves against the vendored `atlas/`
+    directory on its own, unrelated to the host process's `_vendor.atlas` dotted name. Leave it alone on a re-pin.
+    A re-pin re-applies this rewrite too: `grep -rn 'importlib\.resources\.files("atlas")' atlas/` should stay empty
+    after any re-copy.
 - **Why vendored, not pip-installed:** same reason as every other entry on this page — Decky has no plugin-level
   package manager, so a runtime third-party dependency has to ship inside the plugin's own files. emu-atlas is the
   config-aware emulator-knowledge library this project has committed to (epic #1735) for RetroDECK/EmuDeck
@@ -43,11 +57,14 @@ rather than "diff and pray". See the `_vendor/` rules in [`CLAUDE.md`](../../CLA
   RetroDECK's own in-tree kernels (`domain/save_path.py`, `adapters/es_de_config.py`, …) are unchanged by this vendor
   — the epic's Wave A (swapping RetroDECK itself onto atlas) is separate, sequenced, and not part of this change.
 - **Update procedure:** re-copy the `atlas/` directory + `LICENSE` from a newer tagged release (never `main`, per the
-  epic's own "every wave pins a tagged emu-atlas release" rule), re-apply both import rewrites above, bump the
+  epic's own "every wave pins a tagged emu-atlas release" rule), re-apply all three import rewrites above, bump the
   version/commit here, and re-run `mise run test` — the self-conformance suite
   (`tests/test_atlas_machine_vectors.py`, vendored separately under `tests/atlas_vectors/`) and this package's own
-  callers are what would catch a behavior change on re-pin. `grep -rn "^import xml.etree" atlas/` should stay empty
-  after any re-copy — a newer emu-atlas release adding a THIRD `xml.etree` import site needs the same one-line swap.
+  callers are what would catch a behavior change on re-pin. `grep -rn "^import xml.etree" atlas/` and
+  `grep -rn 'importlib\.resources\.files("atlas")' atlas/` should both stay empty after any re-copy — a newer
+  emu-atlas release adding a new site of either kind needs the same rewrite. None of these three rewrites is caught
+  by any test that doesn't actually exercise the affected code path (a plain import success is not enough for the
+  `importlib.resources` one) — the gap that let this exact class of bug ship once already.
 
 ## elementtree
 

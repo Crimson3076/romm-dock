@@ -139,6 +139,22 @@ got there — a pre-#918 RetroDECK bake or a stale EmuDeck one) to the newly-sel
 > [launcher-backends.md](../architecture/launcher-backends.md) for the current-truth account. No consequence stated
 > above moves — this closes the "let the user install what they want and only what they want" gap the Decision
 > section's `LauncherBackend` scope left open, it does not change the seam's shape.
+>
+> **Errata (2026-08-30).** Real-hardware testing (an EmuDeck-only Steam Deck, no RetroDECK installed) surfaced
+> `ModuleNotFoundError: No module named 'atlas'` on a ROM download, immediately after the previous errata's
+> `launcher_paths` wiring first put a real EmuDeck arrangement on the download path. The `from atlas...` sed rewrite
+> `_vendor/README.md` documents only rewrites Python import statements — it is blind to `importlib.resources.files
+> ("atlas")`, a package name passed as a plain string, which 15 of the vendored package's own modules use to load a
+> bundled JSON file (BIOS hashes, per-core oddities, platform ID crosswalks, and similar). Every one of those sites
+> was still asking for a top-level `atlas` package that does not exist under vendoring. Fixed the same way as the
+> `xml.etree` errata: a mechanical, scripted string rewrite to `importlib.resources.files("_vendor.atlas")` across
+> all 16 call sites, documented in `_vendor/README.md`'s `atlas` entry alongside the other two import rewrites.
+> `machine.py`'s `python -m atlas._core_probe` subprocess call is deliberately NOT one of these — it manipulates the
+> child process's own `PYTHONPATH` instead, and stays correct as-is. This is the second gap in a row that a plain
+> `from _vendor import atlas` import success does not catch, because the failure lives in code paths only a real
+> arrangement being read exercises — this project's own test suite fakes `atlas.EmuDeck` at the seam
+> (`tests/fakes/`) rather than running the vendored package's real data-loading functions, so neither errata's bug
+> was caught before real hardware found it. No consequence stated above moves.
 
 ## Alternatives considered
 

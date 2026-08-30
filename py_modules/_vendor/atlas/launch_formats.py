@@ -145,7 +145,7 @@ _PACKAGED_CARDS: tuple[StandaloneLaunchCard, ...] | None = None
 
 def _packaged_text() -> str:
     return (
-        importlib.resources.files("atlas")
+        importlib.resources.files("_vendor.atlas")
         .joinpath("data", "launch_formats.json")
         .read_text(encoding="utf-8")
     )

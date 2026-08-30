@@ -502,7 +502,7 @@ def load_standalone_texture_packs(text: str | None = None) -> tuple[StandaloneTe
 
 def _packaged_text() -> str:
     return (
-        importlib.resources.files("atlas")
+        importlib.resources.files("_vendor.atlas")
         .joinpath("data", "texture_packs.json")
         .read_text(encoding="utf-8")
     )

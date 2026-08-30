@@ -939,7 +939,7 @@ def load_oddities(text: str | None = None) -> tuple[CoreCard, ...]:
     """
     if text is None:
         text = (
-            importlib.resources.files("atlas").joinpath("data", "core_oddities.json").read_text(encoding="utf-8")
+            importlib.resources.files("_vendor.atlas").joinpath("data", "core_oddities.json").read_text(encoding="utf-8")
         )
     raw = json.loads(text)
     if not isinstance(raw, dict) or raw.get("schema") != ODDITIES_SCHEMA:
@@ -1099,7 +1099,7 @@ def _audit_entry(key: str, entry: Any) -> AuditEntry:
 def load_audit(text: str | None = None) -> dict[str, AuditEntry]:
     """Load the packaged verification matrix (``data/core_audit.json``)."""
     if text is None:
-        text = importlib.resources.files("atlas").joinpath("data", "core_audit.json").read_text(encoding="utf-8")
+        text = importlib.resources.files("_vendor.atlas").joinpath("data", "core_audit.json").read_text(encoding="utf-8")
     raw = json.loads(text)
     if not isinstance(raw, dict) or raw.get("schema") != AUDIT_SCHEMA:
         raise ValueError(
