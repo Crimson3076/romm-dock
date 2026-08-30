@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
-import xml.etree.ElementTree as _ET
+from _vendor.elementtree import ElementTree as _ET
 from glob import escape as _glob_escape
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence, cast, runtime_checkable
 

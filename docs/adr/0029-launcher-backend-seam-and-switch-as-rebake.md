@@ -109,6 +109,17 @@ got there — a pre-#918 RetroDECK bake or a stale EmuDeck one) to the newly-sel
   existing `_vendor/` convention, with every internal `from atlas...` import mechanically rewritten to
   `from _vendor.atlas...` (documented, scripted, reversible on re-pin — see `_vendor/README.md`).
 
+> **Errata (2026-08-30).** Real-hardware testing (a Steam Deck running EmuDeck) surfaced
+> `ModuleNotFoundError: No module named 'xml.etree'` on plugin load: Decky's PyInstaller-frozen Python does not bundle
+> `xml.etree` at all, and the vendored `atlas` package's own ES-DE parsing (`installations.py`, `esde.py`) imports
+> `xml.etree.ElementTree` — a gap this ADR's "excluded from ruff/basedpyright" line did not catch because nothing in
+> this project's own toolchain (a normal CPython venv) reproduces Decky's frozen interpreter. Fixed by vendoring the
+> two CPython stdlib modules `ElementTree` is implemented on top of (`_vendor/elementtree/`, PSF-licensed, verbatim)
+> rather than rewriting emu-atlas's own tree-walking onto `xml.parsers.expat` by hand; both degrade to their
+> pure-Python, expat-backed path exactly as `adapters/es_de_config.py`'s own hand-written parsing already does. See
+> `_vendor/README.md`'s `atlas` and `elementtree` entries for the full account. This is a real gap in this ADR's own
+> verification, not a design change: no consequence stated above moves.
+
 ## Alternatives considered
 
 - **The originating runtime-dispatch shape** (Steam shortcut carries a stable rom-id marker; `bin/rom-launcher` reads
