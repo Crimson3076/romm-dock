@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://danielcopper.github.io/romm-tender/
+    url: https://crimson3076.github.io/romm-dock/
     about: Architecture, file structure, user guide, and contributing docs
   - name: Discussions
-    url: https://github.com/danielcopper/romm-tender/discussions
+    url: https://github.com/Crimson3076/romm-dock/discussions
     about: Questions, ideas, and general conversation that aren't bug reports or specific feature requests

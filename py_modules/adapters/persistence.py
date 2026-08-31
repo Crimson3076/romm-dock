@@ -73,7 +73,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "device_name": None,
     "platform_cores": {},
     # The active launcher backend (issue #918) and which detected
-    # installation of it Tender manages. "retrodeck" is the plugin's
+    # installation of it RomM-Dock manages. "retrodeck" is the plugin's
     # original and only backend before this seam existed, so it stays the
     # default — a fresh install and a pre-#918 settings.json both launch
     # through RetroDECK unchanged.

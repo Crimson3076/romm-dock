@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 // Must match `plugin.json`'s `name` and the `name` returned from `definePlugin`
 // — Decky reads those two for the plugin list and the QAM header, and nothing
 // checks that the three agree.
-export const PLUGIN_NAME = "Tender";
+export const PLUGIN_NAME = "RomM-Dock";
 
 /**
  * Raise a toast under the plugin's name.

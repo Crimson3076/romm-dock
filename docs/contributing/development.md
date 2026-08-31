@@ -1,6 +1,6 @@
 # Development
 
-Guide for setting up a development environment and contributing to Tender.
+Guide for setting up a development environment and contributing to RomM-Dock.
 
 ## Prerequisites
 
@@ -16,8 +16,8 @@ Guide for setting up a development environment and contributing to Tender.
 ## Setup
 
 ```bash
-git clone https://github.com/danielcopper/romm-tender.git
-cd romm-tender
+git clone https://github.com/Crimson3076/romm-dock.git
+cd romm-dock
 mise install          # installs Node LTS, pnpm, Python
 mise run setup        # installs JS + Python dependencies
 ```
@@ -175,7 +175,7 @@ mise run dev          # build frontend, deploy to the plugin dir, restart plugin
 mise run dev dp2      # ...and also open windowed Big Picture on that display after deploying
 ```
 
-This builds the frontend, copies the plugin files into `~/homebrew/plugins/decky-romm-sync`, and restarts
+This builds the frontend, copies the plugin files into `~/homebrew/plugins/romm-dock`, and restarts
 `plugin_loader` to pick up the changes. It **stops** `plugin_loader` around the file copy on purpose: the loader runs as
 root and continuously re-owns the plugin dir back to root within ~1–2s as a tamper guard, so copying while it runs races
 against that re-own and fails with `permission denied`. With the loader stopped, the copy is uncontested; it restarts
@@ -199,7 +199,7 @@ Mode's. See [Frontend dev loop](frontend-dev-loop.md) for the full workflow, key
 For development, symlink the repo into the plugins directory:
 
 ```bash
-sudo ln -sf "$(pwd)" ~/homebrew/plugins/decky-romm-sync
+sudo ln -sf "$(pwd)" ~/homebrew/plugins/romm-dock
 sudo systemctl restart plugin_loader
 ```
 

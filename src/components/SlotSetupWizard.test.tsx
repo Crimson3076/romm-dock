@@ -660,7 +660,7 @@ describe("SlotSetupWizard", () => {
 
       expect(vi.mocked(backend.confirmSlotChoice)).toHaveBeenCalledWith(5, "default", true, null, false);
       expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-        title: "Tender",
+        title: "RomM-Dock",
         body: "Migrated 1 save into ‘default’. The legacy save stays in the read-only legacy bucket.",
       });
       expect(onComplete).toHaveBeenCalledOnce();

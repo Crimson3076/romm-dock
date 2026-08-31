@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 # Every notice comes from the same plugin, so they all carry the same sender and
 # the body is what tells them apart. Must match the frontend's ``PLUGIN_NAME``
 # and ``plugin.json``; nothing checks that the three agree.
-_TOAST_TITLE = "Tender"
+_TOAST_TITLE = "RomM-Dock"
 _TOAST_BODY_NOT_INSTALLED = "ROM not downloaded. Open the game page to download it first."
 _TOAST_BODY_SAVE_CONFLICT = "Save conflict detected — open game page to resolve before playing"
 _TOAST_BODY_SAVE_STATUS_FAILED = "Save-status check failed — retry?"

@@ -1,6 +1,6 @@
 /**
  * Launcher backend picker (issue #918) — which launcher (RetroDECK / EmuDeck)
- * and which detected installation of it Tender launches ROMs through.
+ * and which detected installation of it RomM-Dock launches ROMs through.
  *
  * Self-contained rather than SettingsPage-owned data — mirrors DiscSelector
  * (`../DiscSelector.tsx`): a backend switch's rebake fan-out
@@ -127,7 +127,7 @@ export const LauncherBackendSection: FC = () => {
       <PanelSectionRow>
         <DropdownItem
           label="Launcher"
-          description="Which emulation frontend Tender launches games through"
+          description="Which emulation frontend RomM-Dock launches games through"
           rgOptions={backends.map((b) => ({ data: b.backend_id, label: b.display_name }))}
           selectedOption={backendId}
           disabled={loading || switching || backends.length === 0}

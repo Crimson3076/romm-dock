@@ -574,7 +574,7 @@ describe("CustomPlayButton — pause/resume on active download (#1124)", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Something else is at this game's location now — cancel the download and start again",
     });
   });
@@ -594,7 +594,7 @@ describe("CustomPlayButton — pause/resume on active download (#1124)", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Another version is now active",
     });
   });
@@ -611,7 +611,7 @@ describe("CustomPlayButton — pause/resume on active download (#1124)", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Couldn't resume the download — is RomM server running?",
     });
   });
@@ -1164,7 +1164,7 @@ describe("CustomPlayButton — uninstall is visible and single-shot (#1664)", ()
 
     await findByText("Play");
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "This ROM is already being uninstalled",
     });
   });
@@ -1996,7 +1996,7 @@ describe("CustomPlayButton — resolve conflict reads the known conflict (#1276)
     });
 
     expect(vi.mocked(handleConflicts)).not.toHaveBeenCalled();
-    expect(toaster.toast).toHaveBeenCalledWith({ title: "Tender", body: "Cleanup is active." });
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM-Dock", body: "Cleanup is active." });
     await utils.findByText("Resolve Conflict");
   });
 });
@@ -2094,7 +2094,7 @@ describe("CustomPlayButton — shared launch gate (ADR-0015)", () => {
     await clickPlay();
 
     expect(toaster.toast).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "This download has no file the emulator can launch. The files are on disk — see the game page.",
     });
     expect(vi.mocked(SteamClient.Apps.RunGame)).not.toHaveBeenCalled();
@@ -2976,7 +2976,7 @@ describe("CustomPlayButton — Stop Game", () => {
     // action that cannot be carried out.
     expect(showStopGameModal).not.toHaveBeenCalled();
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Couldn't stop the game — still loading its details",
     });
     // Nothing was stopped, so Resume must stay reachable.
@@ -3003,7 +3003,7 @@ describe("CustomPlayButton — Stop Game", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "RetroDECK is running, but not this game — nothing was stopped.",
     });
     expect(vi.mocked(backend.debugLog)).toHaveBeenCalledWith(
@@ -3099,7 +3099,7 @@ describe("CustomPlayButton — Stop Game", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Couldn't signal the emulator",
     });
     // The game may well still be running — Resume must stay reachable.
@@ -3122,7 +3122,7 @@ describe("CustomPlayButton — Stop Game", () => {
     // logged, and the overlay is deliberately NOT cleared (no verdict was
     // reached, so the game may still be running).
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Couldn't stop the game",
     });
     expect(vi.mocked(backend.debugLog)).toHaveBeenCalledWith(
@@ -3843,7 +3843,7 @@ describe("CustomPlayButton — content already on disk (#260)", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "The files are no longer there — nothing was adopted",
     });
     await utils.findByText("Use Existing Files");
@@ -3862,7 +3862,7 @@ describe("CustomPlayButton — content already on disk (#260)", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Couldn't use the existing files — is RomM server running?",
     });
     await utils.findByText("Use Existing Files");
@@ -4065,7 +4065,7 @@ describe("CustomPlayButton — the same game under another name (#260)", () => {
     });
 
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Could not rename this game's files",
     });
   });
