@@ -19,27 +19,35 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
 
+from services.protocols.paths import CoreInfoProvider
+
 if TYPE_CHECKING:
     from domain.launcher_backend import BackendValidation, DetectedInstallation
     from domain.shortcut_data import EmulatorInvocation
 
 
-class LauncherBackend(Protocol):
+class LauncherBackend(CoreInfoProvider, Protocol):
     """One launcher, bound to a concrete installation.
 
     ``resolve_invocation``/``build_launch_options`` mirror
     ``domain.shortcut_data``'s free functions of the same name — a backend
     renders the CHOSEN :class:`~domain.shortcut_data.EmulatorInvocation`
-    (selection stays :class:`services.active_core_resolver.ActiveCoreResolver`'s
-    job, unchanged by which backend is active) into an OS-executable command
-    line. The path getters use the same names as :class:`RetroDeckPaths` on
-    purpose — same shape, same best-effort/never-raise contract, so a backend
-    is a drop-in behind :class:`LauncherPaths` wherever a service used to read
-    RetroDECK's paths directly. ``states_path`` may return ``""`` where a
-    backend has no flat savestate root to offer (EmuDeck's savestate location
-    is per-core/per-content, not a single directory the way saves/roms/bios
-    are) — callers already treat an empty path as "nothing here", the same
-    degradation an unresolved RetroDECK root uses.
+    (which command WINS stays :class:`services.active_core_resolver.
+    ActiveCoreResolver`'s job, unchanged by which backend is active) into an
+    OS-executable command line. The path getters use the same names as
+    :class:`RetroDeckPaths` on purpose — same shape, same best-effort/never-raise
+    contract, so a backend is a drop-in behind :class:`LauncherPaths` wherever a
+    service used to read RetroDECK's paths directly. ``states_path`` may return
+    ``""`` where a backend has no flat savestate root to offer (EmuDeck's
+    savestate location is per-core/per-content, not a single directory the way
+    saves/roms/bios are) — callers already treat an empty path as "nothing
+    here", the same degradation an unresolved RetroDECK root uses.
+
+    Extends :class:`CoreInfoProvider` so ``ActiveCoreResolver`` decides WHICH
+    invocation wins from THIS backend's own catalogue (its own
+    ``get_emulator_options``/``get_default_emulator``/``get_active_core``), not
+    always RetroDECK's — the per-game/per-platform picker menu now follows the
+    active backend exactly like rendering and file placement already do.
     """
 
     backend_id: str

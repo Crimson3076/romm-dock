@@ -55,7 +55,12 @@ if TYPE_CHECKING:
     from models.shortcut_launcher import ShortcutLauncher
 
     from domain.app_directories import AppDirectories
-    from services.protocols import InstalledRomRemoverFn, LaunchCommandRenderer, SiblingSupersedeFn
+    from services.protocols import (
+        CoreInfoProvider,
+        InstalledRomRemoverFn,
+        LaunchCommandRenderer,
+        SiblingSupersedeFn,
+    )
 
     from .adapters import AdapterBundle, CallbackBundle, RuntimeBundle, StateBundle
 
@@ -135,16 +140,25 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     # shape of cycle, bound after both exist.
     sibling_supersede_binding: LateBinding[SiblingSupersedeFn] = LateBinding("sibling_supersede")
 
+    # LauncherBackendService (issue #918) needs this resolver's read side
+    # (a plain CoreInfoProvider + backend_id), but the resolver itself needs
+    # to read THROUGH whichever backend LauncherBackendService currently binds
+    # (its per-backend picker follow-up) — a construction cycle, same shape as
+    # every other one in this function. Bound after LauncherBackendService
+    # exists, below.
+    core_info_binding: LateBinding[CoreInfoProvider] = LateBinding("core_info")
+    active_backend_id_binding: LateBinding[str] = LateBinding("active_backend_id")
+
     # The single read-path core resolver (B1): folds the per-game
-    # emulator_override pin over the system-layer ES-DE resolution. Built first
-    # (no service deps) so every per-game-core read consumer — migration, saves,
-    # game-detail, cores — draws from the SAME seam and the read-path core never
-    # diverges from the launched core.
+    # emulator_overrides pin over the ACTIVE backend's own system-layer
+    # resolution. Built first (no service deps) so every per-game-core read
+    # consumer — migration, saves, game-detail, cores — draws from the SAME
+    # seam and the read-path core never diverges from the launched core.
     active_core_resolver = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=cfg.callbacks.uow_factory,
-            core_info=cfg.adapters.core_info_provider,
-            sandbox_launcher=cfg.callbacks.sandbox_launcher,
+            core_info=core_info_binding,
+            active_backend_id=active_backend_id_binding,
             platform_core_reader=cfg.callbacks.platform_core_reader,
             resolve_system=cfg.adapters.http_adapter.resolve_system,
             logger=cfg.runtime.logger,
@@ -220,6 +234,8 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         ),
     )
     launch_renderer_binding.set(lambda: launcher_backend_service)
+    core_info_binding.set(lambda: launcher_backend_service)
+    active_backend_id_binding.set(launcher_backend_service.active_backend_id)
 
     # MigrationService is constructed before SaveService so that
     # save_sync_service can receive a bound reference to
@@ -432,7 +448,8 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             firmware_resolver=cfg.adapters.firmware_resolver,
             platform_firmware_resolver=cfg.adapters.platform_firmware_resolver,
             launcher_paths=launcher_backend_service,
-            core_info=cfg.adapters.core_info_provider,
+            core_info=launcher_backend_service,
+            active_backend_id=launcher_backend_service.active_backend_id,
             resolve_system=cfg.adapters.http_adapter.resolve_system,
             platform_core_reader=cfg.callbacks.platform_core_reader,
             uow_factory=cfg.callbacks.uow_factory,
@@ -496,7 +513,8 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         config=CoreServiceConfig(
             loop=cfg.runtime.loop,
             logger=cfg.runtime.logger,
-            core_info=cfg.adapters.core_info_provider,
+            core_info=launcher_backend_service,
+            active_backend_id=launcher_backend_service.active_backend_id,
             resolve_system=cfg.adapters.http_adapter.resolve_system,
             settings=cfg.stores.settings,
             settings_persister=cfg.callbacks.settings_persister,

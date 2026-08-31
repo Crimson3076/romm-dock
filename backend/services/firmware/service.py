@@ -25,6 +25,7 @@ from services.firmware.status import FirmwareStatusReader, FirmwareStatusReaderC
 if TYPE_CHECKING:
     import asyncio
     import logging
+    from collections.abc import Callable
 
     from domain.emulator_commands import LaunchingEmulator
     from services.protocols import (
@@ -47,8 +48,12 @@ class FirmwareServiceConfig:
 
     Holds the API adapter, runtime infrastructure, Protocol-typed file
     adapters, the SQLite Unit-of-Work factory, and the provider callables
-    the firmware subsystem needs at construction time. Decomposes the ctor
-    so a new dependency does not push past the S107 parameter-count
+    the firmware subsystem needs at construction time. ``core_info``/
+    ``active_backend_id`` are the ACTIVE launcher backend's emulator-selection
+    catalogue and its id (issue #918's per-backend picker follow-up) — the
+    System page's active-core display and BIOS filter follow whichever
+    backend is currently selected, the same as the picker menus. Decomposes
+    the ctor so a new dependency does not push past the S107 parameter-count
     limit.
     """
 
@@ -61,6 +66,7 @@ class FirmwareServiceConfig:
     platform_firmware_resolver: FirmwarePlatformResolver
     launcher_paths: LauncherPaths
     core_info: CoreInfoProvider
+    active_backend_id: Callable[[], str]
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
     uow_factory: UnitOfWorkFactory
@@ -108,6 +114,7 @@ class FirmwareService:
                 demand=self._demand,
                 listing=self._listing,
                 core_info=config.core_info,
+                active_backend_id=config.active_backend_id,
                 resolve_system=config.resolve_system,
                 platform_core_reader=config.platform_core_reader,
                 firmware_file_store=config.firmware_file_store,
@@ -123,6 +130,7 @@ class FirmwareService:
                 listing=self._listing,
                 demand=self._demand,
                 core_info=config.core_info,
+                active_backend_id=config.active_backend_id,
                 resolve_system=config.resolve_system,
                 platform_core_reader=config.platform_core_reader,
                 firmware_file_store=config.firmware_file_store,

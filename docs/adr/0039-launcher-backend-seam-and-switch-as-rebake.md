@@ -153,6 +153,47 @@ got there — a pre-#918 RetroDECK bake or a stale EmuDeck one) to the newly-sel
 > genuine embedded catalogue now resolves to a real, placeholder-free launch command end to end — removing the
 > registration makes that test fail with the user's exact symptom (an empty invocation), confirmed before shipping. No
 > consequence stated above moves.
+>
+> **Errata (2026-08-31).** With the zstd fix above shipped, the same real-hardware EmuDeck arrangement still baked
+> **empty** `launch_options` after toggling the active backend and back — a genuinely different bug, not a regression
+> of the zstd fix. Traced to `RelaunchOptionsResolver`, `CoreService`, and `DiscService` all building the rom dict
+> passed to `resolve_invocation` as `{"id": rom_id}`, omitting `platform_slug` — harmless for RetroDECK (whose
+> `resolve_emulator_invocation` ignores `rom` entirely) but fatal for EmuDeck (whose `resolve_invocation` needs
+> `platform_slug` to resolve the ES-DE system). Fixed by threading `platform_slug` through all four call sites
+> (`RelaunchOptionsResolver._resolve_item`, `CoreService._set_system_core_io`/`_launch_options_for`,
+> `DiscService._bake_launch_options`, the last of which now takes the `Rom` aggregate instead of a bare `rom_id`).
+>
+> Investigating that fix surfaced a second, larger gap this ADR's Decision section left open: **emulator selection
+> itself** — the menu of available cores/emulators the System page and per-game picker offer, and the system-layer
+> default `ActiveCoreResolver` falls back to — was still sourced unconditionally from the vendored catalogue's
+> RetroDECK-only reading (`adapters.atlas_catalogue.AtlasCatalogueAdapter`) on **every** backend. A genuinely
+> EmuDeck-only user (no RetroDECK flatpak present at all) got an empty picker on both pages; a user who still had
+> RetroDECK's flatpak sitting unused got a picker listing RetroDECK's cores while EmuDeck rendered the pick, which
+> only worked by coincidence when the two catalogues happened to share a label. Per-game and per-platform pins were a
+> single value shared across backends too — switching backends re-interpreted the same pinned label against a
+> different catalogue instead of keeping each backend's own choice.
+>
+> Closed by extending the `LauncherBackend` Protocol to also implement `CoreInfoProvider` (`get_active_core`,
+> `get_default_emulator`, `get_emulator_options`, `resolve_sandbox_launcher`, `reset_cache`) — RetroDECK's
+> implementation delegates `get_active_core`/`get_default_emulator`/`get_emulator_options`/`reset_cache` unchanged to
+> the injected `AtlasCatalogueAdapter`, and `resolve_sandbox_launcher` to `EsFindRulesAdapter` (a second, separate
+> source, held apart from the catalogue for the reason `CoreInfoProvider`'s own docstring gives: which source answers
+> that one question is a property of the active backend, not of the catalogue). EmuDeck's implementation classifies
+> atlas's `emulators_for()` catalogue with the same `domain.emulator_commands` kernel already used for rendering, and
+> answers `resolve_sandbox_launcher` with a flat `None` — it runs nothing inside a RetroDECK sandbox, so there is no
+> such path to resolve; behavior-preserving, since a RetroDECK-only find-rules lookup never matched an EmuDeck command
+> anyway. `LauncherBackendService` delegates all five methods to whichever backend is active, the same pattern already
+> used for `LaunchCommandRenderer`/`LauncherPaths`. `ActiveCoreResolver`, `CoreService`, and `FirmwareService` now take
+> this active `core_info` instead of the concrete `AtlasCatalogueAdapter` (`ActiveCoreResolver`'s is
+> `LateBinding`-wrapped — it is constructed before `LauncherBackendService` in the same producer/consumer cycle
+> `launch_renderer` already breaks). Storage became per-backend to match: `roms.emulator_override` (migration
+> `025_emulator_override_per_backend.sql`) now holds a JSON object keyed by `backend_id` instead of a bare label, and
+> `settings.json`'s `platform_cores` (migration bumping settings to v15) nests under `backend_id` — each pre-existing
+> pin folded under `"retrodeck"`, the only backend that existed when it was set. See
+> [launcher-backends.md](../architecture/launcher-backends.md) and
+> [core-emulator-selection.md](../architecture/core-emulator-selection.md) for the current-truth account. This
+> closes the same "let the user install what they want and only what they want" gap the path-consumer errata above
+> closed for file placement — it does not change the seam's shape, only completes it.
 
 ## Alternatives considered
 

@@ -17,7 +17,6 @@ from bootstrap import (
     bootstrap,
     wire_services,
 )
-from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_cover_art_file_store import FakeCoverArtFileStore
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
@@ -116,17 +115,23 @@ class TestBootstrap:
         result = _bootstrap_for(tmp_path)
         assert isinstance(result.callbacks.retrodeck_paths, RetroDeckPathsAdapter)
 
-    def test_returns_core_info_provider_on_adapters(self, tmp_path):
-        """``core_info_provider`` is bundled with adapters, not callbacks.
+    def test_retrodeck_backend_factory_carries_the_vendored_catalogue(self, tmp_path):
+        """The RetroDECK backend factory holds the vendored-atlas catalogue (issue #918 follow-up).
 
-        The stateful adapter sits in :class:`AdapterBundle`;
-        :class:`CallbackBundle` carries only provider callables and persisters.
+        Before the per-backend picker follow-up, the catalogue adapter sat
+        directly on :class:`AdapterBundle` as ``core_info_provider``. It is now
+        injected into ``retrodeck_launcher_backend_factory`` instead — the
+        RetroDECK backend's own emulator-selection catalogue, exactly as
+        ``EmuDeckLauncherBackend`` sources its options from atlas rather than
+        from a bundle field. ``AdapterBundle`` no longer carries
+        ``core_info_provider`` at all.
         """
         result = _bootstrap_for(tmp_path)
-        # AdapterBundle exposes the stateful catalogue adapter.
-        assert result.adapters.core_info_provider is not None
-        # CallbackBundle no longer carries it.
+        assert not hasattr(result.adapters, "core_info_provider")
         assert not hasattr(result.callbacks, "core_info_provider")
+        backend = result.adapters.retrodeck_launcher_backend_factory.bind("retrodeck")
+        assert backend is not None
+        assert backend.get_emulator_options("n64") == {"available": False, "options": []}
 
     def test_platform_core_reader_binds_live_settings(self, tmp_path):
         """``CallbackBundle.platform_core_reader`` reads the live settings dict.
@@ -137,9 +142,9 @@ class TestBootstrap:
         """
         result = _bootstrap_for(tmp_path)
         reader = result.callbacks.platform_core_reader
-        assert reader.get_platform_core("snes") is None
-        result.stores.settings["platform_cores"]["snes"] = "bsnes"
-        assert reader.get_platform_core("snes") == "bsnes"
+        assert reader.get_platform_core("retrodeck", "snes") is None
+        result.stores.settings["platform_cores"]["retrodeck"] = {"snes": "bsnes"}
+        assert reader.get_platform_core("retrodeck", "snes") == "bsnes"
 
     def test_state_bundle_carries_only_settings(self, tmp_path):
         """Post-cutover (#784) ``StateBundle`` holds only the live settings dict.
@@ -422,12 +427,10 @@ class TestWireServices:
             "get_core_name": MagicMock(return_value="Snes9x"),
             "platform_core_reader": FakePlatformCoreReader(),
             "m3u_support": MagicMock(return_value=True),
-            "sandbox_launcher": MagicMock(return_value=None),
             "system_extensions": MagicMock(return_value=frozenset()),
             "system_known": MagicMock(return_value=None),
             "list_rom_dir_files": MagicMock(return_value=[]),
             "settings_persister": MagicMock(),
-            "core_info_provider": FakeCoreInfoProvider(),
             "log_debug": MagicMock(),
             "uow_factory": FakeUnitOfWorkFactory(),
             "directories": _directories_at(tmp_path),
@@ -458,7 +461,6 @@ class TestWireServices:
                 save_file_store=deps["save_file_store"],
                 path_probe=deps["path_probe"],
                 resolve_path=deps["resolve_path"],
-                core_info_provider=deps["core_info_provider"],
                 save_locations=FakeSaveLocationReader(),
                 renderer_rss=deps["renderer_rss"],
                 renderer_gc=deps["renderer_gc"],
@@ -492,7 +494,6 @@ class TestWireServices:
                 get_core_name=deps["get_core_name"],
                 platform_core_reader=deps["platform_core_reader"],
                 m3u_support=deps["m3u_support"],
-                sandbox_launcher=deps["sandbox_launcher"],
                 system_extensions=deps["system_extensions"],
                 system_known=deps["system_known"],
                 list_rom_dir_files=deps["list_rom_dir_files"],

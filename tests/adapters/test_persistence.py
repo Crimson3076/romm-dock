@@ -500,28 +500,36 @@ class TestLoadSaveSyncState:
 
 class TestPlatformCoreReaderAdapter:
     def test_returns_label_for_configured_platform(self):
-        reader = PlatformCoreReaderAdapter({"platform_cores": {"snes": "bsnes", "gba": "mGBA"}})
-        assert reader.get_platform_core("snes") == "bsnes"
-        assert reader.get_platform_core("gba") == "mGBA"
+        reader = PlatformCoreReaderAdapter({"platform_cores": {"retrodeck": {"snes": "bsnes", "gba": "mGBA"}}})
+        assert reader.get_platform_core("retrodeck", "snes") == "bsnes"
+        assert reader.get_platform_core("retrodeck", "gba") == "mGBA"
 
     def test_returns_none_for_absent_platform(self):
-        reader = PlatformCoreReaderAdapter({"platform_cores": {"snes": "bsnes"}})
-        assert reader.get_platform_core("psx") is None
+        reader = PlatformCoreReaderAdapter({"platform_cores": {"retrodeck": {"snes": "bsnes"}}})
+        assert reader.get_platform_core("retrodeck", "psx") is None
 
     def test_returns_none_when_map_empty(self):
         reader = PlatformCoreReaderAdapter({"platform_cores": {}})
-        assert reader.get_platform_core("snes") is None
+        assert reader.get_platform_core("retrodeck", "snes") is None
 
     def test_returns_none_when_key_missing(self):
         # Defensive: a settings dict without platform_cores at all.
         reader = PlatformCoreReaderAdapter({})
-        assert reader.get_platform_core("snes") is None
+        assert reader.get_platform_core("retrodeck", "snes") is None
 
     def test_reads_live_dict_not_a_snapshot(self):
         """The adapter binds the live dict — a later write is visible on the next read."""
         settings: dict[str, object] = {"platform_cores": {}}
         reader = PlatformCoreReaderAdapter(settings)
-        assert reader.get_platform_core("snes") is None
+        assert reader.get_platform_core("retrodeck", "snes") is None
         # Mutate the same dict the adapter holds.
-        settings["platform_cores"]["snes"] = "bsnes"  # type: ignore[index]
-        assert reader.get_platform_core("snes") == "bsnes"
+        settings["platform_cores"]["retrodeck"] = {"snes": "bsnes"}  # type: ignore[index]
+        assert reader.get_platform_core("retrodeck", "snes") == "bsnes"
+
+    def test_backends_are_independent(self):
+        """A pick for one backend is invisible when reading a different backend (#918 follow-up)."""
+        reader = PlatformCoreReaderAdapter(
+            {"platform_cores": {"retrodeck": {"snes": "bsnes"}, "emudeck": {"snes": "snes9x-hd"}}}
+        )
+        assert reader.get_platform_core("retrodeck", "snes") == "bsnes"
+        assert reader.get_platform_core("emudeck", "snes") == "snes9x-hd"

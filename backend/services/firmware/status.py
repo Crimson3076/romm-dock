@@ -49,6 +49,7 @@ from domain.firmware_wants import DECLARED_DIRECTORY
 if TYPE_CHECKING:
     import asyncio
     import logging
+    from collections.abc import Callable
 
     from domain.bios_file import BiosFile
     from domain.emulator_commands import EmulatorOption, LaunchingEmulator
@@ -69,14 +70,18 @@ class FirmwareStatusReaderConfig:
     """Frozen wiring bundle handed to ``FirmwareStatusReader.__init__``.
 
     Holds the two peer sub-services the answers are built from — the platform's
-    demand and the RomM listing — plus the ES-DE core reads, the slug/system
-    mapping, the per-platform emulator override, the file store the delete
-    count probes through, the Unit-of-Work factory, and runtime infrastructure.
+    demand and the RomM listing — plus the ACTIVE launcher backend's core reads
+    and its ``backend_id`` (issue #918's per-backend picker follow-up: the
+    per-platform emulator override is scoped to whichever backend is currently
+    selected, same as the picker menus), the slug/system mapping, the file
+    store the delete count probes through, the Unit-of-Work factory, and
+    runtime infrastructure.
     """
 
     demand: FirmwareDemand
     listing: FirmwareListing
     core_info: CoreInfoProvider
+    active_backend_id: Callable[[], str]
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
     firmware_file_store: FirmwareFileStore
@@ -92,6 +97,7 @@ class FirmwareStatusReader:
         self._demand = config.demand
         self._listing = config.listing
         self._core_info = config.core_info
+        self._active_backend_id = config.active_backend_id
         self._resolve_system = config.resolve_system
         self._platform_core_reader = config.platform_core_reader
         self._firmware_file_store = config.firmware_file_store
@@ -138,9 +144,14 @@ class FirmwareStatusReader:
 
         Takes the already-read *options* rather than the system name, because
         every caller needs the emulator list anyway and reading it costs a
-        catalogue read plus a glob per bakeable standalone entry.
+        catalogue read plus a glob per bakeable standalone entry. The override
+        read is scoped to the ACTIVE backend's own ``backend_id`` — a pin set
+        under a different backend never applies here.
         """
-        return resolve_platform_option(options["options"], self._platform_core_reader.get_platform_core(platform_slug))
+        backend_id = self._active_backend_id()
+        return resolve_platform_option(
+            options["options"], self._platform_core_reader.get_platform_core(backend_id, platform_slug)
+        )
 
     def _resolve_launching_emulator(
         self, platform_slug: str, options: dict[str, Any], launching_emulator: LaunchingEmulator | None

@@ -81,8 +81,13 @@ class FakeCoreInfoProvider:
     (so ``get_active_core`` is still consulted — and recorded — for the libretro
     path).
 
-    The sandbox-launcher seam is :class:`FakeSandboxLauncher`, a separate object
-    because it is a separate Protocol answered from a separate source.
+    ``resolve_sandbox_launcher`` delegates to a held :class:`FakeSandboxLauncher`
+    (``sandbox_launcher``, defaulting to an empty one) rather than answering
+    directly — real implementations answer it from a SEPARATE source (the
+    catalogue for RetroDECK's other four methods, ES-DE's find rules for this
+    one; see ``CoreInfoProvider``'s own docstring), and holding a distinct fake
+    object here keeps that same separation visible to a test that seeds one
+    and not the other.
     """
 
     def __init__(
@@ -93,6 +98,7 @@ class FakeCoreInfoProvider:
         options: list[EmulatorOption] | None = None,
         available: bool = True,
         standalone: dict[str, EmulatorInvocation] | None = None,
+        sandbox_launcher: FakeSandboxLauncher | None = None,
     ) -> None:
         self.active_core = active_core
         self._available_cores: list[dict[str, Any]] = []
@@ -104,6 +110,9 @@ class FakeCoreInfoProvider:
             self.available_cores = available_cores or []
         self.available = available
         self.standalone: dict[str, EmulatorInvocation] = standalone if standalone is not None else {}
+        self.sandbox_launcher: FakeSandboxLauncher = (
+            sandbox_launcher if sandbox_launcher is not None else FakeSandboxLauncher()
+        )
         self.reset_cache_count = 0
         self.active_core_calls: list[str] = []
         self.emulator_options_calls: list[str] = []
@@ -134,6 +143,9 @@ class FakeCoreInfoProvider:
     def get_emulator_options(self, system_name: str) -> dict[str, Any]:
         self.emulator_options_calls.append(system_name)
         return {"available": self.available, "options": self.options}
+
+    def resolve_sandbox_launcher(self, command: str) -> str | None:
+        return self.sandbox_launcher(command)
 
     def reset_cache(self) -> None:
         self.reset_cache_count += 1

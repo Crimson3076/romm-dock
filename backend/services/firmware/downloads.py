@@ -22,7 +22,7 @@ from lib.path_safety import PathTraversalError
 if TYPE_CHECKING:
     import asyncio
     import logging
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from domain.firmware_wants import FirmwarePlacement
     from services.firmware.demand import FirmwareDemand
@@ -44,16 +44,18 @@ class FirmwareDownloaderConfig:
 
     Holds the RomM API adapter the bytes come from, the two peer sub-services
     (the listing a platform's rows are picked out of, the demand each
-    destination is resolved through), the ES-DE core reads and the per-platform
-    emulator override the required-only filter resolves its emulator from, the file
-    store, the clock the download timestamp is taken from, the Unit-of-Work
-    factory the record is written through, and runtime infrastructure.
+    destination is resolved through), the ACTIVE launcher backend's core reads
+    and its ``backend_id`` (issue #918's per-backend picker follow-up) the
+    required-only filter resolves its emulator from, the file store, the clock
+    the download timestamp is taken from, the Unit-of-Work factory the record
+    is written through, and runtime infrastructure.
     """
 
     romm_api: RommFirmwareApi
     listing: FirmwareListing
     demand: FirmwareDemand
     core_info: CoreInfoProvider
+    active_backend_id: Callable[[], str]
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
     firmware_file_store: FirmwareFileStore
@@ -71,6 +73,7 @@ class FirmwareDownloader:
         self._listing = config.listing
         self._demand = config.demand
         self._core_info = config.core_info
+        self._active_backend_id = config.active_backend_id
         self._resolve_system = config.resolve_system
         self._platform_core_reader = config.platform_core_reader
         self._firmware_file_store = config.firmware_file_store
@@ -343,11 +346,14 @@ class FirmwareDownloader:
 
         Takes both vocabularies because it needs both: the emulator list is keyed
         by the resolved *system* (ADR-0010 §2) and the per-platform override by
-        the raw *platform_slug*.
+        the raw *platform_slug*. The override read is scoped to the ACTIVE
+        backend's own ``backend_id`` — a pin set under a different backend
+        never applies here.
         """
+        backend_id = self._active_backend_id()
         options = self._core_info.get_emulator_options(system)
         emulator = resolve_platform_option(
-            options["options"], self._platform_core_reader.get_platform_core(platform_slug)
+            options["options"], self._platform_core_reader.get_platform_core(backend_id, platform_slug)
         )
         return emulator.emulator if emulator is not None else None
 

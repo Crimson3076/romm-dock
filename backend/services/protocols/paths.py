@@ -142,11 +142,17 @@ class CoreInfoProvider(Protocol):
     (``get_default_emulator``) and the full picker (``get_emulator_options``) are
     emulator-kind-aware (libretro OR standalone).
 
-    Resolving an emulator to its sandbox launcher path is a different question
-    and is :class:`SandboxLauncherFn`'s: this one is answered out of the
-    catalogue, that one out of ES-DE's find rules. Holding both here would make
-    one implementation forward to the other and hide which source answered a
-    given call.
+    ``resolve_sandbox_launcher`` answers out of a DIFFERENT source than the
+    other three (:class:`SandboxLauncherFn`'s shape — ES-DE's find rules, not
+    the catalogue), but belongs here rather than beside it because which
+    source answers is itself a property of the active backend: RetroDECK's
+    implementation forwards to its ``SandboxLauncherFn`` (flatpak sandbox
+    component paths only it has), while EmuDeck's answers ``None``
+    unconditionally — it runs nothing in a RetroDECK sandbox, so there is no
+    such path to resolve. Folding it in here, rather than injecting one
+    global ``SandboxLauncherFn`` that every backend shares, is what makes the
+    per-game/per-platform picker and this seam agree on which emulator the
+    ACTIVE backend would actually launch with.
     """
 
     def get_active_core(self, system_name: str) -> tuple[str | None, str | None]: ...
@@ -154,6 +160,8 @@ class CoreInfoProvider(Protocol):
     def get_default_emulator(self, system_name: str) -> EmulatorInvocation | None: ...
 
     def get_emulator_options(self, system_name: str) -> dict[str, Any]: ...
+
+    def resolve_sandbox_launcher(self, command: str) -> str | None: ...
 
     def reset_cache(self) -> None: ...
 
@@ -264,14 +272,17 @@ class SystemKnownFn(Protocol):
 class PlatformCoreReader(Protocol):
     """Read seam for the plugin-owned per-platform core selection.
 
-    Exposes the ``settings.json`` ``platform_cores`` map (RomM platform
-    slug → core label) so the resolver can layer a user-chosen
-    platform-wide core over the es_systems default without reading the
-    retired ES-DE gamelist. Returns the stored core label for a slug, or
-    ``None`` when the platform has no plugin-owned selection.
+    Exposes the ``settings.json`` ``platform_cores`` map (``backend_id`` →
+    RomM platform slug → core label) so the resolver can layer a user-chosen
+    platform-wide core over the active backend's own default without reading
+    the retired ES-DE gamelist. Each launcher backend keeps its own
+    independent selection per platform — switching backends never reads or
+    clears another backend's entry. Returns the stored core label for
+    *backend_id*/*platform_slug*, or ``None`` when that backend has no
+    plugin-owned selection for the platform.
     """
 
-    def get_platform_core(self, platform_slug: str) -> str | None: ...
+    def get_platform_core(self, backend_id: str, platform_slug: str) -> str | None: ...
 
 
 class CoreNameProviderFn(Protocol):

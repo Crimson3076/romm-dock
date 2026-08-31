@@ -602,6 +602,10 @@ directly into each game's Steam shortcut, so your choice applies reliably for an
 - **Per-game** changes set the core for a single game and take priority over the platform choice. Stored by the plugin
   on the game, so they survive uninstalling and re-downloading.
 
+Both scopes are stored **per launcher backend**: the menu always lists whichever backend (RetroDECK or EmuDeck) is
+currently active in [Settings](configuration.md), and a core you pick under one backend has no effect on the other —
+switching backends and switching back leaves each one's picks exactly as you left them, no reinstall required.
+
 ### Per-Platform (Library Platforms tab)
 
 In **Library › Platforms**, a platform with more than one emulator shows a **chip button** at the right of its header

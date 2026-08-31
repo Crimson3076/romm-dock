@@ -218,39 +218,55 @@ class TestAssignRaId:
 class TestPinEmulatorOverride:
     def test_sets_label(self):
         rom = _make_rom()
-        rom.pin_emulator_override("PCSX ReARMed")
-        assert rom.emulator_override == "PCSX ReARMed"
+        rom.pin_emulator_override("retrodeck", "PCSX ReARMed")
+        assert rom.emulator_override_for("retrodeck") == "PCSX ReARMed"
 
     def test_strips_surrounding_whitespace(self):
         rom = _make_rom()
-        rom.pin_emulator_override("  PCSX ReARMed  ")
-        assert rom.emulator_override == "PCSX ReARMed"
+        rom.pin_emulator_override("retrodeck", "  PCSX ReARMed  ")
+        assert rom.emulator_override_for("retrodeck") == "PCSX ReARMed"
 
     def test_empty_label_raises(self):
         rom = _make_rom()
         with pytest.raises(ValueError, match="emulator_override label must not be empty"):
-            rom.pin_emulator_override("")
-        assert rom.emulator_override is None
+            rom.pin_emulator_override("retrodeck", "")
+        assert rom.emulator_override_for("retrodeck") is None
 
     def test_whitespace_only_label_raises(self):
         rom = _make_rom()
         with pytest.raises(ValueError, match="emulator_override label must not be empty"):
-            rom.pin_emulator_override("   ")
-        assert rom.emulator_override is None
+            rom.pin_emulator_override("retrodeck", "   ")
+        assert rom.emulator_override_for("retrodeck") is None
+
+    def test_backends_pin_independently(self):
+        """Pinning one backend never touches another backend's pin (#918 follow-up)."""
+        rom = _make_rom()
+        rom.pin_emulator_override("retrodeck", "PCSX ReARMed")
+        rom.pin_emulator_override("emudeck", "DuckStation")
+        assert rom.emulator_override_for("retrodeck") == "PCSX ReARMed"
+        assert rom.emulator_override_for("emudeck") == "DuckStation"
 
 
 class TestClearEmulatorOverride:
     def test_clear_after_pin_sets_none(self):
         rom = _make_rom()
-        rom.pin_emulator_override("PCSX ReARMed")
-        rom.clear_emulator_override()
-        assert rom.emulator_override is None
+        rom.pin_emulator_override("retrodeck", "PCSX ReARMed")
+        rom.clear_emulator_override("retrodeck")
+        assert rom.emulator_override_for("retrodeck") is None
 
     def test_clear_when_already_none_stays_none(self):
         rom = _make_rom()
-        assert rom.emulator_override is None
-        rom.clear_emulator_override()
-        assert rom.emulator_override is None
+        assert rom.emulator_override_for("retrodeck") is None
+        rom.clear_emulator_override("retrodeck")
+        assert rom.emulator_override_for("retrodeck") is None
+
+    def test_clearing_one_backend_leaves_the_other_pinned(self):
+        rom = _make_rom()
+        rom.pin_emulator_override("retrodeck", "PCSX ReARMed")
+        rom.pin_emulator_override("emudeck", "DuckStation")
+        rom.clear_emulator_override("retrodeck")
+        assert rom.emulator_override_for("retrodeck") is None
+        assert rom.emulator_override_for("emudeck") == "DuckStation"
 
 
 class TestPinSelectedDisc:

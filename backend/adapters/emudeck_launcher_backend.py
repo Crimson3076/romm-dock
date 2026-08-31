@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 from _vendor import atlas
 
 from adapters.emudeck_find_rules import EmuDeckFindRulesAdapter
-from domain.emulator_commands import classify_command, select_default_option
+from domain.emulator_commands import classify_command, option_to_invocation, select_default_option
 from domain.launcher_backend import EMUDECK_BACKEND_ID, BackendValidation, DetectedInstallation
 from domain.shortcut_data import build_launch_options
 
@@ -172,34 +172,103 @@ class EmuDeckLauncherBackend:
             return ""
         return build_launch_options(invocation, path)
 
-    def _select_option(self, system: str, emulator: EmulatorInvocation | None) -> EmulatorOption | None:
-        """Classify this system's catalogue entries and pick the pinned or default one.
+    # -- CoreInfoProvider: this backend's own emulator-selection catalogue,
+    # reusing the plugin's bakeability rules (domain.emulator_commands)
+    # against atlas's catalogue text — the same ES-DE <command> grammar
+    # RetroDECK's es_systems.xml uses. Reused by the System-page and
+    # per-game picker menus, and by ActiveCoreResolver's precedence chain,
+    # exactly like RetroDECK's CoreResolver — so switching the active
+    # backend switches which catalogue the picker and the resolver both
+    # draw from.
 
-        Reuses the plugin's own bakeability rules (``domain.emulator_commands``)
-        against atlas's catalogue text — the same ES-DE ``<command>`` grammar
-        RetroDECK's es_systems.xml uses. A per-game/per-platform pin
-        (``emulator.label``) is matched by label first, exactly like
-        ``label_to_invocation`` does for RetroDECK; an unmatched or
-        unresolvable pin falls through to the system default.
+    def get_emulator_options(self, system_name: str) -> dict[str, Any]:
+        """Return every atlas-catalogue entry for *system_name*, classified for bakeability.
 
-        Does not run RetroDECK's ``not_installed`` existence probe
-        (``downgrade_if_not_installed``) — that probe walks RetroDECK's
-        sandboxed ``es_find_rules.xml`` staticpaths, which do not apply to
-        EmuDeck's unsandboxed layout. A bakeable EmuDeck entry whose emulator
-        the user has not actually installed is a known v1 gap: it bakes, and
-        the launcher script itself reports the failure (each one already
-        checks for its own binary before running, per
+        Returns ``{"available": bool, "options": [EmulatorOption, ...]}`` —
+        the same shape ``adapters.es_de_config.CoreResolver`` returns for
+        RetroDECK. ``available`` is ``False`` only when atlas read no
+        catalogue source at all for this arrangement (``answer.sources`` is
+        empty) — an unknown system on a readable catalogue yields
+        ``available: True`` with an empty list, the same distinction
+        RetroDECK's reader makes. Does not run RetroDECK's ``not_installed``
+        existence probe (``downgrade_if_not_installed``) — that probe walks
+        RetroDECK's sandboxed ``es_find_rules.xml`` staticpaths, which do not
+        apply to EmuDeck's unsandboxed layout. A bakeable EmuDeck entry whose
+        emulator the user has not actually installed is a known v1 gap: it
+        bakes, and the launcher script itself reports the failure (each one
+        already checks for its own binary before running, per
         ``Emulation/tools/launchers/*.sh``) rather than the picker disabling
         it up front.
         """
-        answer = self._installation.emulators_for(system)
+        answer = self._installation.emulators_for(system_name)
         options = [classify_command(entry.label, entry.command) for entry in answer.entries]
+        return {"available": bool(answer.sources), "options": options}
+
+    def get_default_emulator(self, system_name: str) -> EmulatorInvocation | None:
+        """Resolve the system-layer default emulator (libretro OR standalone).
+
+        The first *safely-bakeable* entry in atlas's catalogue order — mirrors
+        ``CoreResolver.get_default_emulator`` for RetroDECK.
+        """
+        result = self.get_emulator_options(system_name)
+        if not result["available"]:
+            return None
+        return option_to_invocation(select_default_option(result["options"]))
+
+    def get_active_core(self, system_name: str) -> tuple[str | None, str | None]:
+        """Resolve the system-layer libretro active core, for the firmware BIOS filter.
+
+        The first entry ``classify_command`` calls ``"libretro"`` in atlas's
+        catalogue order — mirrors ``CoreResolver.get_active_core``'s intent
+        (report the first RetroArch entry, not necessarily the bakeable
+        default). Unlike RetroDECK's reader, which finds a bare ``core_so``
+        via a loose regex search independent of bakeability,
+        ``classify_command``'s strict libretro pattern requires the full
+        ``%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/<core>.so %ROM%`` shape —
+        so here "libretro-classified" and "bakeable" always coincide; a
+        malformed libretro-looking entry (missing ``%ROM%``, say) is not
+        recognized as libretro at all and is skipped. ``(None, None)`` when
+        the system has no libretro entry.
+        """
+        for option in self.get_emulator_options(system_name)["options"]:
+            if option.kind == "libretro" and option.core_so:
+                return (option.core_so, option.label)
+        return (None, None)
+
+    def resolve_sandbox_launcher(self, command: str) -> str | None:
+        """EmuDeck has no RetroDECK sandbox — always ``None``.
+
+        The folder-boot ``direct`` rewrite (ADR-0019) this feeds is a
+        workaround for RetroDECK's ``run_game.sh`` being unable to launch a
+        directory ``%ROM%``; EmuDeck's own bake (:meth:`resolve_invocation`)
+        already resolves the full host command at bake time with no such
+        indirection, so there is nothing here to resolve. Behavior-preserving:
+        before this seam existed, EmuDeck ran through RetroDECK's own
+        ``CoreResolver`` for this call, which already returned ``None`` for
+        every EmuDeck-flavored command (its ``es_find_rules.xml`` lookup never
+        matched) — this is the same answer, just sourced honestly.
+        """
+        del command  # unused: the LauncherBackend Protocol requires the parameter
+        return None
+
+    def reset_cache(self) -> None:
+        """No parse cache at this layer to invalidate — atlas reads live per call."""
+
+    def _select_option(self, system: str, emulator: EmulatorInvocation | None) -> EmulatorOption | None:
+        """Classify this system's catalogue entries and pick the pinned or default one.
+
+        A per-game/per-platform pin (``emulator.label``) is matched by label
+        first, exactly like ``label_to_invocation`` does for RetroDECK; an
+        unmatched or unresolvable pin falls through to the system default.
+        """
+        options = self.get_emulator_options(system)["options"]
         if emulator is not None and emulator.label:
             pinned = next((o for o in options if o.label == emulator.label and o.status == "bakeable"), None)
             if pinned is not None:
                 return pinned
         default = select_default_option(options)
         if default is None:
+            answer = self._installation.emulators_for(system)
             caveats = ", ".join(caveat.code for caveat in answer.caveats) or "none"
             verdicts = "; ".join(f"{o.label!r}={o.status}/{o.reason}: {o.command!r}" for o in options) or "none"
             self._logger.warning(

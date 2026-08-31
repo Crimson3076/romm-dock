@@ -10,7 +10,7 @@ import pytest
 
 # conftest.py patches decky before this import; use _make_testable_plugin for test-only attrs
 from _factories import _make_testable_plugin
-from fakes.fake_core_info_provider import FakeCoreInfoProvider, FakeSandboxLauncher
+from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
@@ -19,6 +19,7 @@ from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.fake_windows_resolver import FakeWindowsResolver
+from fakes.late_binding import bound
 from fakes.library_peers import FakeArtworkManager
 from fakes.running_loop import running_loop
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
@@ -149,8 +150,8 @@ def plugin():
     p._active_core = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(p._uow),
-            core_info=p._core_info,
-            sandbox_launcher=FakeSandboxLauncher(),
+            core_info=bound(p._core_info),
+            active_backend_id=bound("retrodeck"),
             platform_core_reader=FakePlatformCoreReader(),
             resolve_system=p._resolve_system,
             logger=decky.logger,
@@ -1784,7 +1785,7 @@ class TestDoDownloadOverrideRebake:
         _seed_rom(plugin._uow, rom_id, platform_slug="psx")
         if override is not None:
             with plugin._uow:
-                plugin._uow.roms.set_emulator_override(rom_id, override)
+                plugin._uow.roms.set_emulator_override(rom_id, "retrodeck", override)
         plugin._download_service._loop = asyncio.get_running_loop()
         plugin._download_service._download_queue[rom_id] = {"rom_id": rom_id, "status": "downloading", "progress": 0}
 
