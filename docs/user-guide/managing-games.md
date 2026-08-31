@@ -1,11 +1,12 @@
 # Managing Games
 
-After syncing, each game in your Steam Library that came from RomM has an injected **RomM-Dock** panel on its detail page.
-This panel handles downloads, artwork, BIOS status, save sync, and more.
+After syncing, each game in your Steam Library that came from RomM has an injected **RomM-Dock** panel on its detail
+page. This panel handles downloads, artwork, BIOS status, save sync, and more.
 
 ## The Game Detail Panel
 
-When you open a RomM game in the Steam Library, you'll see the RomM-Dock panel below the standard Steam content. It shows:
+When you open a RomM game in the Steam Library, you'll see the RomM-Dock panel below the standard Steam content. It
+shows:
 
 - **Status badge** — "Installed", "Downloading", or "Not Installed"
 - **Platform name** — which system the game belongs to (e.g. "Game Boy Advance")
@@ -288,12 +289,12 @@ list shows, it says so.
 same answer.
 
 The first is the **wrong shape**: your server sends each game either as a single file or as a folder of several files,
-and RomM-Dock can only take over what matches. A _folder_ with this game's name where the server sends a single file — or a
-loose file where it sends a folder — is not something it can use.
+and RomM-Dock can only take over what matches. A _folder_ with this game's name where the server sends a single file —
+or a loose file where it sends a folder — is not something it can use.
 
-The second is a **shortcut** (a symlink). RomM-Dock never adopts one, even when it points at exactly the right game file.
-Once a game counts as installed, Uninstall has to be able to remove it, and it will not remove a shortcut — so adopting
-one would leave you with a game you could never uninstall from here.
+The second is a **shortcut** (a symlink). RomM-Dock never adopts one, even when it points at exactly the right game
+file. Once a game counts as installed, Uninstall has to be able to remove it, and it will not remove a shortcut — so
+adopting one would leave you with a game you could never uninstall from here.
 
 Either way you are told instead of the download simply starting: **something with this name is here, it cannot be used
 as this game, so downloading leaves you with two copies.** You can go ahead and download anyway, which lands the
@@ -364,8 +365,8 @@ removes an already-installed copy.
 If you chose **Download Instead** on the [already-on-your-device dialog](#when-the-game-is-already-on-your-device) and
 then paused, resuming picks up where it left off as usual: your existing file is still there until the download
 finishes, and the answer you gave covers it. Resume is only refused if something _new_ has turned up at the game's
-location in the meantime — RomM-Dock says so rather than deleting it, since you were never shown that content. Cancel the
-download and start again to see the dialog for what is there now.
+location in the meantime — RomM-Dock says so rather than deleting it, since you were never shown that content. Cancel
+the download and start again to see the dialog for what is there now.
 
 ### Multi-Disc and Multi-File Games
 
