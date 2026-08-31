@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import Any, cast
 
+import pytest
 from _vendor import atlas
 
 from adapters.emudeck_find_rules import EmuDeckFindRulesAdapter
@@ -599,3 +602,118 @@ class TestRealAtlasVendoringIntegrity:
         # that resolving gets there and back without atlas's own data loaders
         # raising, not that this bare fixture has anything to launch.
         assert backend.resolve_invocation(_ROM, None) == ""
+
+
+class TestVendoredZstdCatalogueReading:
+    """The `_vendor/backports_zstd` fix (issue #918's real-hardware follow-up).
+
+    ES-DE ships its default ``es_systems.xml`` inside its AppImage, compressed
+    with zstd. Atlas's own squashfs reader can decompress it, but only when a
+    zstd codec is importable as ``compression.zstd`` (Python >= 3.14, not this
+    project's target) or ``backports.zstd`` — neither exists in this runtime
+    without vendoring one, so ``adapters/emudeck_launcher_backend.py``'s
+    real-hardware report (every GBC/N64 catalogue entry reduced to an empty
+    command) traced back to exactly this: atlas silently fell back to its
+    documented degraded mode (derived-from-installed-cores, no command text)
+    rather than reading the real, sealed-inside-the-AppImage catalogue.
+    """
+
+    def test_the_vendored_module_round_trips(self):
+        from _vendor import backports_zstd
+
+        data = b"emudeck es_systems.xml payload" * 200
+        assert backports_zstd.decompress(backports_zstd.compress(data)) == data
+
+    def test_atlas_squashfs_resolves_the_vendored_provider(self):
+        from _vendor.atlas import squashfs
+
+        module = squashfs._zstd_module()
+        assert module is not None
+        assert module.__name__ == "_vendor.backports_zstd"
+        decompressor = squashfs._decompressor(squashfs._COMPRESSOR_ZSTD)
+        payload = b"round-trip through atlas's own decompressor lookup" * 50
+        assert decompressor(module.compress(payload)) == payload
+
+    @pytest.mark.skipif(
+        shutil.which("mksquashfs") is None or shutil.which("unsquashfs") is None,
+        reason="requires squashfs-tools (mksquashfs/unsquashfs) to build a real fixture image",
+    )
+    def test_a_real_zstd_appimage_catalogue_yields_a_bakeable_command(self, tmp_path):
+        # Reproduces the user's exact report end to end: a genuinely
+        # zstd-compressed squashfs, appended after an ELF stub (a real
+        # AppImage's own shape), read through atlas's real detection and
+        # rendered by this backend into a real launch command — not a faked
+        # `installation.emulators_for()` answer.
+        _write_settings_sh(tmp_path)
+        appimage_root = tmp_path / "_appimage_root"
+        catalogue_dir = appimage_root / "usr" / "share" / "es-de" / "resources" / "systems" / "linux"
+        catalogue_dir.mkdir(parents=True)
+        (catalogue_dir / "es_systems.xml").write_text(
+            "<?xml version='1.0'?>\n"
+            "<systemList>\n"
+            "  <system>\n"
+            "    <name>gbc</name>\n"
+            "    <path>%ROMPATH%/gbc</path>\n"
+            "    <extension>.gbc .zip</extension>\n"
+            '    <command label="Gambatte">%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/gambatte_libretro.so '
+            "%ROM%</command>\n"
+            "    <platform>gbc</platform>\n"
+            "  </system>\n"
+            "</systemList>\n"
+        )
+        squashfs_image = tmp_path / "catalogue.sqfs"
+        subprocess.run(
+            ["mksquashfs", str(appimage_root), str(squashfs_image), "-comp", "zstd", "-noappend"],
+            check=True,
+            capture_output=True,
+        )
+        applications_dir = tmp_path / "Applications"
+        applications_dir.mkdir()
+        appimage_path = applications_dir / "ES-DE.AppImage"
+        true_binary = shutil.which("true")
+        assert true_binary is not None
+        with appimage_path.open("wb") as out:
+            # Any ELF works as the runtime stub — atlas locates the squashfs
+            # by walking the ELF's own section headers, the same way a real
+            # AppImage runtime finds its embedded image.
+            with open(true_binary, "rb") as stub:
+                out.write(stub.read())
+            out.write(squashfs_image.read_bytes())
+        appimage_path.chmod(0o755)
+
+        # A real EmuDeck arrangement's es_find_rules.xml resolves BOTH tokens
+        # this command carries: %EMULATOR_RETROARCH% (an <emulator> staticpath
+        # to an existing launcher script) and %CORE_RETROARCH% (a <core>
+        # corepath to the cores directory).
+        retroarch_sh = tmp_path / "Emulation" / "tools" / "launchers" / "retroarch.sh"
+        retroarch_sh.parent.mkdir(parents=True)
+        retroarch_sh.write_text("#!/bin/sh\n")
+        cores_dir = tmp_path / "Applications" / "RetroArch" / "cores"
+        cores_dir.mkdir(parents=True)
+        find_rules_dir = tmp_path / "ES-DE" / "custom_systems"
+        find_rules_dir.mkdir(parents=True)
+        (find_rules_dir / "es_find_rules.xml").write_text(
+            "<?xml version='1.0'?>\n"
+            "<ruleList>\n"
+            '  <emulator name="RETROARCH">\n'
+            '    <rule type="staticpath">\n'
+            f"      <entry>{retroarch_sh}</entry>\n"
+            "    </rule>\n"
+            "  </emulator>\n"
+            '  <core name="RETROARCH">\n'
+            '    <rule type="corepath">\n'
+            f"      <entry>{cores_dir}</entry>\n"
+            "    </rule>\n"
+            "  </core>\n"
+            "</ruleList>\n"
+        )
+
+        factory = EmuDeckLauncherBackendFactory(
+            user_home=str(tmp_path),
+            resolve_system=lambda platform_slug, platform_fs_slug=None: "gbc",
+            logger=_LOGGER,
+        )
+        backend = factory.bind(f"emudeck:{tmp_path}")
+        assert backend is not None
+        invocation = backend.resolve_invocation({"platform_slug": "gbc", "platform_fs_slug": None}, None)
+        assert invocation == f"{retroarch_sh} -L {cores_dir}/gambatte_libretro.so"

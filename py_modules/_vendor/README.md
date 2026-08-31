@@ -49,6 +49,11 @@ rather than "diff and pray". See the `_vendor/` rules in [`CLAUDE.md`](../../CLA
     directory on its own, unrelated to the host process's `_vendor.atlas` dotted name. Leave it alone on a re-pin.
     A re-pin re-applies this rewrite too: `grep -rn 'importlib\.resources\.files("atlas")' atlas/` should stay empty
     after any re-copy.
+  - `squashfs.py`'s `_ZSTD_PROVIDERS` tuple has `"_vendor.backports_zstd"` appended after `"backports.zstd"`. This is
+    the exact extension point that module's own docstring describes ("a host application that vendors the backport
+    grants its runtime the capability") — see the `backports_zstd` entry below for why atlas needs it at all. A
+    re-pin re-applies this one-line addition; `grep -n "_ZSTD_PROVIDERS" atlas/squashfs.py` should still list it
+    after any re-copy.
 - **Why vendored, not pip-installed:** same reason as every other entry on this page — Decky has no plugin-level
   package manager, so a runtime third-party dependency has to ship inside the plugin's own files. emu-atlas is the
   config-aware emulator-knowledge library this project has committed to (epic #1735) for RetroDECK/EmuDeck
@@ -57,14 +62,75 @@ rather than "diff and pray". See the `_vendor/` rules in [`CLAUDE.md`](../../CLA
   RetroDECK's own in-tree kernels (`domain/save_path.py`, `adapters/es_de_config.py`, …) are unchanged by this vendor
   — the epic's Wave A (swapping RetroDECK itself onto atlas) is separate, sequenced, and not part of this change.
 - **Update procedure:** re-copy the `atlas/` directory + `LICENSE` from a newer tagged release (never `main`, per the
-  epic's own "every wave pins a tagged emu-atlas release" rule), re-apply all three import rewrites above, bump the
+  epic's own "every wave pins a tagged emu-atlas release" rule), re-apply all four local patches above, bump the
   version/commit here, and re-run `mise run test` — the self-conformance suite
   (`tests/test_atlas_machine_vectors.py`, vendored separately under `tests/atlas_vectors/`) and this package's own
-  callers are what would catch a behavior change on re-pin. `grep -rn "^import xml.etree" atlas/` and
-  `grep -rn 'importlib\.resources\.files("atlas")' atlas/` should both stay empty after any re-copy — a newer
-  emu-atlas release adding a new site of either kind needs the same rewrite. None of these three rewrites is caught
-  by any test that doesn't actually exercise the affected code path (a plain import success is not enough for the
-  `importlib.resources` one) — the gap that let this exact class of bug ship once already.
+  callers are what would catch a behavior change on re-pin. `grep -rn "^import xml.etree" atlas/`,
+  `grep -rn 'importlib\.resources\.files("atlas")' atlas/`, and `grep -n "_ZSTD_PROVIDERS" atlas/squashfs.py` should
+  all still show the same three patches after any re-copy — a newer emu-atlas release adding a new site of either of
+  the first two kinds needs the same rewrite. None of the four is caught by any test that doesn't actually exercise
+  the affected code path (a plain import success is not enough for the `importlib.resources` one, and the
+  `_ZSTD_PROVIDERS` one needs a genuinely zstd-compressed image to exercise at all) — the gap that let two of these
+  ship once already, on the same real-hardware report each time.
+
+## backports_zstd
+
+- **Upstream:** <https://github.com/rogdham/backports.zstd>
+- **Version:** 1.7.0 — the `backports.zstd` package on PyPI (source is not tag-pinned here; the wheel's own version is
+  the provenance)
+- **License:** PSF-2.0 (a CPython stdlib backport) plus the BSD-licensed `zstd` library it statically links —
+  see [`backports_zstd/LICENSE`](backports_zstd/LICENSE) and
+  [`backports_zstd/LICENSE_zstd.txt`](backports_zstd/LICENSE_zstd.txt)
+- **Local patches:**
+  - Every internal `backports.zstd` self-reference rewritten to `_vendor.backports_zstd` (`import backports.zstd._zstd
+    as _zstd`, `from backports.zstd._zstd import (...)`, `from backports.zstd._zstdfile import ...`, `from
+    backports.zstd import _streams`) — the same mechanical, scripted rewrite pattern as `atlas`'s own `from atlas...`
+    fix, applied to the two files (`__init__.py`, `_zstdfile.py`) that carry the package's own absolute self-imports:
+    `sed -i -E 's/\bbackports\.zstd\b/_vendor.backports_zstd/g' __init__.py _zstdfile.py`.
+  - **Trimmed, not a full copy** — the only atlas entry point this package exists for is `squashfs.py`'s
+    `zstd.decompress(bytes) -> bytes` (a one-shot call, module-level function, matching stdlib `zlib.decompress`'s
+    shape). Vendored: `__init__.py`, `_zstdfile.py`, `_streams.py` (imported by `_zstdfile.py`), the compiled
+    `_zstd.cpython-311-x86_64-linux-gnu.so` (the actual decompressor — see below), `py.typed`, both `LICENSE*` files.
+    Excluded, verified unreachable from a plain `import _vendor.backports_zstd` or a `.decompress()` call:
+    `_zstd.py` (a pure-Python/CFFI fallback the package's own docstring says the compiled extension takes precedence
+    over — shipping it would add an unused dependency on `cffi` + a system `libzstd` neither of which this project
+    carries), `_cffi/` (only reachable through the excluded `_zstd.py`), `_shutil.py`/`_compat.py` (only reachable
+    through `register_shutil`, exposed via `__init__.py`'s `__getattr__` lazy-attribute hook — nothing in this
+    codebase touches that name), `tarfile.py`/`zipfile/` (high-level archive helpers built on compression this
+    project has no use for). `__init__.pyi`/`tarfile.pyi`/`zipfile/__init__.pyi` (type stubs) dropped as dead weight
+    for the same reason `_vendor/` is excluded from basedpyright entirely.
+- **Why a compiled `.so`, not a pure-Python decompressor:** zstd has no complete, trustworthy pure-Python
+  implementation — the format is real work to decode correctly, and every serious implementation (including this
+  one) wraps the reference C library. The vendored `_zstd.cpython-311-x86_64-linux-gnu.so` links `libzstd`
+  **statically** (`readelf -d` shows only `libc.so.6`/`libpthread.so.0` as `NEEDED` — no `libzstd.so` dependency to
+  find on the host) and its highest referenced symbol is `GLIBC_2.14`, so it carries no runtime dependency beyond
+  glibc itself; built for `cp311`-`manylinux2014_x86_64`, matching this project's pinned Python 3.11 and the Steam
+  Deck's x86_64 architecture (the same target `native/libgavel-x86_64-linux.so` is built for).
+- **Why vendored at all:** `_vendor/atlas/squashfs.py` reads ES-DE's default `es_systems.xml`, which ships **inside**
+  the `ES-DE.AppImage` as a zstd-compressed squashfs image (`mksquashfs`'s default codec since squashfs-tools 4.5+,
+  confirmed on real hardware via `unsquashfs -s`: `Compression zstd`). Atlas's own squashfs reader already knows how
+  to decompress zstd blocks, but only if a decompressor is importable as `compression.zstd` (Python >= 3.14, this
+  project targets 3.11) or `backports.zstd` (a third-party package, not installed anywhere by default) — with
+  neither present, atlas silently falls back to its own documented degraded mode (a plain list of installed
+  libretro cores, derived from their own `.info` files, with **no command text** — `emulator-catalogue-sealed` /
+  `emulator-list-derived` in its caveats). That degraded mode is what a real-hardware report traced to: every GBC and
+  N64 catalogue entry resolved to `command=""`, so `EmuDeckLauncherBackend` had nothing to bake and every affected
+  Steam shortcut launched with empty `launch_options` (confirmed via `journalctl`: the game process started and
+  exited within seconds of every Play press, with no visible window). Vendoring `backports.zstd` — the exact package
+  name atlas's own probe already looks for — closes the gap with no change to atlas's own catalogue-reading logic
+  beyond the one-line `_ZSTD_PROVIDERS` addition documented in the `atlas` entry above.
+- **Verified, not just imported:** a real AppImage-shaped fixture (an ELF stub with a genuine
+  `mksquashfs -comp zstd`-built squashfs image appended, holding a real `es_systems.xml`) round-trips through
+  `_vendor.atlas.squashfs.read_appimage_entry` and through `EmuDeckLauncherBackend.resolve_invocation` end to end,
+  producing a real non-empty, placeholder-free launch command —
+  `tests/adapters/test_emudeck_launcher_backend.py::TestVendoredZstdCatalogueReading` (the full-fixture case is
+  skipped where `mksquashfs`/`unsquashfs` are not on `PATH`).
+- **Update procedure:** `pip download backports.zstd --no-deps --python-version 311 --platform
+  manylinux_2_17_x86_64 --only-binary=:all:`, extract the wheel, re-copy the six trimmed files + both `LICENSE*`
+  files from `backports/zstd/`, re-apply the `backports.zstd` → `_vendor.backports_zstd` rewrite to `__init__.py`
+  and `_zstdfile.py` (`grep -n "backports\.zstd" _vendor/backports_zstd/*.py` should show only comments afterward,
+  never a live `import`/`from` statement), bump the version here, and re-run `mise run test` — both the trimmed-file
+  round-trip test and the full-fixture test above would catch a shape change on re-pin.
 
 ## elementtree
 

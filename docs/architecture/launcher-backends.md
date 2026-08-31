@@ -103,6 +103,15 @@ rather than reimplemented for a second frontend. A per-game/per-platform pin (`e
 first, exactly like `label_to_invocation` does for RetroDECK; an unmatched or unresolvable pin falls through to the
 system default.
 
+`installation.emulators_for(system)` itself depends on atlas being able to read ES-DE's catalogue, which ships
+**inside** `ES-DE.AppImage` as a compressed squashfs image by default (no `~/ES-DE/custom_systems/es_systems.xml`
+override needed for common systems). Atlas's vendored squashfs reader needs a zstd decompressor to open one
+compressed with zstd (`mksquashfs`'s default codec since squashfs-tools 4.5+, and what real EmuDeck AppImages use) —
+`py_modules/_vendor/backports_zstd/` supplies it (see `_vendor/README.md`'s entry for why it's vendored and what it
+cost to get right). Without a working zstd decompressor, atlas silently degrades to a catalogue built from the
+installed libretro cores' own names, with no command text at all — nothing bakes, and every affected shortcut's
+`launch_options` end up empty (ADR-0029's second EmuDeck errata).
+
 The classified command's placeholders are then resolved to real host paths via EmuDeck's own `es_find_rules.xml`
 (`adapters/emudeck_find_rules.py`, reading `<home>/ES-DE/custom_systems/es_find_rules.xml` — where EmuDeck's own
 installer deploys it):
@@ -143,6 +152,11 @@ No `eval`, no shell-string concatenation beyond the same trusted-invocation + es
 - **Savestates have no flat root on EmuDeck.** `states_path()` returns `""` for the EmuDeck backend (atlas resolves
   savestate location per-core/per-content, not as a single directory) — save-sync flows that need a savestate
   base directory degrade the same way they already do for an unresolved RetroDECK root.
+- **AppImage-embedded catalogue reading covers gzip and zstd squashfs only.** Atlas's vendored squashfs reader (used
+  when ES-DE has no on-disk `custom_systems`/resource-override catalogue) supports exactly the two compressors named
+  above — an AppImage built with a squashfs codec neither handles (lzo, lz4, xz) would degrade the same way the
+  missing-zstd case did before this was fixed: a real, non-empty catalogue silently replaced by the derived,
+  command-less one. Not something either RetroDECK or a stock EmuDeck AppImage build is known to do today.
 
 ## Switching backends: the existing fan-out re-bake, not a new migration
 

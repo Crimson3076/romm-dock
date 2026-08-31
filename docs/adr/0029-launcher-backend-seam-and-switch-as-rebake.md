@@ -155,6 +155,31 @@ got there — a pre-#918 RetroDECK bake or a stale EmuDeck one) to the newly-sel
 > arrangement being read exercises — this project's own test suite fakes `atlas.EmuDeck` at the seam
 > (`tests/fakes/`) rather than running the vendored package's real data-loading functions, so neither errata's bug
 > was caught before real hardware found it. No consequence stated above moves.
+>
+> **Errata (2026-08-31).** With the previous errata's `atlas` import fixed, the same real-hardware EmuDeck arrangement
+> downloaded ROMs correctly but baked **empty** `launch_options` for every game on two unrelated systems (GBC, N64) —
+> pressing Play started and instantly exited the process (`journalctl`: a `post_exit_sync` call seconds after every
+> Play press), because `EmuDeckLauncherBackend.resolve_invocation` had nothing to bake. Traced to
+> `installation.emulators_for()` reporting real emulator labels (`Gambatte`, `mGBA`, …) with `command=""` for every
+> one — atlas's own documented degraded mode when it cannot read ES-DE's real catalogue (`emulator-catalogue-sealed`
+> / `emulator-list-derived` caveats). Root cause, confirmed via `unsquashfs -s` on the user's real
+> `ES-DE.AppImage`: ES-DE ships its default `es_systems.xml` **inside** the AppImage as a zstd-compressed squashfs
+> image, and atlas's vendored squashfs reader can decompress zstd only when a decompressor is importable as
+> `compression.zstd` (Python >= 3.14) or `backports.zstd` — neither exists in this project's Python 3.11 target, so
+> every AppImage-embedded catalogue read silently fell back to the derived, command-less list. Fixed by vendoring
+> `backports.zstd` itself (`_vendor/backports_zstd/`, a **compiled** dependency — the first of its kind under
+> `_vendor/`, alongside the ctypes-loaded `.so` files `native/` already carries, but this one is a real importable
+> Python C-extension module) plus a one-line addition to atlas's own `_ZSTD_PROVIDERS` probe list — the exact
+> extension point `squashfs.py`'s own docstring already documented ("a host application that vendors the backport
+> grants its runtime the capability"). See `_vendor/README.md`'s `backports_zstd` entry for the full account,
+> including why the vendored package is trimmed to six files rather than copied whole, and
+> `tests/adapters/test_emudeck_launcher_backend.py::TestVendoredZstdCatalogueReading` for the real
+> `mksquashfs -comp zstd`-built AppImage fixture that proves a genuine embedded catalogue now resolves to a real,
+> placeholder-free launch command end to end — reverting the `_ZSTD_PROVIDERS` addition makes that test fail with the
+> user's exact symptom (an empty invocation), confirmed before shipping. This is the third real-hardware gap in the
+> same vendored dependency in three days; all three share the same blind spot named in the previous errata (nothing
+> in this project's own test suite exercised atlas's real data-loading code before real hardware did), which is why
+> this fix adds a real-fixture test rather than another mock. No consequence stated above moves.
 
 ## Alternatives considered
 

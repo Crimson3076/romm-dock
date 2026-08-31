@@ -17,7 +17,11 @@ from ruff, basedpyright, and Sonar. Every vendored package ships its upstream `L
 directories the Decky CLI packs into the plugin zip) — downloaded verbatim from an upstream release with a pinned
 SHA-256 (CI re-verifies it; the release smoke test asserts the artifact ships in the zip), loaded by an adapter via
 `ctypes` with no Python fallback; provenance and the update procedure live in
-[`native/README.md`](../../py_modules/native/README.md).
+[`native/README.md`](../../py_modules/native/README.md). A vendored `_vendor/` **package** that happens to ship one
+compiled CPython extension module internally (`_vendor/backports_zstd/`'s `_zstd.cpython-311-x86_64-linux-gnu.so` —
+imported by Python's own import machinery, never `ctypes`) stays a `_vendor/` entry, not a `native/` one: the
+distinction is how the binary is reached (a real Python import vs. a hand-declared `ctypes` ABI), not whether one
+exists in the tree.
 
 **Vendored data** (no source in this repo) follows the same discipline: `defaults/bios_registry.json` is copied verbatim
 from an [emu-atlas](https://github.com/danielcopper/emu-atlas) release with a pinned SHA-256

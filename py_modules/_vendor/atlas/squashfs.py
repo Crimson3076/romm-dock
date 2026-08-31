@@ -86,7 +86,7 @@ class EntryNotFound(SquashfsError):
 
 # The PEP 784 zstd API, in probe order: the stdlib home first (Python 3.14),
 # then the published backport of the same code for older interpreters.
-_ZSTD_PROVIDERS = ("compression.zstd", "backports.zstd")
+_ZSTD_PROVIDERS = ("compression.zstd", "backports.zstd", "_vendor.backports_zstd")
 
 
 def _zstd_module() -> Any:
