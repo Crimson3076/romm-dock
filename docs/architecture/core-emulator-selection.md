@@ -32,9 +32,9 @@ of two payloads:
 - **`kind == "standalone"`** — a standalone emulator, identified by its full ES-DE `<command>` text (already ending in
   `%ROM%`, e.g. `%EMULATOR_RPCS3% --no-gui %ROM%`). Baked verbatim into `-e`. RetroDECK resolves `%EMULATOR_*%` and
   substitutes `%ROM%` at launch, the same as the libretro form. This is the standalone-emulator seam
-  ([#129](https://github.com/danielcopper/romm-tender/issues/129)): a system whose working ES-DE default is a
-  standalone emulator (PS2 → PCSX2, PS3 → RPCS3, GameCube/Wii → Dolphin, PSP → PPSSPP, …) launches on that emulator
-  instead of a deprecated/absent libretro core.
+  ([#129](https://github.com/danielcopper/romm-tender/issues/129)): a system whose working ES-DE default is a standalone
+  emulator (PS2 → PCSX2, PS3 → RPCS3, GameCube/Wii → Dolphin, PSP → PPSSPP, …) launches on that emulator instead of a
+  deprecated/absent libretro core.
 
 Both kinds are first-class throughout: the **system default** may be either (whichever ES-DE lists first that the plugin
 can bake), and the per-game / per-platform picker lists both — so a pin may name a standalone emulator OR a libretro
@@ -53,9 +53,9 @@ core LABEL; absence means "follow the default." Both are scoped **per launcher b
 EmuDeck pin for the same ROM/platform are independent entries, never one reinterpreted as the other when the active
 backend switches — see [Launcher Backends](launcher-backends.md) for the seam this rides.
 
-| Scope | Stored where | Applies to | Written by |
-| --- | --- | --- | --- |
-| **Per-game** | Plugin DB — `roms.emulator_override` (JSON, `backend_id → LABEL`) | one ROM on one backend | the plugin (`pin`/`clear`) |
+| Scope            | Stored where                                                       | Applies to                           | Written by                     |
+| ---------------- | ------------------------------------------------------------------ | ------------------------------------ | ------------------------------ |
+| **Per-game**     | Plugin DB — `roms.emulator_override` (JSON, `backend_id → LABEL`)  | one ROM on one backend               | the plugin (`pin`/`clear`)     |
 | **Per-platform** | `settings.json` — `platform_cores` (`{backend_id: {slug: label}}`) | every ROM on a platform, one backend | the plugin (`set_system_core`) |
 
 Both overrides are the plugin's own state and live in the plugin's own stores. Neither is written into ES-DE's
@@ -66,8 +66,8 @@ layered on top of that read by the plugin itself.
 
 ## Storage: the per-game override is a per-backend LABEL on the `Rom` aggregate
 
-`roms.emulator_override` is a nullable `TEXT` column, added by migration `002_add_emulator_override.sql` and reshaped
-by migration `024_emulator_override_per_backend.sql`. It holds a JSON object mapping `backend_id → LABEL` (e.g.
+`roms.emulator_override` is a nullable `TEXT` column, added by migration `002_add_emulator_override.sql` and reshaped by
+migration `024_emulator_override_per_backend.sql`. It holds a JSON object mapping `backend_id → LABEL` (e.g.
 `{"retrodeck": "Beetle PSX HW", "emudeck": "DuckStation"}`), each LABEL exactly as its backend's catalogue displays it —
 never a resolved `.so` filename.
 
@@ -76,9 +76,9 @@ never a resolved `.so` filename.
 - It anchors on `roms`, not `rom_installs`, so the choice **survives uninstall/reinstall** (per
   [ADR-0007](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0007-rom-retention-identity-anchor.md)).
 - Mutations go through the verb-named aggregate methods `Rom.pin_emulator_override(backend_id, label)` (rejects a blank
-  label) and `Rom.clear_emulator_override(backend_id)` — each touches only its own `backend_id` key, leaving every
-  other backend's entry untouched. Read via `Rom.emulator_override_for(backend_id)`. Only `pin`/`clear` ever write the
-  column; it is **excluded from the sync UPSERT `SET` clause**, so a re-sync never wipes a user's pin on any backend.
+  label) and `Rom.clear_emulator_override(backend_id)` — each touches only its own `backend_id` key, leaving every other
+  backend's entry untouched. Read via `Rom.emulator_override_for(backend_id)`. Only `pin`/`clear` ever write the column;
+  it is **excluded from the sync UPSERT `SET` clause**, so a re-sync never wipes a user's pin on any backend.
 
 The plugin stores the **deviation** (the LABEL, or absence), not a resolved core. The default and system layers are
 owned by the active backend and change externally — an ES-DE update can ship a new default emulator — so a stored
@@ -120,8 +120,8 @@ this ROM actually launch with?" It exposes two methods over the **same** three-l
 
 The precedence is the invariant, every layer scoped to the ACTIVE backend's own `backend_id`:
 
-> **per-game DB `emulator_override[backend_id]` (top) → per-platform `settings.json` `platform_cores[backend_id]` →
-> that backend's own live default → `None` (plain launch).**
+> **per-game DB `emulator_override[backend_id]` (top) → per-platform `settings.json` `platform_cores[backend_id]` → that
+> backend's own live default → `None` (plain launch).**
 
 ```text
 active_emulator_for_rom(rom_id):
@@ -151,15 +151,15 @@ Layers 1 and 2 resolve their LABEL through `domain.emulator_commands.label_to_in
 carrying that label and renders it into an `EmulatorInvocation` **only if it is bakeable** — so a pin may name a
 standalone emulator or a libretro core, and a label that is unknown, un-bakeable, or `needs_setup` reads as "this pin no
 longer resolves" and degrades to the next layer with a WARNING (never a bogus `None.so`). The system-layer fallback is
-the ACTIVE backend's own `get_default_emulator(system)` — `CoreResolver.get_default_emulator` (`adapters/es_de_config.py`)
-for RetroDECK, `EmuDeckLauncherBackend.get_default_emulator` (`adapters/emudeck_launcher_backend.py`) for EmuDeck, both
-reached through `CoreInfoProvider` (see [Launcher Backends](launcher-backends.md)): **the first safely-bakeable command
-in that backend's catalogue document order** (see
-[Standalone-emulator selection](#standalone-emulator-selection-first-safely-bakeable)), which may itself be standalone
-(PCSX2, RPCS3, Dolphin, …) or libretro. RetroDECK reads **only** the live `es_systems.xml` — no bundled snapshot, and
-**no gamelist** (neither a per-game `<altemulator>` nor a system-level `<alternativeEmulator>`; the gamelist is off
-every plugin code path) — and EmuDeck reads only atlas's live catalogue, same discipline. When nothing is bakeable, or
-the catalogue cannot be read, it returns `None` and the caller bakes that backend's own plain launch.
+the ACTIVE backend's own `get_default_emulator(system)` — `CoreResolver.get_default_emulator`
+(`adapters/es_de_config.py`) for RetroDECK, `EmuDeckLauncherBackend.get_default_emulator`
+(`adapters/emudeck_launcher_backend.py`) for EmuDeck, both reached through `CoreInfoProvider` (see
+[Launcher Backends](launcher-backends.md)): **the first safely-bakeable command in that backend's catalogue document
+order** (see [Standalone-emulator selection](#standalone-emulator-selection-first-safely-bakeable)), which may itself be
+standalone (PCSX2, RPCS3, Dolphin, …) or libretro. RetroDECK reads **only** the live `es_systems.xml` — no bundled
+snapshot, and **no gamelist** (neither a per-game `<altemulator>` nor a system-level `<alternativeEmulator>`; the
+gamelist is off every plugin code path) — and EmuDeck reads only atlas's live catalogue, same discipline. When nothing
+is bakeable, or the catalogue cannot be read, it returns `None` and the caller bakes that backend's own plain launch.
 
 ### Standalone-emulator selection: first safely-bakeable
 
@@ -304,9 +304,8 @@ absolute path and never a disc index.
 - **`NULL` = no selection** → the ROM follows the **default**: the install's `.m3u` when `file_path` is one (the
   in-emulator disc-swap default), else the first enumerated disc.
 - It anchors on `roms`, not `rom_installs`, so the pick **survives uninstall/reinstall and RetroDECK-home migration**
-  (per
-  [ADR-0007](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0007-rom-retention-identity-anchor.md))
-  — the disc folder is gone while uninstalled, but the basename re-resolves the moment it returns.
+  (per [ADR-0007](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0007-rom-retention-identity-anchor.md)) —
+  the disc folder is gone while uninstalled, but the basename re-resolves the moment it returns.
 - Mutations go through the verb-named aggregate methods `Rom.pin_selected_disc(filename)` (rejects a blank filename) and
   `Rom.clear_selected_disc()`. Only `pin`/`clear` ever write the column (`SqliteRomRepository.set_selected_disc`); it is
   **excluded from the sync UPSERT `SET` clause** — the same `_SYNC_COLUMNS` tuple that omits `emulator_override` omits
@@ -461,14 +460,14 @@ game-detail picker, so standalone emulators and disabled un-bakeable entries ren
 
 1. It writes the choice into `settings["platform_cores"][active_backend_id]` — storing the LABEL under the slug, or
    popping the slug when the label is empty (revert to that backend's own default) — and persists `settings.json`
-   through the injected `SettingsPersister`. The active backend's catalogue cache is reset (`CoreInfoProvider.reset_cache`)
-   so the next resolution re-reads it.
+   through the injected `SettingsPersister`. The active backend's catalogue cache is reset
+   (`CoreInfoProvider.reset_cache`) so the next resolution re-reads it.
 2. It then **fans out a re-bake**: it iterates every ROM on the platform and, for each that is **installed and
-   shortcut-bound** but does **not** carry a per-game `emulator_override` FOR THE ACTIVE BACKEND (that backend's own
-   pin wins over its platform default; a pin recorded under a different backend never blocks this fan-out), resolves
-   the ROM's full active core and appends `{app_id, launch_options}` to a `rebake_items` list. ROMs with a per-game
-   pin on the active backend, uninstalled ROMs, and unbound ROMs are skipped — they have nothing live to rewrite, or
-   their pin already wins.
+   shortcut-bound** but does **not** carry a per-game `emulator_override` FOR THE ACTIVE BACKEND (that backend's own pin
+   wins over its platform default; a pin recorded under a different backend never blocks this fan-out), resolves the
+   ROM's full active core and appends `{app_id, launch_options}` to a `rebake_items` list. ROMs with a per-game pin on
+   the active backend, uninstalled ROMs, and unbound ROMs are skipped — they have nothing live to rewrite, or their pin
+   already wins.
 3. It re-checks BIOS against the newly chosen core and returns `{success, bios_status, rebake_items}`.
 
 The frontend confirm-sets each `rebake_items` entry on its live Steam shortcut the same way the per-game flow does, so a
@@ -536,11 +535,11 @@ externally-changed RetroDECK default carries this caveat.
 
 The `-e` flag, the `%EMULATOR_RETROARCH%` / `%ROM%` placeholders, and the `/var/config/retroarch/cores` path are
 **RetroDECK-adapter concerns**, isolated at the single seam `resolve_emulator_invocation`. RetroDECK is the default,
-behavior-preserving launcher backend — this is the correct default shape, not a placeholder. Standalone-emulator
-support ([#129](https://github.com/danielcopper/romm-tender/issues/129)) is the first half of the multi-emulator
-lift: a standalone emulator is still launched **through RetroDECK's `-e`** on the RetroDECK backend, so the RetroDECK
-flatpak invocation remains that backend's single seam — only the `-e` payload changed (a verbatim ES-DE command
-instead of the RetroArch `-L` form).
+behavior-preserving launcher backend — this is the correct default shape, not a placeholder. Standalone-emulator support
+([#129](https://github.com/danielcopper/romm-tender/issues/129)) is the first half of the multi-emulator lift: a
+standalone emulator is still launched **through RetroDECK's `-e`** on the RetroDECK backend, so the RetroDECK flatpak
+invocation remains that backend's single seam — only the `-e` payload changed (a verbatim ES-DE command instead of the
+RetroArch `-L` form).
 
 [#918](https://github.com/danielcopper/romm-tender/issues/918) generalized `resolve_emulator_invocation` behind a
 `LauncherBackend` Protocol (`services/protocols/launcher_backend.py`) once EmuDeck became a concrete second target — a

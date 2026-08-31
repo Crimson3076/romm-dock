@@ -109,8 +109,8 @@ locally with `mise run docs`.
 - **RomM minimum version**: Requires RomM >= 4.9.0, hard-rejected in `test_connection()` (`_MIN_REQUIRED_VERSION` in
   `main.py`) — the plugin is inert until the server is updated.
 - **User-Agent on outgoing HTTP**: SteamGridDB **and** RomM behind Cloudflare Tunnel reject the default `Python-urllib`
-  UA with 403. Every HTTP-talking adapter takes a `user_agent: str` ctor param; bootstrap threads
-  `romm-dock/<version>` from `package.json` — no hardcoded version strings.
+  UA with 403. Every HTTP-talking adapter takes a `user_agent: str` ctor param; bootstrap threads `romm-dock/<version>`
+  from `package.json` — no hardcoded version strings.
 - **Large payloads**: Never send bulk base64 through `decky.emit()` — the WebSocket bridge has size limits. Use per-item
   callables, and chunk bulk lists (the library apply emits shortcuts in batches; the metadata cache loads page-by-page).
 - **No `BIsModOrShortcut` bypass**: the bypass counter was removed deliberately. Shortcuts return `true` (natural

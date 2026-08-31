@@ -68,9 +68,7 @@ def plugin():
     p.settings = {"romm_url": "", "romm_user": "", "romm_pass": "", "enabled_platforms": {}}
     import decky
 
-    p._http_adapter = RommHttpAdapter(
-        p.settings, decky.DECKY_PLUGIN_DIR, logging.getLogger("test"), "romm-dock/9.9.9"
-    )
+    p._http_adapter = RommHttpAdapter(p.settings, decky.DECKY_PLUGIN_DIR, logging.getLogger("test"), "romm-dock/9.9.9")
     p._romm_api = MagicMock()
     p._prune_service = MagicMock()
     p._prune_service.is_active.return_value = False

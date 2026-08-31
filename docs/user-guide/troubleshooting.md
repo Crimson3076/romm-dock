@@ -11,9 +11,9 @@ failed to start — check Decky logs", and the Sync buttons are disabled. This s
 process never started — it is **not** the same as an unreachable RomM server, which shows **Not connected** instead.
 
 **Fix**: The backend aborted during startup — most often a failed data migration after an update — so the UI can't reach
-it. Open the Decky plugin log to find the underlying error, then reload RomM-Dock from the Decky plugin list. If it still
-fails after a reload, restart Steam (or the Steam Deck); if the error persists, include the log output when you report
-it.
+it. Open the Decky plugin log to find the underlying error, then reload RomM-Dock from the Decky plugin list. If it
+still fails after a reload, restart Steam (or the Steam Deck); if the error persists, include the log output when you
+report it.
 
 Reaching that verdict takes up to about a minute and a half, because the check keeps retrying to ride out a backend that
 is merely slow to start rather than calling it dead too early. It runs to its conclusion whether or not the panel is
@@ -219,8 +219,8 @@ shortcut's tile image and does not always refresh it right away. A tile that is 
 the first time you open that game's detail page, scroll it back into view, or the next time Steam restarts — the cover
 is already on disk; Steam just hasn't re-rendered the tile yet.
 
-**Fix**: If a tile stays blank after that, open the game's detail page and tap **Refresh Metadata** in the RomM-Dock panel.
-This re-fetches all artwork and metadata. (Hero banners, logos, and wide grid images additionally need a
+**Fix**: If a tile stays blank after that, open the game's detail page and tap **Refresh Metadata** in the RomM-Dock
+panel. This re-fetches all artwork and metadata. (Hero banners, logos, and wide grid images additionally need a
 [SteamGridDB API key](configuration.md#steamgriddb-api-key) — see above.)
 
 ## Shortcuts Appear on Other Devices
@@ -280,10 +280,10 @@ every exact-id check also verifies the same server/user namespace captured by th
 before retrying those actions. This reciprocal block prevents newly downloaded content or recovered state from appearing
 after recovery was captured and then being removed by finalization.
 
-Recovery bundles are under `~/romm-dock-recovery/bundles/`. A directory appears there only after every required
-copy and checksum succeeds, directory durability succeeds where supported, and the staging directory is atomically
-sealed. A post-rename durability failure preserves the directory with a `.durability-uncertain` suffix instead of making
-it look successfully sealed. Before the Steam action and again before local finalization, the backend verifies the seal,
+Recovery bundles are under `~/romm-dock-recovery/bundles/`. A directory appears there only after every required copy and
+checksum succeeds, directory durability succeeds where supported, and the staging directory is atomically sealed. A
+post-rename durability failure preserves the directory with a `.durability-uncertain` suffix instead of making it look
+successfully sealed. Before the Steam action and again before local finalization, the backend verifies the seal,
 manifest/checksums, bundle-bound source claims, source root/descendant identities, mount IDs and bytes, expected absence
 of currently missing saves, database state, save ownership, and captured Steam/controller state. Filesystem mutation
 then holds kernel writer-exclusion leases through descriptor-relative removal; replacing a path, keeping a writable file

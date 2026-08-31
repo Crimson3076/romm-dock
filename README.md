@@ -130,8 +130,8 @@ See the [User Guide](https://crimson3076.github.io/romm-dock/user-guide/syncing-
 Build from source, run the tests, and read the architecture reference on the documentation site:
 
 - [Development setup](https://crimson3076.github.io/romm-dock/contributing/development/)
-- [Frontend dev loop](https://crimson3076.github.io/romm-dock/contributing/frontend-dev-loop/) — live-reload the UI
-  into a windowed Big Picture on the Deck, no Game Mode switching
+- [Frontend dev loop](https://crimson3076.github.io/romm-dock/contributing/frontend-dev-loop/) — live-reload the UI into
+  a windowed Big Picture on the Deck, no Game Mode switching
 - [Backend architecture](https://crimson3076.github.io/romm-dock/architecture/backend-architecture/)
 
 [![CI](https://github.com/Crimson3076/romm-dock/actions/workflows/ci.yml/badge.svg)](https://github.com/Crimson3076/romm-dock/actions/workflows/ci.yml)

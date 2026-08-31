@@ -178,17 +178,17 @@ picture.
 
 ## Launcher
 
-Two dropdowns in the **Launcher** section on the main page: **Launcher** (which app your games actually run through)
-and **Installation** (which one RomM-Dock manages, when more than one is detected).
+Two dropdowns in the **Launcher** section on the main page: **Launcher** (which app your games actually run through) and
+**Installation** (which one RomM-Dock manages, when more than one is detected).
 
-| Launcher | Status |
-| --- | --- |
-| **RetroDECK** (default) | Fully supported — libretro cores and standalone emulators alike. |
-| **EmuDeck** | Libretro cores and native-Linux standalone emulators (RPCS3, DuckStation, PCSX2-Qt, Azahar, MelonDS, Vita3K, and similar). Emulators EmuDeck runs through Proton (Cemu's Windows build, Xenia, …) are not launched by RomM-Dock yet — pick a native/libretro core for those systems, or stay on RetroDECK for them. |
+| Launcher                | Status                                                                                                                                                                                                                                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **RetroDECK** (default) | Fully supported — libretro cores and standalone emulators alike.                                                                                                                                                                                                                                                    |
+| **EmuDeck**             | Libretro cores and native-Linux standalone emulators (RPCS3, DuckStation, PCSX2-Qt, Azahar, MelonDS, Vita3K, and similar). Emulators EmuDeck runs through Proton (Cemu's Windows build, Xenia, …) are not launched by RomM-Dock yet — pick a native/libretro core for those systems, or stay on RetroDECK for them. |
 
-The **Installation** dropdown only matters when a launcher has more than one detected arrangement on your machine;
-most setups show exactly one and there's nothing to choose. If EmuDeck isn't installed, it still appears in the
-Launcher dropdown, but its Installation list is empty and you can't select it until EmuDeck is set up.
+The **Installation** dropdown only matters when a launcher has more than one detected arrangement on your machine; most
+setups show exactly one and there's nothing to choose. If EmuDeck isn't installed, it still appears in the Launcher
+dropdown, but its Installation list is empty and you can't select it until EmuDeck is set up.
 
 Whichever launcher is active also decides where RomM-Dock puts things: game downloads, BIOS files, and saves all go
 under that launcher's own folders. You do not need RetroDECK installed at all to use RomM-Dock with EmuDeck — pick
