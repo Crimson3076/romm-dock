@@ -95,7 +95,7 @@ class RelaunchOptionsResolver:
         """
         emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
         renderer = self._launch_renderer.get()
-        invocation = renderer.resolve_invocation({"id": rom.rom_id}, emulator)
+        invocation = renderer.resolve_invocation({"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator)
         return {
             "app_id": rom.shortcut_app_id,
             "launch_options": renderer.build_launch_options(invocation, self._resolve_bake_path(rom, install)),

@@ -167,6 +167,11 @@ def disc_resolver() -> FakeDiscResolver:
 
 
 @pytest.fixture
+def launch_renderer() -> FakeLaunchCommandRenderer:
+    return FakeLaunchCommandRenderer()
+
+
+@pytest.fixture
 def service(
     event_loop,
     logger,
@@ -178,6 +183,7 @@ def service(
     uow_factory,
     active_core,
     disc_resolver,
+    launch_renderer,
 ) -> CoreService:
     return CoreService(
         config=CoreServiceConfig(
@@ -191,7 +197,7 @@ def service(
             uow_factory=uow_factory,
             active_core=active_core,
             disc_resolver=disc_resolver,
-            launch_renderer=FakeLaunchCommandRenderer(),
+            launch_renderer=launch_renderer,
         ),
     )
 
@@ -333,6 +339,21 @@ class TestSetGameCore:
         # The pin landed on the Rom aggregate.
         assert uow.roms.get(42).emulator_override == "bsnes"
 
+    def test_resolve_invocation_receives_the_roms_platform_slug(self, event_loop, service, uow, launch_renderer):
+        """The launch-renderer seam gets a real ``platform_slug``, not a bare ``{}``.
+
+        RetroDECK's own ``resolve_emulator_invocation`` ignores ``rom``
+        entirely, so this call site could get away with an empty dict for
+        years. EmuDeck's ``resolve_invocation`` genuinely reads
+        ``platform_slug`` to resolve the ES-DE system (issue #918's
+        real-hardware follow-up).
+        """
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        event_loop.run_until_complete(service.set_game_core(42, "bsnes"))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "snes"
+
     def test_pins_standalone_emulator_and_bakes_verbatim_command(self, event_loop, service, uow, core_info):
         # A per-game pin may name a STANDALONE emulator (#1210); the bake carries
         # the full ES-DE command verbatim in the -e override, not an -L core path.
@@ -420,6 +441,16 @@ class TestClearGameCore:
         )
         # The pin is gone (SQL NULL).
         assert uow.roms.get(42).emulator_override is None
+
+    def test_resolve_invocation_receives_the_roms_platform_slug(
+        self, event_loop, service, uow, active_core, launch_renderer
+    ):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99, emulator_override="Snes9x")
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        active_core.per_rom[42] = ("bsnes_libretro", "bsnes")
+        event_loop.run_until_complete(service.clear_game_core(42))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "snes"
 
     def test_clears_and_bakes_plain_when_platform_unresolvable(self, event_loop, service, uow, active_core):
         # When the resolver yields (None, None) — a genuinely unresolvable
@@ -533,6 +564,15 @@ class TestSetSystemCoreFanOut:
                 '"/roms/snes/b.sfc"'
             ),
         }
+
+    def test_fan_out_resolve_invocation_receives_each_roms_platform_slug(
+        self, event_loop, service, uow, active_core, launch_renderer
+    ):
+        _seed_rom(uow, rom_id=1, platform_slug="snes", shortcut_app_id=101)
+        _seed_install(uow, rom_id=1, file_path="/roms/snes/a.sfc")
+        event_loop.run_until_complete(service.set_system_core("snes", "bsnes"))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "snes"
 
     def test_fan_out_bakes_standalone_e_form(self, event_loop, service, uow, active_core):
         # A per-platform pick may resolve to a STANDALONE emulator (#1210); the

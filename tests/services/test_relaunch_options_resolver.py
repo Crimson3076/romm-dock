@@ -127,6 +127,28 @@ def test_single_installed_bound_default_core():
     ]
 
 
+def test_resolve_invocation_receives_the_roms_platform_slug():
+    """The launch-renderer seam gets a real ``platform_slug``, not a bare id.
+
+    RetroDECK's own ``resolve_emulator_invocation`` ignores ``rom`` entirely,
+    so this call site could get away with a placeholder for years. EmuDeck's
+    ``resolve_invocation`` genuinely reads ``platform_slug`` to resolve the
+    ES-DE system — a bare ``{"id": rom_id}`` here resolves to an empty system
+    and no launch command, on every backend switch and every reconcile
+    (issue #918's real-hardware follow-up).
+    """
+    uow = FakeUnitOfWork()
+    file_path = "/roms/n64/zelda.z64"
+    _seed_install(uow, 1, file_path=file_path, shortcut_app_id=4242)
+    renderer = FakeLaunchCommandRenderer()
+    resolver = _make_resolver(uow=uow, launch_renderer=renderer)
+
+    resolver.installed_relaunch_items()
+
+    [(rom, _emulator)] = renderer.calls
+    assert rom["platform_slug"] == "n64"
+
+
 def test_core_override_bakes_e_form():
     """A resolved core .so produces the RetroDECK -e override in the command."""
     uow = FakeUnitOfWork()

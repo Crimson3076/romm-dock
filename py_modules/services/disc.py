@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     import logging
 
     from domain.disc_selection import Disc
+    from domain.rom import Rom
     from domain.rom_install import RomInstall
     from services.protocols import (
         ActiveCoreReader,
@@ -163,12 +164,10 @@ class DiscService:
                 rom.pin_selected_disc(filename)
             uow.roms.set_selected_disc(rom_id, rom.selected_disc)
             selected = rom.selected_disc
-        launch_options = self._bake_launch_options(rom_id, install, discs, selected)
+        launch_options = self._bake_launch_options(rom, install, discs, selected)
         return {"success": True, "launch_options": launch_options, "selected": selected}
 
-    def _bake_launch_options(
-        self, rom_id: int, install: RomInstall, discs: list[Disc], selected_disc: str | None
-    ) -> str:
+    def _bake_launch_options(self, rom: Rom, install: RomInstall, discs: list[Disc], selected_disc: str | None) -> str:
         """Bake the launch command for the now-selected disc + the ROM's active core.
 
         Resolves the disc-aware bake path over the already-enumerated *discs*
@@ -179,6 +178,8 @@ class DiscService:
         keeps it from nesting on the same SQLite connection.
         """
         bake_path = self._disc_resolver.resolve_bake_path(install, discs, selected_disc)
-        emulator = self._active_core.active_emulator_for_rom(rom_id)
-        invocation = self._launch_renderer.resolve_invocation({"id": rom_id}, emulator)
+        emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
+        invocation = self._launch_renderer.resolve_invocation(
+            {"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator
+        )
         return self._launch_renderer.build_launch_options(invocation, bake_path)

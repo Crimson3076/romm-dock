@@ -183,7 +183,9 @@ class CoreService:
         rebake_items: list[dict[str, Any]] = []
         for rom, install in pending:
             emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
-            invocation = self._launch_renderer.resolve_invocation({}, emulator)
+            invocation = self._launch_renderer.resolve_invocation(
+                {"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator
+            )
             # Fold the ROM's persisted disc pick over the install so a
             # per-platform core change re-bakes the pinned disc, not disc 1 /
             # the m3u. A single-disc ROM resolves to its own file_path.
@@ -338,7 +340,9 @@ class CoreService:
         app_id = rom.shortcut_app_id
         if app_id is None or install is None:
             return (None, None)
-        invocation = self._launch_renderer.resolve_invocation({}, emulator)
+        invocation = self._launch_renderer.resolve_invocation(
+            {"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator
+        )
         # Fold the ROM's persisted disc pick over the install so a per-game core
         # pin/clear re-bakes the pinned disc, not disc 1 / the m3u. A single-disc
         # ROM resolves to its own file_path.
