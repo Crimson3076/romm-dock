@@ -3,6 +3,7 @@ name: docs-check
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+  workflow_dispatch:
 
 permissions:
   contents: read
