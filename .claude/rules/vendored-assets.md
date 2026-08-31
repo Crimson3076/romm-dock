@@ -59,7 +59,11 @@ lazy import would cost just the path that reaches it.
 
 **Compiled binaries** (no source in this repo) are vendored under `backend/native/` instead — downloaded verbatim from
 an upstream release with a pinned SHA-256 (CI re-verifies it), loaded by an adapter via `ctypes` with no Python
-fallback; provenance and the update procedure live in [`native/README.md`](../../backend/native/README.md).
+fallback; provenance and the update procedure live in [`native/README.md`](../../backend/native/README.md). A vendored
+`_vendor/` **package** that happens to ship one compiled CPython extension module internally
+(`_vendor/backports_zstd/`'s `_zstd.cpython-311-x86_64-linux-gnu.so` — imported by Python's own import machinery,
+never `ctypes`) stays a `_vendor/` entry, not a `native/` one: the distinction is how the binary is reached (a real
+Python import vs. a hand-declared `ctypes` ABI), not whether one exists in the tree.
 
 **Vendored data** used to be a third category — `defaults/bios_registry.json`, a firmware snapshot copied from an
 emu-atlas release under its own checksum. It is gone with the swap to the live resolver, and nothing in `defaults/` is

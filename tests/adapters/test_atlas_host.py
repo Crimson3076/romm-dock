@@ -17,7 +17,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
-from _vendor.atlas import core_probe_interpreter, register_core_probe_interpreter
+from _vendor.atlas import core_probe_interpreter, register_core_probe_interpreter, register_zstd_provider
 
 from adapters import atlas_host
 
@@ -44,6 +44,19 @@ def _restore_the_grant() -> Iterator[None]:
     before = core_probe_interpreter()
     yield
     register_core_probe_interpreter(before.path if before is not None and before.registered else None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_zstd_grant() -> Iterator[None]:
+    """Put the zstd registration back the way this file found it, after every test.
+
+    Same reasoning as ``_restore_the_grant`` above, one slot over: it is
+    process-global state inside the vendored package, and every other suite
+    that reads a real AppImage-embedded catalogue depends on it staying
+    granted for the rest of the session.
+    """
+    yield
+    register_zstd_provider(None)
 
 
 @pytest.fixture
@@ -172,3 +185,22 @@ class TestGrantCoreProbeInterpreter:
         assert granted.registered is False
         assert "/opt/cpython/bin/python3" in report
         assert "atlas's own" in report
+
+
+class TestGrantZstdProvider:
+    def test_the_vendored_module_is_registered(self) -> None:
+        from _vendor import backports_zstd
+        from _vendor.atlas import squashfs
+
+        report = atlas_host.grant_zstd_provider()
+
+        provider = squashfs.zstd_provider()
+        assert provider is not None
+        assert provider.registered is True
+        assert provider.name == "_vendor.backports_zstd"
+        assert "_vendor.backports_zstd" in report
+
+        # A real image round-trips through whichever object was registered —
+        # proving the grant handed over a working codec, not just a name.
+        payload = b"grant_zstd_provider round-trip" * 20
+        assert backports_zstd.decompress(backports_zstd.compress(payload)) == payload

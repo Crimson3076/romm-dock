@@ -24,7 +24,7 @@ from adapters.adoption_move import AdoptionMoveAdapter
 from adapters.asyncio_sleeper import AsyncioSleeper
 from adapters.atlas_catalogue import AtlasCatalogueAdapter, first_detected_installation
 from adapters.atlas_firmware import AtlasFirmwareAdapter, AtlasPlatformFirmwareAdapter
-from adapters.atlas_host import grant_core_probe_interpreter
+from adapters.atlas_host import grant_core_probe_interpreter, grant_zstd_provider
 from adapters.atlas_saves import AtlasSaveLocationAdapter
 from adapters.cover_art_file_store import CoverArtFileStoreAdapter
 from adapters.debug_logger import SettingsAwareDebugLogger
@@ -461,6 +461,7 @@ def bootstrap(
     # green.
     core_probe_report = grant_core_probe_interpreter()
     logger.info(core_probe_report)
+    logger.info(grant_zstd_provider())
     # Built after the debug logger because the resolver never logs on its own:
     # its caveats are the whole degradation channel and reach the log through
     # this seam or not at all. That holds for both firmware questions and for

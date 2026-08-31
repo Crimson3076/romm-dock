@@ -130,6 +130,29 @@ got there — a pre-#918 RetroDECK bake or a stale EmuDeck one) to the newly-sel
 > [launcher-backends.md](../architecture/launcher-backends.md) for the current-truth account. No consequence stated
 > above moves — this closes the "let the user install what they want and only what they want" gap the Decision
 > section's `LauncherBackend` scope left open, it does not change the seam's shape.
+>
+> **Errata (2026-08-31).** A real-hardware EmuDeck arrangement downloaded ROMs correctly but baked **empty**
+> `launch_options` for every game on two unrelated systems (GBC, N64) — pressing Play started and instantly exited the
+> process, because `EmuDeckLauncherBackend.resolve_invocation` had nothing to bake. Traced to
+> `installation.emulators_for()` reporting real emulator labels (`Gambatte`, `mGBA`, …) with `command=""` for every
+> one — atlas's own documented degraded mode when it cannot read ES-DE's real catalogue (`emulator-catalogue-sealed`
+> / `emulator-list-derived` caveats). Root cause, confirmed via `unsquashfs -s` on the user's real
+> `ES-DE.AppImage`: ES-DE ships its default `es_systems.xml` **inside** the AppImage as a zstd-compressed squashfs
+> image, and atlas's vendored squashfs reader can decompress zstd only when a decompressor is importable as
+> `compression.zstd` (Python >= 3.14) or `backports.zstd` — neither exists in this project's Python 3.11 target, so
+> every AppImage-embedded catalogue read silently fell back to the derived, command-less list. Fixed by vendoring
+> `backports.zstd` itself (`_vendor/backports_zstd/`, a **compiled** dependency — the first of its kind under
+> `_vendor/`, alongside the ctypes-loaded `.so` files `native/` already carries, but this one is a real importable
+> Python C-extension module) and handing it to atlas through `atlas.register_zstd_provider()` from
+> `adapters/atlas_host.py` — the process-global grant point this backend's own core-probe interpreter grant already
+> uses, and the exact seam `squashfs.py`'s own docstring documents for this ("the registration is the seam for a host
+> that vendors the backport under its own root"). The vendored `atlas/squashfs.py` itself is untouched: no local patch,
+> because the registration function is upstream's own answer to this gap. See `_vendor/README.md`'s `backports_zstd`
+> entry for the full account, including why the vendored package is trimmed to six files rather than copied whole, and
+> `tests/adapters/test_emudeck_launcher_backend.py`'s real `mksquashfs -comp zstd`-built AppImage fixture that proves a
+> genuine embedded catalogue now resolves to a real, placeholder-free launch command end to end — removing the
+> registration makes that test fail with the user's exact symptom (an empty invocation), confirmed before shipping. No
+> consequence stated above moves.
 
 ## Alternatives considered
 
