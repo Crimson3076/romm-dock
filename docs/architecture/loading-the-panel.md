@@ -43,7 +43,7 @@ So there are two answers and they are not two spellings of one thing:
 
 | The machine                 | Loaded                        | Why                                                                      |
 | --------------------------- | ----------------------------- | ------------------------------------------------------------------------ |
-| Decky Loader is not serving | `globals.js`, then `index.js` | nothing else is loading into Steam, so Tender installs the React globals |
+| Decky Loader is not serving | `globals.js`, then `index.js` | nothing else is loading into Steam, so RomM-Dock installs the React globals |
 | Decky Loader is serving     | `index-coexistence.js` alone  | the loader has installed those globals and holds a loaded `@decky/ui`    |
 
 **The answer comes from the machine, never from the window.** At the earliest moment an injection is possible, every
@@ -98,7 +98,7 @@ What is watched instead is the other side of it:
 4. **Two consecutive failures stop it**, not three. One can be anything; two is evidence; three dead Steam starts is too
    much to ask of someone who has no reason to suspect this program.
 5. **It starts trying again by itself.** The record carries a fingerprint of the three things that could have repaired
-   the fault — Tender's version, a digest of the bundles' bytes, Steam's client build — and a change in any of them
+   the fault — RomM-Dock's version, a digest of the bundles' bytes, Steam's client build — and a change in any of them
    drops the count. The user updates something and it works again, with no file to find and nothing to delete.
 
 The record lives at `<state_dir>/injection-guard.json`. A state directory it cannot be written to leaves the guard
@@ -108,7 +108,7 @@ load the panel because a directory is read-only would be a fault of its own.
 **The way out cannot be inside Steam**, because in this state Steam's interface is the thing that is gone. It is a log
 line naming the state and one environment variable:
 
-| `TENDER_INJECT` | What it does                                                      |
+| `ROMM_DOCK_INJECT` | What it does                                                      |
 | --------------- | ----------------------------------------------------------------- |
 | `off`           | load nothing into Steam at all, and say so once at start-up       |
 | `force`         | load the panel even where the watchdog has stopped                |
@@ -123,7 +123,7 @@ what this reading is for.
 ## The load-failure card
 
 For the other failure: the interface is alive and our bundle does not mount. The evaluated expression catches it and
-draws a small card into Steam's own document naming Tender's version, Steam's build, the log path, where releases are
+draws a small card into Steam's own document naming RomM-Dock's version, Steam's build, the log path, where releases are
 listed, and the reason the import gave.
 
 **It is not a React component and it fetches nothing.** Its own subject is that Steam's React globals may be missing,
@@ -138,7 +138,7 @@ happens to that button. A fixed overlay that swallowed input would be worse than
 
 ### One button, and an address in plain text
 
-The card carries exactly one action — **Stop trying until Tender restarts** — and the releases address as text.
+The card carries exactly one action — **Stop trying until RomM-Dock restarts** — and the releases address as text.
 
 The button reaches this process through a **debugger binding** (`Runtime.addBinding`), which is the whole of the card's
 way back: the card holds no token, opens no socket of its own, and the backend grows no route for it. Pressed, it sends

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tender provides bidirectional save file synchronization between RetroDECK and a self-hosted RomM server. Saves are
+RomM-Dock provides bidirectional save file synchronization between RetroDECK and a self-hosted RomM server. Saves are
 uploaded after play sessions and downloaded before game launch, enabling seamless multi-device play.
 
 The scope is **a per-game set of save files that this plugin can carry**. Which files those are is not a property of the
@@ -1674,7 +1674,7 @@ signals let the re-initialized `sessionManager` recover them:
   absent store, an empty list and a throwing getter apart. The poll settles once something is running **and every
   attested app has surfaced**: the store omits apps whose overview has not loaded, so a reading listing one concurrent
   game can still be missing its sibling, and stopping at the first non-empty round would orphan it.
-- **A localStorage breadcrumb (attestation).** One versioned row (`romm-tender:active-session` →
+- **A localStorage breadcrumb (attestation).** One versioned row (`romm-dock:active-session` →
   `{v: 2, sessions: [{appId, romId, startMs}, …]}`) holds **every** open session. It is **not** cleared by
   `destroySessionManager`, so it outlives the reload. Every localStorage access is wrapped — a storage failure degrades
   to the no-attestation path, never throws.

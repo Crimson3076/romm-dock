@@ -1,7 +1,7 @@
 {
   "family": "machines",
   "spec": "DESIGN.md — Installations, placements, the reader seam",
-  "description": "Fixture machines in, detected installations + save placements out. Each vector's input is a whole machine (a {path: content} file tree plus a home and an optional save-placement query); expected is the installations detect() finds and, when queried, the SavePlacement the highest-priority install returns. Save-placement expectations are oracle-derived: atlas's placement math is verified against decky-romm-sync's resolve_save_dir / compute_local_save_target.",
+  "description": "Fixture machines in, detected installations + save placements out. Each vector's input is a whole machine (a {path: content} file tree plus a home and an optional save-placement query); expected is the installations detect() finds and, when queried, the SavePlacement the highest-priority install returns. Save-placement expectations are oracle-derived: atlas's placement math is verified against romm-dock's resolve_save_dir / compute_local_save_target.",
   "vectors": [
     {
       "name": "retrodeck-custom-home-sort-by-content",

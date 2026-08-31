@@ -25,10 +25,10 @@ from services.shortcut_relocation import (
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-_HOME = "/home/deck/.local/share/romm-tender/bin/rom-launcher"
-_HOME_DIR = "/home/deck/.local/share/romm-tender/bin"
+_HOME = "/home/deck/.local/share/romm-dock/bin/rom-launcher"
+_HOME_DIR = "/home/deck/.local/share/romm-dock/bin"
 _OLD = "/home/deck/homebrew/plugins/decky-romm-sync/bin/rom-launcher"
-_RENAMED = "/home/deck/homebrew/plugins/romm-tender/bin/rom-launcher"
+_RENAMED = "/home/deck/homebrew/plugins/romm-dock/bin/rom-launcher"
 
 
 class _FakeSteamConfig:

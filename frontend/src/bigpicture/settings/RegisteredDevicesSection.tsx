@@ -29,7 +29,7 @@ import { formatRelativeTime } from "./helpers";
 //
 // `Client` is sized for the longest string the SERVER can hand back, which is
 // not what this plugin registers under today. `register_device` passes
-// `client=DISPLAY_NAME` — "Tender" (`domain/identity.py`) — but the rows come
+// `client=DISPLAY_NAME` — "RomM-Dock" (`domain/identity.py`) — but the rows come
 // from RomM, which keeps what earlier versions wrote, and up to 0.32 that was
 // `decky-romm-sync`. A real listing shows both spellings side by side, plus
 // `web` for the rows RomM's own frontend registers, and the column has to hold

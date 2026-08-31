@@ -12,7 +12,7 @@ crash cause ever observed here
 (``docs/architecture/frontend-bundles.md``). The choice is therefore taken from
 the machine (``machine.decky_loader_is_serving``) and never from the window.
 
-The two answers are not two spellings of one thing. Alone, Tender installs
+The two answers are not two spellings of one thing. Alone, RomM-Dock installs
 Steam's React globals itself and loads the panel that carries its own copy of the
 package. Beside Decky, the loader has already installed those globals and already
 holds a loaded copy of the package, so the panel that shares them is loaded and
@@ -71,7 +71,7 @@ def choose_bundles(*, decky_is_serving: bool) -> BundleChoice:
     return BundleChoice(
         files=(GLOBALS_BUNDLE, STANDALONE_PANEL),
         kind=STANDALONE,
-        because="nothing else is loading into Steam, so Tender installs the React globals itself",
+        because="nothing else is loading into Steam, so RomM-Dock installs the React globals itself",
         ready_when=_STEAM_REGISTRY_READY,
     )
 

@@ -128,7 +128,7 @@ def test_the_recovery_root_is_named_after_the_package(tmp_path):
     drift away from the package, and the drift lands on the one surface a
     destructive cleanup leaves behind.
     """
-    for package_name in ("romm-tender", "some-other-plugin"):
+    for package_name in ("romm-dock", "some-other-plugin"):
         adapter = RecoveryBundleAdapter(user_home=str(tmp_path), package_name=package_name, plugin_version="1.2.3")
         assert adapter.root() == str(tmp_path / f"{package_name}-recovery")
 

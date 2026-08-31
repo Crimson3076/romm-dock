@@ -17,7 +17,7 @@ from domain.shortcut_data import (
 
 # The launcher's home under the user's data root: what the composition root
 # hands the builder now that the launcher no longer lives in the plugin folder.
-_LAUNCHER = "/home/deck/.local/share/romm-tender/bin/rom-launcher"
+_LAUNCHER = "/home/deck/.local/share/romm-dock/bin/rom-launcher"
 
 
 class TestResolveEmulatorInvocation:
@@ -503,7 +503,7 @@ class TestSelectShortcutsToRelocate:
     """Which live shortcuts still have to be pointed at the launcher's home."""
 
     _OLD = "/home/deck/homebrew/plugins/decky-romm-sync/bin/rom-launcher"
-    _RENAMED = "/home/deck/homebrew/plugins/romm-tender/bin/rom-launcher"
+    _RENAMED = "/home/deck/homebrew/plugins/romm-dock/bin/rom-launcher"
 
     def test_picks_a_shortcut_written_by_either_plugin_folder_name(self):
         exes = {10: self._OLD, 20: self._RENAMED}

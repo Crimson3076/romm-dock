@@ -36,7 +36,7 @@ of two payloads:
 - **`kind == "standalone"`** — a standalone emulator, identified by its full ES-DE `<command>` text (already ending in
   `%ROM%`, e.g. `%EMULATOR_RPCS3% --no-gui %ROM%`). Baked verbatim into `-e`. RetroDECK resolves `%EMULATOR_*%` and
   substitutes `%ROM%` at launch, the same as the libretro form. This is the standalone-emulator seam
-  ([#129](https://github.com/danielcopper/decky-romm-sync/issues/129)): a system whose working ES-DE default is a
+  ([#129](https://github.com/danielcopper/romm-tender/issues/129)): a system whose working ES-DE default is a
   standalone emulator (PS2 → PCSX2, PS3 → RPCS3, GameCube/Wii → Dolphin, PSP → PPSSPP, …) launches on that emulator
   instead of a deprecated/absent libretro core.
 
@@ -78,7 +78,7 @@ never a resolved `.so` filename.
 - **No key for a backend = no override on that backend** → the game follows that backend's own default. `NULL` (the
   whole column) is the "no override on any backend" state.
 - It anchors on `roms`, not `rom_installs`, so the choice **survives uninstall/reinstall** (per
-  [ADR-0007](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0007-rom-retention-identity-anchor.md)).
+  [ADR-0007](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0007-rom-retention-identity-anchor.md)).
 - Mutations go through the verb-named aggregate methods `Rom.pin_emulator_override(backend_id, label)` (rejects a blank
   label) and `Rom.clear_emulator_override(backend_id)` — each touches only its own `backend_id` key, leaving every
   other backend's entry untouched. Read via `Rom.emulator_override_for(backend_id)`. Only `pin`/`clear` ever write the
@@ -102,7 +102,7 @@ the core **LABEL**, never a resolved `.so`. An **absent `(backend_id, slug)` pai
 that backend — follow that backend's own default for this platform."
 
 It is an
-[ADR-0003](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0003-json-sqlite-persistence-boundary.md)
+[ADR-0003](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0003-json-sqlite-persistence-boundary.md)
 **bucket-1** value: a flat, user-set, relationship-free intent toggle. So it lives in `settings.json`, **not** SQLite,
 and there is **no `Platform` aggregate** — consistent with the `platform_slug`-is-denormalized stance. Each backend's
 map starts empty: there is no seed and no import from any previously-set ES-DE gamelist core (see
@@ -255,7 +255,7 @@ default). No consumer ever sees a bogus `.so`.
 ## Application: baking `-e` into `launch_options`
 
 Per
-[ADR-0009](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0009-launcher-pure-exec-wrapper-baked-launch-options.md),
+[ADR-0009](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0009-launcher-pure-exec-wrapper-baked-launch-options.md),
 the launcher is a pure `exec "$@"` wrapper and the full launch command lives in the Steam shortcut's `launch_options`.
 The pure seam `domain.shortcut_data.resolve_emulator_invocation(rom, emulator)` takes the resolved `EmulatorInvocation`
 and renders the invocation:
@@ -283,7 +283,7 @@ filename (see
 [Why the plugin always bakes the core, never the gamelist](#why-the-plugin-always-bakes-the-core-never-the-gamelist)).
 
 **Always `-e`.** Per
-[ADR-0012](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0012-plugin-owns-core-selection-always-e-no-gamelist.md),
+[ADR-0012](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0012-plugin-owns-core-selection-always-e-no-gamelist.md),
 every installed ROM bakes its **full resolved active emulator** through `-e` — the per-game pin, the per-platform core,
 the es_systems libretro default, or a standalone emulator, whichever the resolver returns. The plain `flatpak run`
 launch is **not** the "no override" case any more; it is reserved for the single fallback where the resolver yields
@@ -314,9 +314,9 @@ bake site ever emits `None.so`.
 A multi-disc game (a PS1 RPG across four CDs, say) installs as a folder of disc images. The same bake that carries the
 core also carries **which disc launches** — a second per-game deviation that follows the core override's structure point
 for point. The decision record is
-[ADR-0014](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0014-per-game-disc-selection-in-db-applied-as-bake-time-launch-path-override.md);
+[ADR-0014](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0014-per-game-disc-selection-in-db-applied-as-bake-time-launch-path-override.md);
 the user-facing guide is
-[Picking a Disc for Multi-Disc Games](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/user-guide/managing-games.md#picking-a-disc-for-multi-disc-games).
+[Picking a Disc for Multi-Disc Games](https://github.com/Crimson3076/romm-dock/blob/main/docs/user-guide/managing-games.md#picking-a-disc-for-multi-disc-games).
 
 ### Storage: the disc pick is a basename on the `Rom` aggregate
 
@@ -328,7 +328,7 @@ absolute path and never a disc index.
   in-emulator disc-swap default), else the first enumerated disc.
 - It anchors on `roms`, not `rom_installs`, so the pick **survives uninstall/reinstall and RetroDECK-home migration**
   (per
-  [ADR-0007](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0007-rom-retention-identity-anchor.md))
+  [ADR-0007](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0007-rom-retention-identity-anchor.md))
   — the disc folder is gone while uninstalled, but the basename re-resolves the moment it returns.
 - Mutations go through the verb-named aggregate methods `Rom.pin_selected_disc(filename)` (rejects a blank filename) and
   `Rom.clear_selected_disc()`. Only `pin`/`clear` ever write the column (`SqliteRomRepository.set_selected_disc`); it is
@@ -391,7 +391,7 @@ path-override layering the `-e` core override uses.
 Some systems boot a game **directory**, not the nested launch file. A PS3 game installs as a folder whose payload is
 `…/PS3_GAME/USRDIR/EBOOT.BIN`, and `detect_launch_file` picks that EBOOT as `file_path` — correct as the launch _file_
 identity, but RPCS3's directory-boot rejects it and wants the folder that contains `PS3_GAME`
-([#1212](https://github.com/danielcopper/decky-romm-sync/issues/1212)). Two things change together for such a game — the
+([#1212](https://github.com/danielcopper/romm-tender/issues/1212)). Two things change together for such a game — the
 baked **path** and the baked **invocation form** — because they are decided from the same layout fact.
 
 **The path.** A bake-time path override, layered **after** disc resolution in the same `resolve_bake_path` seam:
@@ -471,7 +471,7 @@ The frontend CPU-button menu on the game detail page drives two backend callable
 
 For an installed + bound ROM the response carries `launch_options` + `app_id`; the frontend then **awaits
 `setLaunchOptionsConfirmed`** (the fire-then-poll `AppDetails` confirm from
-[ADR-0009](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0009-launcher-pure-exec-wrapper-baked-launch-options.md))
+[ADR-0009](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0009-launcher-pure-exec-wrapper-baked-launch-options.md))
 **before toasting success**. If the confirm fails, a distinct "Core saved — restart Steam to apply" toast shows and the
 **DB row is kept** — the next migration/re-sync re-bakes from the pin. An uninstalled or unbound ROM has no live
 shortcut to update: the pin still lands, `launch_options`/`app_id` come back `None`, and the override applies on the
@@ -544,7 +544,7 @@ it), for reasons grounded in on-device testing:
    plain `flatpak run` command, RetroDECK's `run_game.sh` matches the ROM path against the gamelist using an **awk `~`
    regex**. Any regex metacharacter in the filename (`(USA)`, `(Disc 1)`, `[!]`, …) breaks the match, and the per-game
    `<altemulator>` is silently dropped. This is upstream bug
-   [#210](https://github.com/danielcopper/decky-romm-sync/issues/210) /
+   [#210](https://github.com/danielcopper/romm-tender/issues/210) /
    [RetroDECK#1358](https://github.com/RetroDECK/RetroDECK/issues/1358). (ES-DE's _own_ UI resolves `<altemulator>`
    itself and bypasses the awk — which is why a core choice can look like it works when launched from ES-DE but not from
    the plugin's shortcut.)
@@ -554,7 +554,7 @@ it), for reasons grounded in on-device testing:
 3. **A plain launch re-couples the plugin to ES-DE.** A non-`-e` launch lets RetroDECK consult the gamelist itself, so a
    core a user set inside ES-DE's UI would silently affect the plugin's launch — diverging from the BIOS badge, the
    per-core save path, and the core-change warning that all follow the plugin's resolver. Baking `-e` for every ROM
-   ([ADR-0012](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0012-plugin-owns-core-selection-always-e-no-gamelist.md))
+   ([ADR-0012](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0012-plugin-owns-core-selection-always-e-no-gamelist.md))
    closes that path: the plugin owns core selection end to end, and an ES-DE-set core never reaches a plugin launch.
 
 Writing the gamelist is dropped for the same ownership reason: `gamelist.xml` is ES-DE's strict-parser-hostile,
@@ -565,7 +565,7 @@ multi-root-tolerant file, and the per-platform deviation that once lived there n
 
 There is **no migration** from any old gamelist model. A per-game core previously written to `gamelist.xml` is not
 imported (per
-[ADR-0011](https://github.com/danielcopper/decky-romm-sync/blob/main/docs/adr/0011-per-game-core-override-in-db-applied-via-e-flag.md)),
+[ADR-0011](https://github.com/Crimson3076/romm-dock/blob/main/docs/adr/0011-per-game-core-override-in-db-applied-via-e-flag.md)),
 and a per-platform core previously set as a system-level `<alternativeEmulator>` is **not** imported into
 `platform_cores` either — `platform_cores` starts empty. This is by design: a gamelist-import path would revive the
 multi-root-XML parse failures and folder-collapse ambiguity the plugin-owned model was chosen to avoid. Re-apply any
@@ -584,7 +584,7 @@ externally-changed RetroDECK default carries this caveat.
 The `-e` flag, the `%EMULATOR_RETROARCH%` / `%ROM%` placeholders, and the `/var/config/retroarch/cores` path are
 **RetroDECK-adapter concerns**, isolated at the single seam `resolve_emulator_invocation`. RetroDECK is the default,
 behavior-preserving launcher backend — this is the correct default shape, not a placeholder. Standalone-emulator
-support ([#129](https://github.com/danielcopper/decky-romm-sync/issues/129)) is the first half of the multi-emulator
+support ([#129](https://github.com/danielcopper/romm-tender/issues/129)) is the first half of the multi-emulator
 lift: a standalone emulator is still launched **through RetroDECK's `-e`** on the RetroDECK backend, so the RetroDECK
 flatpak invocation remains that backend's single seam — only the `-e` payload changed (a verbatim ES-DE command
 instead of the RetroArch `-L` form).

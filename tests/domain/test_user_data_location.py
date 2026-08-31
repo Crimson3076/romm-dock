@@ -13,21 +13,21 @@ class TestTheDirectoryName:
 
 class TestRoots:
     def test_config_root_is_under_the_users_own_home(self):
-        assert config_root("/home/deck") == "/home/deck/.config/romm-tender"
+        assert config_root("/home/deck") == "/home/deck/.config/romm-dock"
 
     def test_data_root_is_under_the_users_own_home(self):
-        assert data_root("/home/deck") == "/home/deck/.local/share/romm-tender"
+        assert data_root("/home/deck") == "/home/deck/.local/share/romm-dock"
 
 
 class TestLauncherPath:
     def test_the_launcher_sits_under_the_root_it_is_given(self):
-        assert launcher_path("/home/deck/.local/share/romm-tender") == (
-            "/home/deck/.local/share/romm-tender/bin/rom-launcher"
+        assert launcher_path("/home/deck/.local/share/romm-dock") == (
+            "/home/deck/.local/share/romm-dock/bin/rom-launcher"
         )
 
     def test_the_same_two_components_name_the_copy_the_release_ships(self):
-        assert launcher_path("/home/deck/homebrew/plugins/romm-tender") == (
-            "/home/deck/homebrew/plugins/romm-tender/bin/rom-launcher"
+        assert launcher_path("/home/deck/homebrew/plugins/romm-dock") == (
+            "/home/deck/homebrew/plugins/romm-dock/bin/rom-launcher"
         )
 
     def test_it_ends_in_the_suffix_shortcut_ownership_is_read_off(self):

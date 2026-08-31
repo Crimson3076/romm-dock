@@ -2179,7 +2179,7 @@ Where this program's directories are is **resolved once from the environment and
 ([ADR-0036](../adr/0036-the-backend-hosts-itself.md)). `domain/app_directories.py` is the ladder, pure, with the
 environment passed as an argument so every rung is checkable against a table:
 
-1. `TENDER_CONFIG_DIR`, `TENDER_DATA_DIR`, `TENDER_CACHE_DIR`, `TENDER_STATE_DIR`, `TENDER_CODE_DIR` — what the
+1. `ROMM_DOCK_CONFIG_DIR`, `ROMM_DOCK_DATA_DIR`, `ROMM_DOCK_CACHE_DIR`, `ROMM_DOCK_STATE_DIR`, `ROMM_DOCK_CODE_DIR` — what the
    installer resolved once and wrote into the service unit. **This is the rung a service runs on.** The installer and
    the service do not share an environment: the installer runs in a login shell, the service in the user manager's, and
    an `XDG_DATA_HOME` set in a shell profile never reaches the latter.

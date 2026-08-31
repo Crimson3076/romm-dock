@@ -27,7 +27,7 @@ from host.server import HostServer
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-SERVER_IDENTITY = "romm-tender/0.0.0-test"
+SERVER_IDENTITY = "romm-dock/0.0.0-test"
 
 
 class FakePlugin:

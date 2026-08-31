@@ -48,7 +48,7 @@ export const AdoptUnusableModal: FC<AdoptUnusableModalProps> = ({ unusable, clos
           Something With This Name Is Already Here
         </div>
         <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginBottom: "12px" }}>
-          Your server sends this game as {servedWord}, and what is in this folder is not something Tender can use as
+          Your server sends this game as {servedWord}, and what is in this folder is not something RomM-Dock can use as
           this game. Downloading leaves you with two copies — the one below, and the one it fetches.
         </div>
 

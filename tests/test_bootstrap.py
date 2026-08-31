@@ -193,7 +193,7 @@ class TestBootstrap:
         """Both halves come from ``domain/identity.py``, name included.
 
         The two assertions above spell the program's own name and version, so a
-        literal ``"romm-tender/0.33.0"`` in bootstrap would satisfy them; this
+        literal ``"romm-dock/0.33.0"`` in bootstrap would satisfy them; this
         one asks with a name and a version the program will never carry, so only
         a read of the constants can answer it. What it protects: bootstrap
         spends the same name on the recovery root the cleanup writes its bundles

@@ -152,7 +152,7 @@ def plugin():
             loop=running_loop(),
             logger=decky.logger,
             plugin_dir=decky.DECKY_PLUGIN_DIR,
-            launcher_exe=f"{decky.DECKY_USER_HOME}/.local/share/romm-tender/bin/rom-launcher",
+            launcher_exe=f"{decky.DECKY_USER_HOME}/.local/share/romm-dock/bin/rom-launcher",
             # The service seam is fire-and-forget (``EventEmitter`` answers
             # ``None``); the plugin's own sink answers whether anybody heard.
             # Two seams, deliberately not one.
@@ -1234,7 +1234,7 @@ class TestMainStartupOrdering:
                 code_dir="/fake/code",
             ),
             launcher=ShortcutLauncher(path="/fake/data/bin/rom-launcher", at_home=True),
-            user_agent="romm-tender/0.0.0-test",
+            user_agent="romm-dock/0.0.0-test",
         )
 
         with (

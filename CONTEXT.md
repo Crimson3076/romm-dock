@@ -1,4 +1,4 @@
-# CONTEXT.md — Tender domain glossary
+# CONTEXT.md — RomM-Dock domain glossary
 
 This file is a glossary. It defines the canonical meaning of project-specific terms so that conversations, issues, PRs,
 and code stay aligned. It is _not_ a spec or design doc — implementation docs live in `docs/architecture/`, and
@@ -55,11 +55,11 @@ opens one connection, exposes the repositories, and commits on clean exit / roll
 database reads/writes, never network/file I/O or a frontend round-trip; cross-operation consistency comes from the
 operation's own serialization (the per-ROM save lock, the single library-sync task), not from holding a UoW open.
 
-### Display name (Tender) vs identifier (romm-tender)
+### Display name (RomM-Dock) vs identifier (romm-dock)
 
-The program has two names, and they are not interchangeable. The **display name** is `Tender`: the one a person reads —
-a toast's sender, the label on the Client API Token in their RomM account, the client a registered device is listed
-under, the headline of a README they open by hand. The **identifier** is `romm-tender`: the one a machine spends —
+The program has two names, and they are not interchangeable. The **display name** is `RomM-Dock`: the one a person
+reads — a toast's sender, the label on the Client API Token in their RomM account, the client a registered device is
+listed under, the headline of a README they open by hand. The **identifier** is `romm-dock`: the one a machine spends —
 folder names, the outgoing `User-Agent`, the `localStorage` breadcrumb key. A new string picks by its reader, never by
 which one looks better in place.
 
@@ -157,15 +157,15 @@ that leads to a repair.
 A **miss the panel survives** costs neither the panel nor anything the panel acts on: it mounts as usual and the log is
 the only place the miss is reported. That line answers the same question the page does — whose copy of `@decky/ui` ran
 the search — rather than naming a repair of its own, because the two costs below the panel do not all belong to the same
-program: `ControllerGlyph` is a search Tender runs itself, and `playSectionClasses` is a `@decky/ui` export whose search
+program: `ControllerGlyph` is a search RomM-Dock runs itself, and `playSectionClasses` is a `@decky/ui` export whose search
 is Decky's in the coexistence bundle. _Avoid_ **cosmetic miss** for the pair: it is true of the glyph and false of
 `playSectionClasses`, whose absence nothing draws in the first place.
 
 The second is the **searching copy**: which installed copy of `@decky/ui` ran the predicate that went stale, since the
 coexistence bundle runs Decky Loader's rather than ours. It is read ONCE per start and worded by both surfaces, which is
-what stops the page and the log line from answering it differently. It gives SOME four answers instead of one — Tender's
-own copy searched and missed (update Tender); Decky's copy searched and missed (update Decky Loader, whose own interface
-and other plugins are affected the same way); Decky's copy does not export a name Tender asks it for, which is two
+what stops the page and the log line from answering it differently. It gives SOME four answers instead of one — RomM-Dock's
+own copy searched and missed (update RomM-Dock); Decky's copy searched and missed (update Decky Loader, whose own interface
+and other plugins are affected the same way); Decky's copy does not export a name RomM-Dock asks it for, which is two
 separately installed programs disagreeing about the package (bring both to current); or what missed spans both kinds,
 which still settles Decky's copy — it carries every name asked of it and its searches for them came back empty all the
 same — and leaves the rest to whichever kind of name that is. The **package disagreement** is asked before the mixed
@@ -173,11 +173,11 @@ answer because a name Decky's copy does not export is a fact about the two insta
 empty value is a search result whose cause is inferred.
 
 Asked before them all: four of the names checked are not `@decky/ui` lookups at all — the three `SP_*` React globals and
-`ControllerGlyph`, which Tender reaches with a predicate of its own — so a miss confined to those belongs to NO copy of
+`ControllerGlyph`, which RomM-Dock reaches with a predicate of its own — so a miss confined to those belongs to NO copy of
 the package and names none. The **fallback page** then names no repair either, because a global can be among them and
 who installed it on a machine running both programs is not this page's to decide. The log line is not in that position:
 a global's absence costs the panel, so it never reaches one, and the names that do reach it in this answer are searches
-Tender runs itself — so there the repair is named, a newer Tender. (That is this answer's scope, not a universal:
+RomM-Dock runs itself — so there the repair is named, a newer RomM-Dock. (That is this answer's scope, not a universal:
 `playSectionClasses` reaches the log line too, and its search is the package's.)
 
 _Avoid_: **health check** — it asks one question at one moment and is not a recurring probe. Avoid **degraded mode**:
@@ -201,11 +201,11 @@ bundle reaches Steam only when the context is rebuilt.
 
 ### Load-failure card
 
-The small card the injected expression draws into Steam's own document when the panel bundle did not load — Tender's
+The small card the injected expression draws into Steam's own document when the panel bundle did not load — RomM-Dock's
 version, Steam's build, the log path, where releases are listed, and the reason the import gave. Plain nodes and inline
 styles: it uses neither React nor `@decky/ui`, because its own subject is that those may be exactly what is missing.
 
-It carries **one action** — stop trying until Tender restarts — which reaches the backend through a **debugger binding**
+It carries **one action** — stop trying until RomM-Dock restarts — which reaches the backend through a **debugger binding**
 and nothing else, and takes the card off the screen. The restart meant there is the **backend's own process**, the same
 way back the crash state has. Checking for an update is an address printed as text rather than an action, because
 nothing in this program updates itself yet.
@@ -219,7 +219,7 @@ entry replaces.
 
 The file the injection opens before it evaluates anything and closes once Steam's interface is still there some seconds
 later (`<state_dir>/injection-guard.json`). A record found still **open** at the next attempt is a crash that already
-happened; two in a row stop the injection, and a change in the **fingerprint** — Tender's version, a digest of the
+happened; two in a row stop the injection, and a change in the **fingerprint** — RomM-Dock's version, a digest of the
 bundle bytes, Steam's client build — drops the count so it starts trying again by itself.
 
 An attempt the record says nothing about is **not counted**: the debugger stopped answering, the backend is shutting
@@ -774,7 +774,7 @@ One play session the frontend is currently tracking: `{appId, romId, startMs}` i
 Steam app that opened it. There is one entry **per running app**, not one overall — two RomM games at once are two
 active sessions, each finalizing on its own app's exit. An active session is opened by a game-start notification or by
 reload-adoption, and its durable counterpart is the `last_session_start` marker on the ROM's `rom_playtime` row plus the
-`romm-tender:active-session` breadcrumb that lets a reload adopt it. "Active" is about the frontend's tracking, not
+`romm-dock:active-session` breadcrumb that lets a reload adopt it. "Active" is about the frontend's tracking, not
 about foreground/focus — a backgrounded game's session is still active.
 
 ### Unbind / stale / prune

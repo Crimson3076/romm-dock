@@ -286,8 +286,8 @@ the state directory, and on stderr in the terminal `mise run dev` is running in.
 - **The panel is not there** — read the backend's own log first; it says which bundles it loaded, or why it loaded none.
   The states worth knowing: no CEF debugger (the marker file is missing, or Steam has not been restarted since it was
   created), the renderer never named (Steam is still coming up), and the crash watchdog having stopped the injection
-  after two dead Steam starts, which names itself in the log and is lifted with `TENDER_INJECT=force`.
-- **A card in the corner says Tender could not load its panel** — the bundle was served and did not mount. It names the
+  after two dead Steam starts, which names itself in the log and is lifted with `ROMM_DOCK_INJECT=force`.
+- **A card in the corner says RomM-Dock could not load its panel** — the bundle was served and did not mount. It names the
   log path; the reason it prints is the import's own. Its one button stops the injection for the life of this backend
   process and takes the card away — nothing is loaded again until `mise run dev` is started afresh.
 - **Big Picture reopened without the panel** — the injector loads the panel again by itself when Steam rebuilds its JS

@@ -92,7 +92,7 @@ async def served(harness, tmp_path) -> AsyncIterator[ServedPlugin]:
         events=EventSink(LOGGER),
         static_root=str(static_root),
         logger=LOGGER,
-        server_identity="romm-tender/0.0.0-test",
+        server_identity="romm-dock/0.0.0-test",
         preferred_port=free_port(),
     )
     await server.start()
@@ -178,7 +178,7 @@ class TestTheSizeCapAgainstARealAnswer:
             events=EventSink(LOGGER),
             static_root=str(static_root),
             logger=LOGGER,
-            server_identity="romm-tender/0.0.0-test",
+            server_identity="romm-dock/0.0.0-test",
             preferred_port=free_port(),
         )
         await server.start()

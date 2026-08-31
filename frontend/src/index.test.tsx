@@ -404,7 +404,7 @@ describe("index.tsx — persistent prune listeners", () => {
     expect(invalidateCachedGameDetail).toHaveBeenCalledWith(9001);
     expect(unregisterRomMAppId).toHaveBeenCalledWith(9001);
     expect(changed).toHaveBeenCalledTimes(1);
-    expect(toaster.toast).toHaveBeenCalledWith({ title: "Tender", body: "Removed 1 local entry." });
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM-Dock", body: "Removed 1 local entry." });
 
     globalThis.removeEventListener("romm_data_changed", changed);
     plugin.onDismount();
@@ -471,7 +471,7 @@ describe("index.tsx — persistent prune listeners", () => {
     });
 
     expect(toaster.toast).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Shortcut removal committed; local cleanup incomplete.",
       subtext: "Steam removed the shortcut, but local cleanup was retained.",
     });
@@ -580,7 +580,7 @@ describe("index.tsx — persistent prune listeners", () => {
 
     expect(publishCommittedVersionSwitch).not.toHaveBeenCalled();
     expect(toaster.toast).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Shortcut repoint outcome is uncertain; source data was retained.",
       subtext: "The repoint outcome is unknown.",
     });

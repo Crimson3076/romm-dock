@@ -1,6 +1,6 @@
 # Development
 
-Guide for setting up a development environment and contributing to Tender.
+Guide for setting up a development environment and contributing to RomM-Dock.
 
 ## Prerequisites
 
@@ -18,8 +18,8 @@ Guide for setting up a development environment and contributing to Tender.
 ## Setup
 
 ```bash
-git clone https://github.com/danielcopper/romm-tender.git
-cd romm-tender
+git clone https://github.com/Crimson3076/romm-dock.git
+cd romm-dock
 mise install          # installs Node LTS, pnpm, Python
 mise run setup        # installs JS + Python dependencies
 ```
@@ -198,8 +198,8 @@ window, and how to judge layout at the Deck's real metrics are in [Frontend dev 
 injector does and how it protects the Steam UI from itself is in
 [How the panel gets into Steam](../architecture/loading-the-panel.md).
 
-Two switches exist, both read from the environment at start-up: `TENDER_INJECT=off` serves the panel and loads it
-nowhere, and `TENDER_INJECT=force` loads it even where the crash watchdog has stopped.
+Two switches exist, both read from the environment at start-up: `ROMM_DOCK_INJECT=off` serves the panel and loads it
+nowhere, and `ROMM_DOCK_INJECT=force` loads it even where the crash watchdog has stopped.
 
 Installing this as a service, with its own unit and XDG paths, is separate work
 ([#1902](https://github.com/danielcopper/romm-tender/issues/1902)).

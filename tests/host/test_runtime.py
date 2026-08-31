@@ -48,7 +48,7 @@ class Recorder:
         contender.release()
         return BackendBuild(
             dispatcher=CallDispatcher(FakePlugin(), LOGGER),
-            server_identity="romm-tender/0.0.0-test",
+            server_identity="romm-dock/0.0.0-test",
         )
 
     async def after_bind(self) -> None:

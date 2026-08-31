@@ -27,7 +27,7 @@ import os
 # be renamed with it, and a one-line edit there would then move every user's
 # library on the next start, with nothing failing and nothing said.
 # ``domain/identity.py`` carries the rest of that split.
-APP_DIR_NAME = "romm-tender"
+APP_DIR_NAME = "romm-dock"
 
 # The two functions below compose a root out of a home directory and nothing
 # else. The environment is read in ``domain/app_directories.py``, which is the

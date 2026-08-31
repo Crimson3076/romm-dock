@@ -31,7 +31,7 @@ def facts(**overrides):
         "kind": "standalone",
         "version": "1.2.3",
         "steam_build": "1788652215",
-        "log_path": "/home/deck/.local/state/romm-tender/backend.log",
+        "log_path": "/home/deck/.local/state/romm-dock/backend.log",
         "urls": URLS,
         "token": TOKEN,
         "binding": STOP_BINDING,
@@ -65,7 +65,7 @@ class TestWhatTheSourceCarries:
         assert "releases" in carried["updates"]
 
     def test_the_address_of_the_releases_is_text_rather_than_a_button(self):
-        """Nothing here updates Tender yet, so a button would be a button that lies."""
+        """Nothing here updates RomM-Dock yet, so a button would be a button that lies."""
         source = build_bootstrap(facts())
         card = source[source.index("const showLoadFailure") : source.index("return loadAll()")]
         assert "T.updates" in card

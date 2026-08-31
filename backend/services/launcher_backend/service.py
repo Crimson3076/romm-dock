@@ -1,6 +1,6 @@
 """LauncherBackendService — the active-launcher-backend seam (issue #918).
 
-Single source of truth for "which launcher backend is Tender using right
+Single source of truth for "which launcher backend is RomM-Dock using right
 now," and the fan-out re-bake when it changes. Implements
 ``LaunchCommandRenderer`` by delegating to whichever
 :class:`~services.protocols.launcher_backend.LauncherBackend` is currently

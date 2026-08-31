@@ -7,7 +7,7 @@ what makes the whole ladder checkable against a table.
 
 **The ladder has three rungs, and only the first one is meant for a service.**
 An installer resolves these once and writes the answers into the unit as
-``TENDER_*`` variables, because the installer and the service do not share an
+``ROMM_DOCK_*`` variables, because the installer and the service do not share an
 environment: the installer runs in a login shell, the service in the user
 manager's, and an ``XDG_DATA_HOME`` set in a shell profile never reaches the
 latter. The XDG variables and the built-in defaults below are the second and
@@ -33,11 +33,11 @@ if TYPE_CHECKING:
 
 # The installer's answers. First rung of the ladder, and the only one a service
 # is expected to run on.
-ENV_CONFIG_DIR = "TENDER_CONFIG_DIR"
-ENV_DATA_DIR = "TENDER_DATA_DIR"
-ENV_CACHE_DIR = "TENDER_CACHE_DIR"
-ENV_STATE_DIR = "TENDER_STATE_DIR"
-ENV_CODE_DIR = "TENDER_CODE_DIR"
+ENV_CONFIG_DIR = "ROMM_DOCK_CONFIG_DIR"
+ENV_DATA_DIR = "ROMM_DOCK_DATA_DIR"
+ENV_CACHE_DIR = "ROMM_DOCK_CACHE_DIR"
+ENV_STATE_DIR = "ROMM_DOCK_STATE_DIR"
+ENV_CODE_DIR = "ROMM_DOCK_CODE_DIR"
 
 # Second rung. ``XDG_RUNTIME_DIR`` is the only one of these that is reliably set
 # on the reference machine; the other four were measured unset in both the login

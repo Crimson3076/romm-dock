@@ -32,7 +32,7 @@ body:
       label: Repro steps
       description: Numbered steps that reproduce the bug from a known-good state. Even a one-line description of what you were doing helps.
       placeholder: |
-        1. Open QAM > Decky > Tender
+        1. Open QAM > Decky > RomM-Dock
         2. Click "Sync Library"
         3. ...
     validations:
@@ -69,7 +69,7 @@ body:
     attributes:
       label: Log excerpt
       description: |
-        Plugin logs live at `~/homebrew/logs/romm-tender/` or `~/homebrew/logs/decky-romm-sync/` — older installs use the second name; if both are there, take the one with recent files. Set log level to "debug" in plugin settings for full output. Decky Loader's own log goes to the journal: `journalctl -u plugin_loader`.
+        RomM-Dock's own log is `backend.log` under `~/.local/state/romm-dock/` (or wherever `ROMM_DOCK_STATE_DIR`/`XDG_STATE_HOME` points) — take the **last** `host: code …` line's install if the file has more than one start in it. Set log level to "debug" in plugin settings for full output. Decky Loader's own log goes to the journal: `journalctl -u plugin_loader`.
       render: text
     validations:
       required: false

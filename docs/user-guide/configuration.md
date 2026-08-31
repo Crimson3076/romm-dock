@@ -1,7 +1,7 @@
 # Configuration
 
 All settings are accessible from the plugin's QAM panel. Open the Quick Access Menu (**...** button), navigate to the
-Tender plugin, and pick **Settings** from the menu at the bottom of the panel.
+RomM-Dock plugin, and pick **Settings** from the menu at the bottom of the panel.
 
 ## The Settings page
 
@@ -10,7 +10,7 @@ right. Move onto a section in the list and the right-hand side changes at once �
 
 | Section           | What is in it                                                                                                                                                                                                  |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Connections**   | the services Tender talks to: **RomM** (server URL, account, Sign out, Allow Insecure SSL) and **SteamGridDB** (the API key)                                                                                   |
+| **Connections**   | the services RomM-Dock talks to: **RomM** (server URL, account, Sign out, Allow Insecure SSL) and **SteamGridDB** (the API key)                                                                                   |
 | **Save Sync**     | the save-sync switch and its settings (device, before launch, after exit, default slot, history limit, Sync All Saves Now), the list of registered devices, and the save-sorting migration when one is waiting |
 | **Controller**    | Steam Input Mode, Apply to All Shortcuts, and the RetroArch `input_driver` fix                                                                                                                                 |
 | **Steam Library** | preferred region, collection games in platform groups, collection types in Steam names                                                                                                                         |
@@ -201,7 +201,7 @@ carry them. `me.write` is deliberately **not** requested — a pasted token cann
 
 ## SteamGridDB API Key
 
-Under **Settings › Connections**, below the RomM group — SteamGridDB is one of the two services Tender talks to.
+Under **Settings › Connections**, below the RomM group — SteamGridDB is one of the two services RomM-Dock talks to.
 
 The plugin uses [SteamGridDB](https://www.steamgriddb.com/) to fetch additional artwork for your games — hero banners,
 logos, and wide grid images. RomM provides cover art, but SteamGridDB fills in the rest so your games look like
@@ -264,22 +264,22 @@ picture.
 ## Launcher
 
 Two dropdowns in the **Launcher** section on the main page: **Launcher** (which app your games actually run through)
-and **Installation** (which one Tender manages, when more than one is detected).
+and **Installation** (which one RomM-Dock manages, when more than one is detected).
 
-| Launcher              | Status                                                                             |
-| --------------------- | ----------------------------------------------------------------------------------- |
-| **RetroDECK** (default) | Fully supported — libretro cores and standalone emulators alike.                  |
-| **EmuDeck**            | Libretro cores and native-Linux standalone emulators (RPCS3, DuckStation, PCSX2-Qt, Azahar, MelonDS, Vita3K, and similar). Emulators EmuDeck runs through Proton (Cemu's Windows build, Xenia, …) are not launched by Tender yet — pick a native/libretro core for those systems, or stay on RetroDECK for them. |
+| Launcher | Status |
+| --- | --- |
+| **RetroDECK** (default) | Fully supported — libretro cores and standalone emulators alike. |
+| **EmuDeck** | Libretro cores and native-Linux standalone emulators (RPCS3, DuckStation, PCSX2-Qt, Azahar, MelonDS, Vita3K, and similar). Emulators EmuDeck runs through Proton (Cemu's Windows build, Xenia, …) are not launched by RomM-Dock yet — pick a native/libretro core for those systems, or stay on RetroDECK for them. |
 
 The **Installation** dropdown only matters when a launcher has more than one detected arrangement on your machine;
 most setups show exactly one and there's nothing to choose. If EmuDeck isn't installed, it still appears in the
 Launcher dropdown, but its Installation list is empty and you can't select it until EmuDeck is set up.
 
-Whichever launcher is active also decides where Tender puts things: game downloads, BIOS files, and saves all go
-under that launcher's own folders. You do not need RetroDECK installed at all to use Tender with EmuDeck — pick
+Whichever launcher is active also decides where RomM-Dock puts things: game downloads, BIOS files, and saves all go
+under that launcher's own folders. You do not need RetroDECK installed at all to use RomM-Dock with EmuDeck — pick
 EmuDeck as your launcher and everything (downloads, BIOS management, save sync) follows it.
 
-Switching launchers re-applies to every game already synced — Tender rebuilds each installed game's launch command
+Switching launchers re-applies to every game already synced — RomM-Dock rebuilds each installed game's launch command
 for the new launcher in one pass (the same mechanism a per-platform core change already uses), so you don't need to
 re-sync or lose any Steam artwork, playtime, or collections. It can take a little while on a large library; let it
 finish before launching anything.

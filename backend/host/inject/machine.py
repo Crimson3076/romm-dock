@@ -55,7 +55,7 @@ async def decky_loader_is_serving(port: int = DECKY_LOADER_PORT, *, connect_time
     answers ``True`` for it. Treating that as rendering costs a machine with
     Decky nothing (it gets the bundle that shares Decky's copy of the package,
     which is what it wants either way), where the other direction costs the
-    Steam UI. The ordering measurement — Tender loading first is safe — cannot
+    Steam UI. The ordering measurement — RomM-Dock loading first is safe — cannot
     be leant on, because a reconnect can put this question at a moment when
     Steam has been up for an hour and Decky has long since rendered.
 

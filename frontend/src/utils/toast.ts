@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 // Must match the backend's `DISPLAY_NAME` (`backend/domain/identity.py`) —
 // this value, handed back by `definePlugin`, is what the QAM header shows.
 // Nothing checks that the two agree.
-export const PLUGIN_NAME = "Tender";
+export const PLUGIN_NAME = "RomM-Dock";
 
 /**
  * Raise a toast under the plugin's name.

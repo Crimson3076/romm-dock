@@ -126,7 +126,7 @@ _SOURCE = """
       borderRadius: "4px"
     }, reason));
     const facts = el("div", { fontSize: "12px", margin: "0 0 10px" });
-    facts.appendChild(row("Tender", T.version));
+    facts.appendChild(row("RomM-Dock", T.version));
     facts.appendChild(row("Steam build", T.steam_build));
     facts.appendChild(row("Log", T.log_path));
     card.appendChild(facts);
@@ -196,28 +196,28 @@ class BootstrapFacts:
     stop_note: str
 
 
-TITLE = "Tender could not load its panel"
+TITLE = "RomM-Dock could not load its panel"
 EXPLANATION = (
-    "Steam is unaffected and nothing in your library has been changed. Tender did not start at all, "
+    "Steam is unaffected and nothing in your library has been changed. RomM-Dock did not start at all, "
     "rather than starting half-way, and it will try again when Steam's interface reloads."
 )
 # Printed rather than offered as a button: nothing in this program updates
 # itself yet, and a button aimed at a Steam API nobody here has run would be a
 # guess on the one page whose whole job is to be true after everything else has
 # failed. It becomes a button in the cut that gives it something to do (#1903).
-UPDATES_AT = "Releases are listed at github.com/danielcopper/romm-tender/releases"
+UPDATES_AT = "Releases are listed at github.com/Crimson3076/romm-dock/releases"
 # One button rather than two, and a Dismiss beside it is the road not taken:
 # the card blocks nothing already (it accepts a press nowhere but here), so
 # "off my screen" is a weak need, and a second button whose effect is "gone
 # until the next rebuild draws it again" is the ambiguous one on the page whose
 # whole job is to be unambiguous. What this button costs is answered the way the
 # crash state answers it — by starting the backend again.
-STOP = "Stop trying until Tender restarts"
+STOP = "Stop trying until RomM-Dock restarts"
 # "Restart" is the one word on this card a reader can get wrong, so the card
 # spells out which program it means. It is the same way back the crash state
 # has, for the same reason: the way out of a state Steam is in cannot be inside
 # Steam.
-STOP_NOTE = "That is Tender's own backend process. The panel is loaded again the next time it starts."
+STOP_NOTE = "That is RomM-Dock's own backend process. The panel is loaded again the next time it starts."
 
 
 def build_facts(

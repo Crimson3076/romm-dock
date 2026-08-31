@@ -17,7 +17,7 @@ this program.
   are reached from ``bootstrap/``; the third is not, which is why it is easy to
   miss when reading the composition root alone.
 
-The identifier — ``romm-tender`` — is kept in three separate places rather than
+The identifier — ``romm-dock`` — is kept in three separate places rather than
 one, because it answers three questions that have to stay free to disagree:
 
 - ``domain.user_data_location.APP_DIR_NAME`` says where the user's own data
@@ -70,12 +70,12 @@ from __future__ import annotations
 
 # Must match the frontend's ``PLUGIN_NAME`` (``frontend/src/utils/toast.ts``),
 # which is the name the QAM header carries. Nothing checks that the two agree.
-DISPLAY_NAME = "Tender"
+DISPLAY_NAME = "RomM-Dock"
 
 # The identifier a machine reads. Spelt identically to
 # ``domain.user_data_location.APP_DIR_NAME`` and deliberately not shared with
 # it — see the module docstring for which question each one answers.
-PACKAGE_NAME = "romm-tender"
+PACKAGE_NAME = "romm-dock"
 
 # Stamped by release-please on every release (``release-please-config.json``
 # carries a ``generic`` extra-file entry pointing at this module, and the

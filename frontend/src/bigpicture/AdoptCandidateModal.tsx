@@ -38,7 +38,7 @@ export const AdoptCandidateModal: FC<AdoptCandidateModalProps> = ({ found, close
           This Game May Already Be on Your Device
         </div>
         <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginBottom: "12px" }}>
-          These files sit in the same folder and carry this game&apos;s name. Tender did not put them there, so nothing
+          These files sit in the same folder and carry this game&apos;s name. RomM-Dock did not put them there, so nothing
           is touched until you pick one.
         </div>
 

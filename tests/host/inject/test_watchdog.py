@@ -117,7 +117,7 @@ class TestItStartsTryingAgainByItself:
     @pytest.mark.parametrize(
         ("moved", "named"),
         [
-            (Fingerprint(tender="1.0.1", bundle=SAME.bundle, steam=SAME.steam), "Tender's version"),
+            (Fingerprint(tender="1.0.1", bundle=SAME.bundle, steam=SAME.steam), "RomM-Dock's version"),
             (Fingerprint(tender=SAME.tender, bundle="deadbeef", steam=SAME.steam), "the panel bundles"),
             (Fingerprint(tender=SAME.tender, bundle=SAME.bundle, steam="1799999999"), "Steam's build"),
         ],

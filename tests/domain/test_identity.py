@@ -28,7 +28,7 @@ class TestTheDisplayName:
         The QAM header reads the frontend's ``PLUGIN_NAME`` and everything the
         backend writes reads this. Nothing checks that the two agree.
         """
-        assert DISPLAY_NAME == "Tender"
+        assert DISPLAY_NAME == "RomM-Dock"
 
     def test_it_is_never_one_of_the_identifiers(self):
         """The display name and the identifier are two values, and stay two.
@@ -67,7 +67,7 @@ class TestTheIdentifierStaysInTwoPlaces:
 
     def test_they_spell_the_same_string_today(self):
         """Stated so the test below is read as being about the seam, not the value."""
-        assert PACKAGE_NAME == APP_DIR_NAME == "romm-tender"
+        assert PACKAGE_NAME == APP_DIR_NAME == "romm-dock"
 
     def test_app_dir_name_is_its_own_literal_rather_than_the_package_name(self):
         """``APP_DIR_NAME = PACKAGE_NAME`` must fail here, and only here.

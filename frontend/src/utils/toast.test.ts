@@ -27,7 +27,7 @@ describe("showToast", () => {
   });
 
   it("names the plugin the same way the manifest does", () => {
-    expect(PLUGIN_NAME).toBe("Tender");
+    expect(PLUGIN_NAME).toBe("RomM-Dock");
   });
 
   it("returns the notification so a caller can dismiss it", () => {

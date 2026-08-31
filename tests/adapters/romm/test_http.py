@@ -46,7 +46,7 @@ from services.library import LibraryService, LibraryServiceConfig
 # outgoing header is then asserted against — this file pins the pass-through,
 # not the string. Production builds the real one from ``domain/identity.py``
 # (``bootstrap/adapters.py``); the version here is deliberately not a real one.
-_USER_AGENT = "romm-tender/9.9.9"
+_USER_AGENT = "romm-dock/9.9.9"
 
 
 def _http_error(
@@ -95,7 +95,7 @@ def plugin():
             loop=running_loop(),
             logger=decky.logger,
             plugin_dir=decky.DECKY_PLUGIN_DIR,
-            launcher_exe=f"{decky.DECKY_USER_HOME}/.local/share/romm-tender/bin/rom-launcher",
+            launcher_exe=f"{decky.DECKY_USER_HOME}/.local/share/romm-dock/bin/rom-launcher",
             emit=decky.emit,
             clock=FakeClock(),
             uuid_gen=FakeUuidGen(),

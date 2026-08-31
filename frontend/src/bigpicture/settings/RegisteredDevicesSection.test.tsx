@@ -40,7 +40,7 @@ function makeDevice(overrides: Partial<RegisteredDevice> = {}): RegisteredDevice
     id: "d1abc12345678",
     name: "Steam Deck",
     platform: "linux",
-    client: "Tender",
+    client: "RomM-Dock",
     client_version: "0.17.1",
     last_seen: "2025-06-15T11:55:00Z",
     created_at: "2025-06-01T10:00:00Z",
@@ -72,7 +72,7 @@ function cells(el: Element): string[] {
 }
 
 // The longest client string the server can hand back — NOT what this plugin
-// registers under now, which is `DISPLAY_NAME`, "Tender" (`domain/identity.py`).
+// registers under now, which is `DISPLAY_NAME`, "RomM-Dock" (`domain/identity.py`).
 // RomM keeps the rows earlier versions wrote, and up to 0.32 they said
 // `decky-romm-sync`; those rows do not expire, so this is what the column has to
 // hold. Sizing to today's shorter name would clip them.
@@ -221,7 +221,7 @@ describe("RegisteredDevicesSection", () => {
     it("puts the name, the client with its version, and the relative time in their own columns", () => {
       const device = makeDevice({
         name: "Steam Deck",
-        // What this plugin registers under today is `DISPLAY_NAME`, "Tender"
+        // What this plugin registers under today is `DISPLAY_NAME`, "RomM-Dock"
         // (`domain/identity.py`). The older spelling is used here because the
         // column has to render what the SERVER holds, and the server keeps the
         // rows earlier versions wrote — a real listing shows both.

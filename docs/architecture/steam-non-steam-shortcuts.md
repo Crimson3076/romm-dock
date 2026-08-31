@@ -1,6 +1,6 @@
 # Steam Non-Steam Shortcuts
 
-Technical reference for how Tender creates, manages, and launches non-Steam shortcuts. This covers the
+Technical reference for how RomM-Dock creates, manages, and launches non-Steam shortcuts. This covers the
 `SteamClient.Apps.AddShortcut` API, VDF format details, and app ID handling.
 
 ## AddShortcut API Behavior
@@ -78,7 +78,7 @@ Three properties of that path are load-bearing:
 Pass the raw path:
 
 ```typescript
-SteamClient.Apps.SetShortcutExe(appId, "/home/deck/.local/share/romm-tender/bin/rom-launcher");
+SteamClient.Apps.SetShortcutExe(appId, "/home/deck/.local/share/romm-dock/bin/rom-launcher");
 ```
 
 ### Updating existing shortcuts

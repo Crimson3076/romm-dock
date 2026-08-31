@@ -130,7 +130,7 @@ function replaceWarning(occupied: TargetOccupiedResult, candidate: boolean, noun
     return `Downloading deletes the shortcut that is here now — ${name}. Whatever it points at is left alone. Continue?`;
   }
   if (occupied.existing.kind === null) {
-    return `Downloading removes what is here now — ${name}. Tender cannot tell what it is, only that it goes. Continue?`;
+    return `Downloading removes what is here now — ${name}. RomM-Dock cannot tell what it is, only that it goes. Continue?`;
   }
   return (
     `Downloading deletes the ${noun} that is here now — ${name}, ${existingSize(occupied, candidate)}. ` +
@@ -198,9 +198,9 @@ export const AdoptExistingModal: FC<AdoptExistingModalProps> = ({
         </div>
         <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginBottom: "12px" }}>
           {candidatePath
-            ? `This ${noun} carries this game's name. Tender did not put it there, so it will not be touched until ` +
+            ? `This ${noun} carries this game's name. RomM-Dock did not put it there, so it will not be touched until ` +
               "you decide."
-            : `A ${noun} is already where this game would be downloaded. Tender did not put it there, so it will not ` +
+            : `A ${noun} is already where this game would be downloaded. RomM-Dock did not put it there, so it will not ` +
               "be touched until you decide."}
         </div>
 
@@ -225,7 +225,7 @@ export const AdoptExistingModal: FC<AdoptExistingModalProps> = ({
         {candidatePath && (
           <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", marginBottom: "12px" }}>
             Using it renames it to {occupied.incoming.name}, and moves any saves and savestates named after it with it,
-            so this game works the same as one Tender downloaded.
+            so this game works the same as one RomM-Dock downloaded.
           </div>
         )}
 

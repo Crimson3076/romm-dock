@@ -511,7 +511,7 @@ class PanelInjector:
         self._watchdog.stays_open()
         self._logger.error(
             f"inject: Steam's interface is gone — {witness} page(s) were open when the panel was loaded and none "
-            f"are now. The record stays open; two in a row and Tender stops loading the panel."
+            f"are now. The record stays open; two in a row and RomM-Dock stops loading the panel."
         )
 
     async def _targets_now(self) -> tuple[Target, ...]:

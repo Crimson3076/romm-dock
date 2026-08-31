@@ -6,13 +6,14 @@ Common issues and how to fix them.
 
 ### Connection shows "Backend error"
 
-**Symptom**: The Tender QAM panel's **Connection** row shows a "Backend error" badge with the note "Plugin backend
+**Symptom**: The RomM-Dock QAM panel's **Connection** row shows a "Backend error" badge with the note "Plugin backend
 failed to start — check Decky logs", and the Sync buttons are disabled. This state means the plugin's own Python backend
 process never started — it is **not** the same as an unreachable RomM server, which shows **Not connected** instead.
 
-**Fix**: The backend aborted during startup, so the UI can't reach it. Open the Decky plugin log to find the underlying
-error, then reload Tender from the Decky plugin list. If it still fails after a reload, restart Steam (or the Steam
-Deck); if the error persists, include the log output when you report it.
+**Fix**: The backend aborted during startup — most often a failed data migration after an update — so the UI can't reach
+it. Open the Decky plugin log to find the underlying error, then reload RomM-Dock from the Decky plugin list. If it still
+fails after a reload, restart Steam (or the Steam Deck); if the error persists, include the log output when you report
+it.
 
 Reaching that verdict takes up to about a minute and a half, because the check keeps retrying to ride out a backend that
 is merely slow to start rather than calling it dead too early. It runs to its conclusion whether or not the panel is
@@ -25,7 +26,7 @@ check is running, the row keeps showing the previous result rather than resettin
 never answered. Reload Decky or restart Steam, then try again."
 
 **Fix**: The dialog reached the plugin's backend process and got no reply at all, which normally means the backend is no
-longer running — the panel itself keeps working because its code is already loaded in Steam. Reload Tender from the
+longer running — the panel itself keeps working because its code is already loaded in Steam. Reload RomM-Dock from the
 Decky plugin list, or restart Steam, then sign in again. A pairing code is single-use and expires after 60 seconds, so
 generate a fresh one for the retry.
 
@@ -36,14 +37,14 @@ answers with its own message instead — "Server unreachable", "Sign-in rejected
 
 ### "RomM Sync" is still installed
 
-**Symptom**: Decky lists two plugins — an older **RomM Sync** and **Tender**. Tender may also look brand new, with no
-server configured and no synced games.
+**Symptom**: Decky lists two plugins — an older **RomM Sync** or **Tender**, and **RomM-Dock**. The new one may also look
+brand new, with no server configured and no synced games.
 
 **Fix**: Nothing to fix, but do not remove the older plugin until you have checked one of your games. Your shortcuts may
 still start through a file inside that older plugin's folder; removing it before they have been repointed stops all of
 your games from starting, and nothing can put that file back. A game's own **Target** path tells you which state you are
-in — see [Updating from a release before 0.31.0](getting-started.md#updating-from-a-release-before-0310) for the check
-and what each answer means.
+in — see [Updating from an older Decky-plugin install](getting-started.md#updating-from-an-older-decky-plugin-install-romm-sync-tender)
+for the check and what each answer means.
 
 ### BIOS files missing
 
@@ -58,7 +59,7 @@ shows a black screen.
 
 **Symptom**: Pressing Play does nothing, or you get a toast saying the ROM needs to be downloaded.
 
-**Fix**: Open the game's detail page and tap **Download** in the Tender panel. The game will be playable once the
+**Fix**: Open the game's detail page and tap **Download** in the RomM-Dock panel. The game will be playable once the
 download completes.
 
 ### The download has no launchable file
@@ -229,7 +230,7 @@ shortcut's tile image and does not always refresh it right away. A tile that is 
 the first time you open that game's detail page, scroll it back into view, or the next time Steam restarts — the cover
 is already on disk; Steam just hasn't re-rendered the tile yet.
 
-**Fix**: If a tile stays blank after that, open the game's detail page and tap **Refresh Metadata** in the Tender panel.
+**Fix**: If a tile stays blank after that, open the game's detail page and tap **Refresh Metadata** in the RomM-Dock panel.
 This re-fetches all artwork and metadata. (Hero banners, logos, and wide grid images additionally need a
 [SteamGridDB API key](configuration.md#steamgriddb-api-key) — see above.)
 
@@ -292,23 +293,24 @@ every exact-id check also verifies the same server/user namespace captured by th
 before retrying those actions. This reciprocal block prevents newly downloaded content or recovered state from appearing
 after recovery was captured and then being removed by finalization.
 
-Recovery bundles are under `~/romm-tender-recovery/bundles/`. Older bundles sealed under
-`~/decky-romm-sync-recovery/bundles/` stay where they are — nothing moves them, and both folders are yours to keep or
-delete. A directory appears there only after every required copy and checksum succeeds, directory durability succeeds
-where supported, and the staging directory is atomically sealed. A post-rename durability failure preserves the
-directory with a `.durability-uncertain` suffix instead of making it look successfully sealed. Before the Steam action
-and again before local finalization, the backend verifies the seal, manifest/checksums, bundle-bound source claims,
-source root/descendant identities, mount IDs and bytes, expected absence of currently missing saves, database state,
-save ownership, and captured Steam/controller state. Filesystem mutation then holds kernel writer-exclusion leases
-through descriptor-relative removal; replacing a path, keeping a writable file descriptor open, crossing a nested mount,
-or creating a previously absent save after sealing does not authorize deletion. Save quarantine publishes with atomic
-no-replace semantics, so a backup created concurrently is preserved rather than overwritten. Recovery destination
-directories and files stay attached to held descriptors through metadata updates, hashing, sealing, and validation, so a
-swapped symlink is not re-authorized. A failed attempt may report `recovery_failed`; it leaves the local game unchanged.
-Incomplete staging is removed only when descriptor-relative, mount-aware cleanup proves the tree safe. Otherwise the
-error names the full path of that preserved staging so mounted or uncertain data is never traversed recursively.
-Free-space blocking in the modal covers the installed ROM content you selected. The backend checks actual source size
-and free space again at copy time, so a later disk-space change can still stop the group safely.
+Recovery bundles are under `~/romm-dock-recovery/bundles/`. Older bundles sealed under
+`~/decky-romm-sync-recovery/bundles/` or `~/romm-tender-recovery/bundles/` stay where they are — nothing moves them,
+and all folders are yours to keep or delete. A directory appears there only after every required copy and checksum
+succeeds, directory durability succeeds where supported, and the staging directory is atomically sealed. A post-rename
+durability failure preserves the directory with a `.durability-uncertain` suffix instead of making it look successfully
+sealed. Before the Steam action and again before local finalization, the backend verifies the seal, manifest/checksums,
+bundle-bound source claims, source root/descendant identities, mount IDs and bytes, expected absence of currently
+missing saves, database state, save ownership, and captured Steam/controller state. Filesystem mutation then holds
+kernel writer-exclusion leases through descriptor-relative removal; replacing a path, keeping a writable file
+descriptor open, crossing a nested mount, or creating a previously absent save after sealing does not authorize
+deletion. Save quarantine publishes with atomic no-replace semantics, so a backup created concurrently is preserved
+rather than overwritten. Recovery destination directories and files stay attached to held descriptors through metadata
+updates, hashing, sealing, and validation, so a swapped symlink is not re-authorized. A failed attempt may report
+`recovery_failed`; it leaves the local game unchanged. Incomplete staging is removed only when descriptor-relative,
+mount-aware cleanup proves the tree safe. Otherwise the error names the full path of that preserved staging so mounted
+or uncertain data is never traversed recursively. Free-space blocking in the modal covers the installed ROM content you
+selected. The backend checks actual source size and free space again at copy time, so a later disk-space change can
+still stop the group safely.
 
 The cleanup report is per group: unrelated groups continue after a skip or failure. Large runs deliver terminal details
 in serialized-byte-bounded chunks, which the UI assembles only after every earlier chunk arrives. A **partial** result

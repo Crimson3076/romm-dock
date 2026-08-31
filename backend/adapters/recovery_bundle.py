@@ -44,7 +44,7 @@ _ROOT_README_HEADLINE = f"{DISPLAY_NAME} recovery bundles"
 _ROOT_README_TEXT = (
     f"{_ROOT_README_HEADLINE}\n{'=' * len(_ROOT_README_HEADLINE)}\n"
     + """
-This folder holds snapshots the Tender plugin took immediately BEFORE it
+This folder holds snapshots the RomM-Dock plugin took immediately BEFORE it
 deleted a game's local data, during "Clean Up Removed RomM Games".
 
   bundles/   one folder per cleaned-up game, named <game>_<date>_<id>.

@@ -184,7 +184,7 @@ bit, which a file arriving via RomM download is not guaranteed to carry.
 Because a `.sh` target never calls `ProtonLocator.locate()`, a native-Windows ROM whose selected/default target is a
 bundled script launches even on a system with **no Proton build installed at all** — the
 [degrade-to-unavailable posture](../user-guide/managing-games.md#when-no-proton-is-found) applies to `.exe` targets
-only. See [ADR-0029 decision 6](../adr/0029-plugin-owns-proton-invocation.md) for why this stays scoped to `.sh` rather
+only. See [ADR-0038 decision 6](../adr/0038-plugin-owns-proton-invocation.md) for why this stays scoped to `.sh` rather
 than becoming a general "run any bundled script" mechanism.
 
 ## Why the plugin locates and invokes Proton itself

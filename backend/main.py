@@ -255,7 +255,7 @@ class Plugin:
 
         # ── 6. Background tasks ─────────────────────────────────────────────
         steps.run("detect_save_sort_change", self._migration_service.detect_save_sort_change)
-        logger.info("Tender backend loaded")
+        logger.info("RomM-Dock backend loaded")
         return result.user_agent
 
     async def _open_network(self):

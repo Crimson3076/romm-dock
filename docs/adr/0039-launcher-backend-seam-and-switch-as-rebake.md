@@ -34,7 +34,7 @@ Steam shortcut whose `launch_options` names a rom id and lets a runtime dispatch
 active backend and choose the concrete invocation at launch time — explicitly to avoid "rewriting thousands of Steam
 shortcuts whenever the launcher changes." That shape is [ADR-0005](0005-launcher-resolves-path-from-sqlite.md)'s
 interim design, retired by [ADR-0009](0009-launcher-pure-exec-wrapper-baked-launch-options.md) once
-[#827](https://github.com/danielcopper/decky-romm-sync/issues/827) proved `SetAppLaunchOptions` on an existing
+[#827](https://github.com/danielcopper/romm-tender/issues/827) proved `SetAppLaunchOptions` on an existing
 shortcut reliable — reintroducing it here would trade back the exact benefit ADR-0009 established (a resolution-free
 launcher, no DB coupling, no runtime resolution cost) for a problem #827 already solved. ADR-0009 also already
 provides the general answer to "a global setting changes and every affected shortcut must be re-baked, without

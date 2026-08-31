@@ -296,7 +296,7 @@ class TestTheCardsOneButton:
             await injecting(page=page, handlers={"Runtime.enable": lambda _params: refuse("not today")})
             await wait_until(lambda: any("cannot reach this backend" in r.message for r in caplog.records))
         line = next(r.message for r in caplog.records if "cannot reach this backend" in r.message)
-        assert "TENDER_INJECT=off" in line
+        assert "ROMM_DOCK_INJECT=off" in line
 
     async def test_a_refused_callback_leaves_the_card_without_a_button(self, injecting, caplog):
         page = a_page()
@@ -524,14 +524,14 @@ class TestTheSwitch:
             await wait_until(lambda: running.task.done())
         assert running.page.evaluated == []
         assert running.debugger.connections == 0
-        assert any("TENDER_INJECT=off" in record.message for record in caplog.records)
+        assert any("ROMM_DOCK_INJECT=off" in record.message for record in caplog.records)
 
     def test_only_the_two_known_words_are_a_switch(self):
         read = InjectionSetup.from_environment
         common = {"static_root": "/d", "state_dir": "/s", "user_home": "/h", "version": "1"}
-        assert read({"TENDER_INJECT": "off"}, **common).override == INJECT_OFF
-        assert read({"TENDER_INJECT": " FORCE "}, **common).override == INJECT_FORCE
-        assert read({"TENDER_INJECT": "yes please"}, **common).override == ""
+        assert read({"ROMM_DOCK_INJECT": "off"}, **common).override == INJECT_OFF
+        assert read({"ROMM_DOCK_INJECT": " FORCE "}, **common).override == INJECT_FORCE
+        assert read({"ROMM_DOCK_INJECT": "yes please"}, **common).override == ""
         assert read({}, **common).override == ""
 
 

@@ -253,7 +253,7 @@ describe("VersionHistoryPanel", () => {
       await flushAsync();
       await flushAsync();
       expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "Tender", body: expect.stringContaining("Save restored") }),
+        expect.objectContaining({ title: "RomM-Dock", body: expect.stringContaining("Save restored") }),
       );
       expect(onRestored).toHaveBeenCalledTimes(1);
       // Collapsed again — chevron is ▸

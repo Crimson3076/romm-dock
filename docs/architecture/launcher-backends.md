@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tender launches every ROM through a **launcher backend** — RetroDECK by default, or EmuDeck. A launcher backend
+RomM-Dock launches every ROM through a **launcher backend** — RetroDECK by default, or EmuDeck. A launcher backend
 answers, per (system, emulator, rom): the launch invocation and the roms/bios/saves/savestates roots, plus its own
 installation detection and pre-switch validation. This is [#918](https://github.com/danielcopper/romm-tender/issues/918)'s
 seam, built once EmuDeck became a concrete second target (see

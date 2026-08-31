@@ -1,11 +1,11 @@
 # Getting Started
 
-## What is Tender?
+## What is RomM-Dock?
 
-Tender is a [Decky Loader](https://decky.xyz/) plugin that connects your self-hosted
+RomM-Dock is a [Decky Loader](https://decky.xyz/) plugin that connects your self-hosted
 [RomM](https://github.com/rommapp/romm) ROM library to Steam. Every game in your RomM library appears as a Non-Steam
 shortcut in the Steam Library, complete with cover art, metadata, and collections. Games launch through
-[RetroDECK](https://retrodeck.net/).
+[RetroDECK](https://retrodeck.net/) or [EmuDeck](https://www.emudeck.com/), whichever you have installed.
 
 ## Prerequisites
 
@@ -16,8 +16,8 @@ Before installing the plugin, you need:
    only the token — your password is never saved. Each user should have their own RomM account (see
    [Save Sync](save-sync.md) for why this matters).
 
-2. **RetroDECK** — installed on your Steam Deck or Linux PC. RetroDECK handles the actual emulation. The plugin creates
-   shortcuts that launch games through RetroDECK.
+2. **RetroDECK or EmuDeck** — installed on your Steam Deck or Linux PC. One of them handles the actual emulation. The
+   plugin creates shortcuts that launch games through whichever backend you pick.
 
 3. **Decky Loader** — the plugin framework. Install it from [decky.xyz](https://decky.xyz/) if you haven't already.
    Decky renders inside Steam's gamepad UI, and the plugin works wherever that UI runs: Gaming Mode on the Steam Deck,
@@ -27,8 +27,8 @@ Before installing the plugin, you need:
 
 ## Installation
 
-**Not on the Decky store.** The store doesn't accept plugins whose code is written with AI assistance, and Tender's is —
-see [How this is built](../index.md). Install it from the URL below.
+**Not on the Decky store.** The store doesn't accept plugins whose code is written with AI assistance, and RomM-Dock's
+is — see [How this is built](../index.md). Install it from the URL below.
 
 ### From Decky's "Install Plugin from URL"
 
@@ -38,62 +38,61 @@ see [How this is built](../index.md). Install it from the URL below.
 4. Open the **Developer** tab and select **Install Plugin from URL**
 5. Enter the direct URL to the release zip
 
-   This names one fixed release, `tender-v0.33.0`:
+   The latest release always resolves through:
 
    ```text
-   https://github.com/danielcopper/romm-tender/releases/download/tender-v0.33.0/Tender.zip
+   https://github.com/Crimson3076/romm-dock/releases/latest/download/romm-dock.zip
    ```
 
    Any other version is named the same way, by its tag:
 
    ```text
-   https://github.com/danielcopper/romm-tender/releases/download/tender-v{VERSION}/Tender.zip
+   https://github.com/Crimson3076/romm-dock/releases/download/romm-dock-v{VERSION}/romm-dock.zip
    ```
 
-   `tender-v0.33.0` is the newest release carrying this asset, and releases from `tender-v0.31.0` up to it all carry it
-   — `tender-v0.31.0` itself published it as `tender.zip`, and GitHub matches release-asset names case-insensitively, so
-   the URL still finds it. Most of the `decky-romm-sync-v{VERSION}` releases before it published `decky-romm-sync.zip`;
-   name that tag and that file for those. Four have no asset at all: the three earliest and `v0.2.0`.
+   Releases published before this project was named RomM-Dock use the older `tender-v{VERSION}/Tender.zip` form (and,
+   before that, `decky-romm-sync-v{VERSION}/decky-romm-sync.zip`); their links keep working unchanged.
 
 6. Decky downloads and installs the plugin automatically — no restart needed
 
-**Tip:** You can also open the [releases page](https://github.com/danielcopper/romm-tender/releases) in Steam's built-in
+**Tip:** You can also open the [releases page](https://github.com/Crimson3076/romm-dock/releases) in Steam's built-in
 browser (Gaming Mode → long-press the Steam button → Web Browser), long-press the zip download link, and copy the URL
 from there.
 
 Any direct URL to the zip file works (GitHub releases, a self-hosted mirror, etc.) as long as it points to a valid
 `.zip` containing the plugin.
 
-### Updating from a release before 0.31.0
+### Updating from an older Decky-plugin install (RomM Sync / Tender)
 
-Releases up to 0.30.1 install into a folder named `decky-romm-sync`; from 0.31.0 on the folder is named `romm-tender`.
-Decky treats a differently-named folder as a different plugin, so updating across that boundary leaves you with **two**
-entries: the older one still shown as **RomM Sync**, and the new one as **Tender**.
+Earlier releases installed under a different folder name — `decky-romm-sync`, then `romm-tender` — and Decky treats a
+differently-named folder as a different plugin, so updating across either boundary can leave you with **two** entries:
+the older one shown as **RomM Sync** or **Tender**, and the new one as **RomM-Dock**.
 
 **Check one of your games before you remove the older plugin.** Every Steam shortcut the older plugin created starts
-through a small file inside that plugin's own folder. Tender keeps its copy of that file under your home directory
-instead — `~/.local/share/romm-tender/bin/rom-launcher` — and repoints your existing shortcuts at it the next time
-Tender loads. Until that has happened, removing "RomM Sync" stops all of your games from starting, and nothing can put
-the file back.
+through a small file inside that plugin's own folder. RomM-Dock keeps its copy of that file under your home directory
+instead — `~/.local/share/romm-dock/bin/rom-launcher` — and repoints your existing shortcuts at it the next time
+RomM-Dock loads. Until that has happened, removing the older plugin stops all of your games from starting, and nothing
+can put the file back.
 
 The shortcut itself tells you which state you are in, and looking costs nothing:
 
-1. Open any game Tender created in your Steam library and show its **Properties** — the gear icon on the game's page in
-   Gaming Mode.
+1. Open any game RomM-Dock created in your Steam library and show its **Properties** — the gear icon on the game's page
+   in Gaming Mode.
 2. Read the **Target** path under **Shortcut**.
 
-- **The path is inside `~/.local/share/romm-tender/bin/`** — your shortcuts no longer depend on the older plugin. Remove
+- **The path is inside `~/.local/share/romm-dock/bin/`** — your shortcuts no longer depend on the older plugin. Remove
   it wherever Decky lists your installed plugins, or keep it: it costs disk space and nothing else.
-- **The path is still inside `homebrew/plugins/`** — leave the older plugin where it is. Tender repoints shortcuts when
-  it loads, not when you open its panel, so reload Tender or restart Steam, then look again before you delete anything.
+- **The path is still inside `homebrew/plugins/`** — leave the older plugin where it is. RomM-Dock repoints shortcuts
+  when it loads, not when you open its panel, so reload RomM-Dock or restart Steam, then look again before you delete
+  anything.
 
 The new install also starts with its own settings and library: each install keeps its data in its own place, and nothing
-copies the older one's settings or synced library across. Set Tender up as if it were new, and remove the older plugin
-only once the check above passes.
+copies the older one's settings or synced library across. Set RomM-Dock up as if it were new, and remove the older
+plugin only once the check above passes.
 
 ### Manual installation (alternative)
 
-1. Download the plugin's `.zip` asset from the [releases page](https://github.com/danielcopper/romm-tender/releases)
+1. Download `romm-dock.zip` from the [releases page](https://github.com/Crimson3076/romm-dock/releases)
 2. Extract the zip to `~/homebrew/plugins/` on your device (via SSH, file manager, or USB)
 3. Restart Decky Loader — either reboot, or run `sudo systemctl restart plugin_loader` via SSH
 4. The plugin appears in your QAM under the Decky tab
@@ -102,7 +101,7 @@ only once the check above passes.
 
 After installation, you need to connect the plugin to your RomM server:
 
-1. Open the QAM and find **Tender**
+1. Open the QAM and find **RomM-Dock**
 2. Tap **Settings** in the menu, then **Connections** in the section list on the left
 3. Enter your RomM server URL (e.g. `http://192.168.1.100:8080`) — this saves automatically
 4. Tap **Sign in**, enter your RomM username and password once, and confirm

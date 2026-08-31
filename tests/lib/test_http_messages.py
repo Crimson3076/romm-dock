@@ -80,9 +80,9 @@ class TestParseRequestHead:
 
 class TestBuildResponseHead:
     def test_it_writes_the_status_line_and_fields(self):
-        raw = build_response_head(200, [("Server", "romm-tender/1.0"), ("Content-Length", "3")])
+        raw = build_response_head(200, [("Server", "romm-dock/1.0"), ("Content-Length", "3")])
 
-        assert raw == b"HTTP/1.1 200 OK\r\nServer: romm-tender/1.0\r\nContent-Length: 3\r\n\r\n"
+        assert raw == b"HTTP/1.1 200 OK\r\nServer: romm-dock/1.0\r\nContent-Length: 3\r\n\r\n"
 
     def test_it_ends_with_the_blank_line(self):
         assert build_response_head(404).endswith(b"\r\n\r\n")

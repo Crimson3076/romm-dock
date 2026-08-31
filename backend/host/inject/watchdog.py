@@ -46,7 +46,7 @@ FAILURE_LIMIT = 2
 # the injector because this module writes the sentence that names it, and a
 # second spelling of an environment variable is a switch that silently does
 # nothing.
-INJECT_ENV = "TENDER_INJECT"
+INJECT_ENV = "ROMM_DOCK_INJECT"
 INJECT_OFF = "off"
 INJECT_FORCE = "force"
 
@@ -179,7 +179,7 @@ class CrashWatchdog:
             False,
             self._failures,
             f"not loading the panel into Steam: {self._failures} attempts in a row ended with Steam's interface "
-            f"gone. Tender version {now.tender}, Steam build {now.steam or 'unknown'}. It will try again by itself "
+            f"gone. RomM-Dock version {now.tender}, Steam build {now.steam or 'unknown'}. It will try again by itself "
             f"when any of those changes; to try now, start the backend with {INJECT_ENV}={INJECT_FORCE}.",
         )
 
@@ -238,7 +238,7 @@ def _what_moved(previous: Fingerprint, now: Fingerprint) -> str:
     moved = [
         name
         for name, before, after in (
-            ("Tender's version", previous.tender, now.tender),
+            ("RomM-Dock's version", previous.tender, now.tender),
             ("the panel bundles", previous.bundle, now.bundle),
             ("Steam's build", previous.steam, now.steam),
         )

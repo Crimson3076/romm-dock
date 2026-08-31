@@ -1,9 +1,9 @@
-# Tender — RomM library into Steam
+# RomM-Dock — RomM library into Steam
 
 ## What This Is
 
-Syncs a self-hosted RomM library into Steam as Non-Steam shortcuts. Games launch via RetroDECK. The QAM panel handles
-settings, sync, downloads, and BIOS management.
+Syncs a self-hosted RomM library into Steam as Non-Steam shortcuts. Games launch via RetroDECK or EmuDeck. The QAM
+panel handles settings, sync, downloads, and BIOS management.
 
 The backend runs as **its own process** and hosts the panel itself over a loopback port
 ([ADR-0036](docs/adr/0036-the-backend-hosts-itself.md)); it was a Decky Loader plugin up to 0.33. It also LOADS the
@@ -144,7 +144,7 @@ locally with `mise run docs`.
   `frontend/src/boot/steamGlobals.ts` installs `SP_REACT`, `SP_REACTDOM` and `SP_JSX`, which Steam does not define and
   Decky's loader otherwise would. Decky skips its **entire** globals block when `SP_REACT` is already set, so when ours
   runs first, **Decky's whole frontend renders through our shape** — a predicate of ours that differs breaks Decky's
-  interface, not Tender's. `frontend/src/boot/decky-globals-block.txt` pins upstream's block verbatim with its
+  interface, not RomM-Dock's. `frontend/src/boot/decky-globals-block.txt` pins upstream's block verbatim with its
   provenance and `steamGlobals.test.ts` holds the two against each other; a failure there is not a test to fix but a
   question about which of the two moved.
 
@@ -169,8 +169,8 @@ locally with `mise run docs`.
 - **Frontend API**: `@decky/ui` for Steam's components, and `frontend/src/api/host.ts` for everything `@decky/api` used
   to give us — same six export names, so a call site reads the same. Four of the six go over the backend's WebSocket;
   **`toaster` and `routerHook` are declared placeholders that do nothing** until #1901, so no toast appears and Steam's
-  game page carries no Tender section. Neither reaches Decky's loader API when one is present, and what decides that is
-  not purity: those two are the loader's own, #1901 replaces them with Tender's, and a placeholder that borrowed one
+  game page carries no RomM-Dock section. Neither reaches Decky's loader API when one is present, and what decides that
+  is not purity: those two are the loader's own, #1901 replaces them with RomM-Dock's, and a placeholder that borrowed one
   wherever it found one would behave differently on a machine with Decky from one without — which is the difference this
   program exists not to depend on. **The reference machine runs the loader** (measured: `plugin_loader.service` active
   and enabled, `127.0.0.1:1337` listening), so that borrowing would show up there rather than hide, which is the
@@ -564,7 +564,7 @@ Format: **invariant** — tier — enforced by.
   `DeckyPluginLoader`, `DeckyBackend`, `deckyAuthToken`, `deckyHasLoaded` — is still `undefined`, so a window probe
   answers "no Decky" on a machine that has one, picks the globals, and crashes the interface. The gap between "the
   loader's server answers" and "Decky is rendering" is deliberately left on the safe side, and the ordering measurement
-  (Tender loading first is safe) may not be leant on to close it the other way: a reconnect puts the same question at a
+  (RomM-Dock loading first is safe) may not be leant on to close it the other way: a reconnect puts the same question at a
   moment when Steam has been up for an hour. Detail: `docs/architecture/loading-the-panel.md`
 - **An injection that could not be observed is never counted as a crash, and this process answers for its own record
   before it reads one** — test + prompt-only — `tests/host/inject/test_watchdog.py` pins the state machine in every
@@ -588,8 +588,8 @@ Format: **invariant** — tier — enforced by.
   nothing. A close that counted any of those would stop the panel loading over a user closing Steam, and the failure is
   silent in both directions: too lenient and a crash loop is never stopped, too strict and the panel disappears with
   only a log line to say why. The way back is not inside Steam (the interface is what is gone): the fingerprint —
-  Tender's version, the bundle bytes, Steam's client build — drops the count on its own, and `TENDER_INJECT=force` is
-  the switch the refusal line names
+  RomM-Dock's version, the bundle bytes, Steam's client build — drops the count on its own, and `ROMM_DOCK_INJECT=force`
+  is the switch the refusal line names
 
 - **Aggregate state mutated only via verb-named methods (no field assignment)** — check —
   `scripts/check_aggregate_field_assignment.py`
@@ -697,7 +697,7 @@ Format: **invariant** — tier — enforced by.
   a coexistence bundle that gained it re-executes the modules a rendering Decky is rendering FROM, and takes the Big
   Picture window down. **The check sees the artefacts and not the decision**: which of the two the injector loads is
   `backend/host/inject/bundles.py`'s, and nothing here would notice the wrong one being served
-- **Tender's three React globals are spelled exactly the way Decky Loader spells them** — test —
+- **RomM-Dock's three React globals are spelled exactly the way Decky Loader spells them** — test —
   `frontend/src/boot/steamGlobals.test.ts`, which reads `steamGlobals.ts` and the pinned `decky-globals-block.txt` as
   TEXT and compares the four search predicates, which global each answer is assigned to, and the JSX stand-in's keys and
   aliasing. The cost of a difference lands on DECKY's users, not ours: its loader skips its entire globals block when
@@ -722,10 +722,10 @@ Format: **invariant** — tier — enforced by.
   other name was judged**, only that moving one OUT needs its every consumer read, one name at a time. **The join is
   prompt-only and spans three places**: `checkSteamModules` derives `panelMayMount` from the costs, `index.tsx` gates
   the fallback page on it and logs `describeSurvivedMiss` on the other side, and that sentence answers whose COPY of
-  `@decky/ui` ran the missed searches rather than naming a repair of its own — it used to say "a newer Tender"
+  `@decky/ui` ran the missed searches rather than naming a repair of its own — it used to say "a newer RomM-Dock"
   unconditionally, which held only while nothing reaching it was a name the package exports, and `playSectionClasses` is
   one. What `frontend/src/boot/steamModules.test.ts` locks is the property the line's remaining own answer rests on — a
-  non-blocking name `@decky/ui` does NOT export must be one Tender probes for itself (`findModule`, swept from the
+  non-blocking name `@decky/ui` does NOT export must be one RomM-Dock probes for itself (`findModule`, swept from the
   source) — so the three `SP_*` globals, which the frontend cannot attribute to a program from inside the page, fail
   there the moment one is made non-blocking, instead of shipping a repair aimed at whichever program did not install
   them. Both directions fail quietly: call a real dependency cosmetic and the panel mounts and renders a hole, which is
@@ -740,7 +740,7 @@ Format: **invariant** — tier — enforced by.
   spans four places**: `rollup.config.js` serves the stamp, `boot/searchingCopy.ts` reads it and Decky's namespace,
   `boot/steamModules.ts` words it, and `index.tsx` resolves it ONCE for the log line and the page — two resolutions
   could disagree with each other. The predicates belong to `@decky/ui` and the coexistence bundle runs DECKY's copy, so
-  a page that blamed Tender in both would send a user after the wrong program while Decky's own interface and its other
+  a page that blamed RomM-Dock in both would send a user after the wrong program while Decky's own interface and its other
   plugins broke beside it. **A miss confined to the four names `@decky/ui` does not export names NO copy and offers NO
   repair** — `SP_REACTDOM` is the only one that reaches that state alone, `ControllerGlyph` only ever beside a global
   (on its own it is cosmetic and brings no page up at all, per the entry above), and `describeFailure` answers it before
@@ -751,7 +751,7 @@ Format: **invariant** — tier — enforced by.
   does not read it**, because it keys on whose COPY ran the search rather than on which program installed a global. In
   the standalone bundle the answer would not settle it anyway: a missing `SP_REACTDOM` there is `globals.js` not having
   run OR our own ReactDOM predicate in `boot/steamGlobals.ts` having gone stale — two repairs behind one symptom.
-  `ControllerGlyph` is reached by a `findModule` predicate of ours in BOTH bundles, so a newer Tender IS its repair and
+  `ControllerGlyph` is reached by a `findModule` predicate of ours in BOTH bundles, so a newer RomM-Dock IS its repair and
   this branch cannot say so; restoring it here would take a third axis (whose PREDICATE, not whose copy), never a
   reworded answer. What bounds that cost is only that the glyph's absence costs appearance, so it never brings the page
   up alone and `describeSurvivedMiss` prints its sentence into the log whenever it is the whole of the miss. **It is NOT

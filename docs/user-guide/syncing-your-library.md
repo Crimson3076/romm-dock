@@ -77,8 +77,8 @@ be re-fetched. Work out a fresh preview, or start the run. And if the plugin cou
 synced, the button stays pressable and says so rather than going quiet: not being able to check is not the same as there
 being nothing to clear.
 
-![Tender QAM panel showing connection status, a Sync Library button with Skip Preview and Force Full Sync, and a menu of
-Library, Settings and Data Management](../assets/screenshot-qam.jpg)
+![RomM-Dock QAM panel showing connection status, a Sync Library button with Skip Preview and Force Full Sync, and a menu
+of Library, Settings and Data Management](../assets/screenshot-qam.jpg)
 
 _This screenshot predates the current layout: syncing now has a page of its own, reached from the panel's **Sync** menu
 entry, and the buttons above sit on that page rather than on the panel's first screen._
