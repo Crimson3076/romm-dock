@@ -1037,7 +1037,9 @@ class SyncOrchestrator:
         # sibling adopts its canonical summary) AND drive the group collapse below.
         registry = await self._loop.run_in_executor(None, self._local_library_reader.do_read_apply_registry, unit)
         resident_keys = {
-            int(rom_id): entry["sibling_group_key"] for rom_id, entry in registry.items() if entry["sibling_group_key"]
+            int(rom_id): entry["sibling_group_key"]
+            for rom_id, entry in registry.items()
+            if entry["sibling_group_key"] is not None
         }
         self._stamp_component_group_keys(unit_roms, resident_keys)
         shortcuts_data = await self._build_shortcuts_data(unit_roms, installed_paths, windows_launch_options)
