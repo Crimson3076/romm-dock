@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 
 from adapters.retrodeck_launcher_backend import RetroDeckLauncherBackend, RetroDeckLauncherBackendFactory
@@ -14,8 +15,14 @@ from domain.shortcut_data import (
 from lib.retrodeck_health import RetroDeckConfigHealth
 
 
-def _backend(**kwargs) -> RetroDeckLauncherBackend:
-    return RetroDeckLauncherBackend(paths=FakeRetroDeckPaths(**kwargs))
+def _backend(*, core_info: FakeCoreInfoProvider | None = None, **kwargs) -> RetroDeckLauncherBackend:
+    return RetroDeckLauncherBackend(
+        paths=FakeRetroDeckPaths(**kwargs), core_info=core_info if core_info is not None else FakeCoreInfoProvider()
+    )
+
+
+def _factory(**kwargs) -> RetroDeckLauncherBackendFactory:
+    return RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths(**kwargs), core_info=FakeCoreInfoProvider())
 
 
 class TestResolveInvocationParity:
@@ -68,19 +75,48 @@ class TestPathDelegation:
         assert backend.states_path() == "/custom/states"
 
 
+class TestCoreInfoDelegation:
+    """RetroDECK's CoreInfoProvider methods delegate unchanged to the injected CoreResolver."""
+
+    def test_get_emulator_options_delegates(self):
+        core_info = FakeCoreInfoProvider(available_cores=[{"core_so": "snes9x_libretro", "label": "Snes9x"}])
+        backend = _backend(core_info=core_info)
+        assert backend.get_emulator_options("snes") == core_info.get_emulator_options("snes")
+
+    def test_get_active_core_delegates(self):
+        core_info = FakeCoreInfoProvider(active_core=("snes9x_libretro", "Snes9x"))
+        backend = _backend(core_info=core_info)
+        assert backend.get_active_core("snes") == ("snes9x_libretro", "Snes9x")
+        assert core_info.active_core_calls == ["snes"]
+
+    def test_get_default_emulator_delegates(self):
+        core_info = FakeCoreInfoProvider(active_core=("snes9x_libretro", "Snes9x"))
+        backend = _backend(core_info=core_info)
+        assert backend.get_default_emulator("snes") == EmulatorInvocation.libretro("snes9x_libretro", "Snes9x")
+
+    def test_resolve_sandbox_launcher_delegates(self):
+        core_info = FakeCoreInfoProvider(sandbox_launchers={"cmd": "/app/launcher.sh"})
+        backend = _backend(core_info=core_info)
+        assert backend.resolve_sandbox_launcher("cmd") == "/app/launcher.sh"
+
+    def test_reset_cache_delegates(self):
+        core_info = FakeCoreInfoProvider()
+        backend = _backend(core_info=core_info)
+        backend.reset_cache()
+        assert core_info.reset_cache_count == 1
+
+
 class TestBackendIdentity:
     def test_backend_id_is_retrodeck(self):
-        assert RetroDeckLauncherBackend(paths=FakeRetroDeckPaths()).backend_id == RETRODECK_BACKEND_ID
+        assert _backend().backend_id == RETRODECK_BACKEND_ID
 
     def test_installation_id_is_retrodeck(self):
-        assert RetroDeckLauncherBackend(paths=FakeRetroDeckPaths()).installation_id == RETRODECK_BACKEND_ID
+        assert _backend().installation_id == RETRODECK_BACKEND_ID
 
 
 class TestDetectInstallations:
     def test_ok_health_reports_healthy(self):
-        factory = RetroDeckLauncherBackendFactory(
-            paths=FakeRetroDeckPaths(health=RetroDeckConfigHealth.OK, home="/home/deck/retrodeck")
-        )
+        factory = _factory(health=RetroDeckConfigHealth.OK, home="/home/deck/retrodeck")
         [installation] = factory.detect_installations()
         assert installation.healthy is True
         assert installation.detail == "ok"
@@ -89,25 +125,25 @@ class TestDetectInstallations:
         assert installation.home == "/home/deck/retrodeck"
 
     def test_absent_health_reports_unhealthy_but_present(self):
-        factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths(health=RetroDeckConfigHealth.ABSENT))
+        factory = _factory(health=RetroDeckConfigHealth.ABSENT)
         [installation] = factory.detect_installations()
         assert installation.healthy is False
         assert installation.detail == "absent"
 
     def test_unreadable_health_reports_unhealthy(self):
-        factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths(health=RetroDeckConfigHealth.UNREADABLE))
+        factory = _factory(health=RetroDeckConfigHealth.UNREADABLE)
         [installation] = factory.detect_installations()
         assert installation.healthy is False
         assert installation.detail == "unreadable"
 
     def test_root_missing_health_reports_unhealthy(self):
-        factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths(health=RetroDeckConfigHealth.ROOT_MISSING))
+        factory = _factory(health=RetroDeckConfigHealth.ROOT_MISSING)
         [installation] = factory.detect_installations()
         assert installation.healthy is False
         assert installation.detail == "root_missing"
 
     def test_always_exactly_one_entry(self):
-        factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths())
+        factory = _factory()
         assert len(factory.detect_installations()) == 1
 
 
@@ -142,12 +178,12 @@ class TestValidate:
 
 class TestFactoryBind:
     def test_bind_retrodeck_returns_working_backend(self):
-        factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths(roms="/roms"))
+        factory = _factory(roms="/roms")
         backend = factory.bind(RETRODECK_BACKEND_ID)
         assert backend is not None
         assert backend.roms_path() == "/roms"
 
     def test_bind_unknown_installation_returns_none(self):
-        factory = RetroDeckLauncherBackendFactory(paths=FakeRetroDeckPaths())
+        factory = _factory()
         assert factory.bind("something-else") is None
         assert factory.bind("emudeck:/home/deck") is None

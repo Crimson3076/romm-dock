@@ -85,16 +85,13 @@ class RomRepository(Protocol):
         """Return the number of ROMs in the registry. (library/reporter.py len registry, shortcut_removal.py stats)"""
         ...
 
-    def set_emulator_override(self, rom_id: int, label: str | None) -> None:
-        """Pin (or clear with ``None``) the per-game emulator override for *rom_id*.
+    def set_emulator_override(self, rom_id: int, backend_id: str, label: str | None) -> None:
+        """Pin (or clear with ``None``) *backend_id*'s per-game emulator override for *rom_id*.
 
-        The only write path for ``emulator_override``; the sync upsert in
-        :meth:`save` never touches it, so a re-sync preserves the pin.
+        Every other backend's pin is preserved untouched. The only write path
+        for ``emulator_override``; the sync upsert in :meth:`save` never
+        touches it, so a re-sync preserves every backend's pin.
         """
-        ...
-
-    def get_all_emulator_overrides(self) -> dict[int, str]:
-        """Return ``rom_id`` -> pinned core label for every ROM with an override (NULL rows omitted)."""
         ...
 
     def set_selected_disc(self, rom_id: int, filename: str | None) -> None:

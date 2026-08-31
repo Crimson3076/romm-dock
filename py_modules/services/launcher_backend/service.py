@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 _SETTINGS_BACKEND_KEY = "launcher_backend"
 _SETTINGS_INSTALLATION_KEY = "launcher_backend_installation"
 
+# The CoreInfoProvider "unavailable" answer, returned when no backend is bound
+# at all (never observed in practice — _bind always falls back to RetroDECK).
+_NO_OPTIONS: dict[str, Any] = {"available": False, "options": []}
+
 
 @dataclass(frozen=True)
 class LauncherBackendServiceConfig:
@@ -74,6 +78,29 @@ class LauncherBackendService:
         if self._active is None:
             return ""
         return self._active.build_launch_options(invocation, path)
+
+    # -- CoreInfoProvider -----------------------------------------------------
+    # Delegates to whichever LauncherBackend is currently bound, same pattern
+    # as the rendering methods above: the System-page and per-game picker
+    # menus, and ActiveCoreResolver's precedence chain, see a switch on their
+    # very next call — the emulator-selection catalogue follows the active
+    # backend exactly like rendering and file placement already do.
+
+    def get_active_core(self, system_name: str) -> tuple[str | None, str | None]:
+        return self._active.get_active_core(system_name) if self._active is not None else (None, None)
+
+    def get_default_emulator(self, system_name: str) -> EmulatorInvocation | None:
+        return self._active.get_default_emulator(system_name) if self._active is not None else None
+
+    def get_emulator_options(self, system_name: str) -> dict[str, Any]:
+        return self._active.get_emulator_options(system_name) if self._active is not None else _NO_OPTIONS
+
+    def resolve_sandbox_launcher(self, command: str) -> str | None:
+        return self._active.resolve_sandbox_launcher(command) if self._active is not None else None
+
+    def reset_cache(self) -> None:
+        if self._active is not None:
+            self._active.reset_cache()
 
     # -- LauncherPaths ------------------------------------------------------
 

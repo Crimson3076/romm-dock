@@ -161,6 +161,7 @@ def plugin(tmp_path):
             firmware_file_store=FirmwareFileAdapter(),
             launcher_paths=FakeRetroDeckPaths(),
             core_info=FakeCoreInfoProvider(),
+            active_backend_id=lambda: "retrodeck",
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             platform_core_reader=FakePlatformCoreReader(),
             uow_factory=FakeUnitOfWorkFactory(),

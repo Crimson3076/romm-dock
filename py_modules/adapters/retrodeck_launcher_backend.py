@@ -26,7 +26,9 @@ _DISPLAY_NAME = "RetroDECK"
 # imported by name: adapters may not import services.protocols (import-linter
 # "Adapters must not import services"), so this adapter's dependency on
 # RetroDeckPathsAdapter is typed by shape here instead of by importing the
-# Protocol services depend on it through.
+# Protocol services depend on it through. ``core_info`` (a CoreResolver — see
+# adapters/es_de_config.py) is typed the same way: it structurally satisfies
+# CoreInfoProvider, the emulator-selection half of LauncherBackend.
 
 
 class RetroDeckLauncherBackend:
@@ -35,14 +37,34 @@ class RetroDeckLauncherBackend:
     backend_id = RETRODECK_BACKEND_ID
     installation_id = RETRODECK_BACKEND_ID
 
-    def __init__(self, *, paths: Any) -> None:
+    def __init__(self, *, paths: Any, core_info: Any) -> None:
         self._paths = paths
+        self._core_info = core_info
 
     def resolve_invocation(self, rom: dict[str, Any], emulator: EmulatorInvocation | None) -> str:
         return resolve_emulator_invocation(rom, emulator)
 
     def build_launch_options(self, invocation: str, path: str) -> str:
         return build_launch_options(invocation, path)
+
+    # -- CoreInfoProvider: delegates unchanged to the existing es_systems.xml
+    # reader — RetroDECK's emulator-selection menu is exactly what it always
+    # was, unaffected by this seam.
+
+    def get_active_core(self, system_name: str) -> tuple[str | None, str | None]:
+        return self._core_info.get_active_core(system_name)
+
+    def get_default_emulator(self, system_name: str) -> EmulatorInvocation | None:
+        return self._core_info.get_default_emulator(system_name)
+
+    def get_emulator_options(self, system_name: str) -> dict[str, Any]:
+        return self._core_info.get_emulator_options(system_name)
+
+    def resolve_sandbox_launcher(self, command: str) -> str | None:
+        return self._core_info.resolve_sandbox_launcher(command)
+
+    def reset_cache(self) -> None:
+        self._core_info.reset_cache()
 
     def roms_path(self) -> str:
         return self._paths.roms_path()
@@ -82,8 +104,9 @@ class RetroDeckLauncherBackendFactory:
     backend_id = RETRODECK_BACKEND_ID
     display_name = _DISPLAY_NAME
 
-    def __init__(self, *, paths: Any) -> None:
+    def __init__(self, *, paths: Any, core_info: Any) -> None:
         self._paths = paths
+        self._core_info = core_info
 
     def detect_installations(self) -> list[DetectedInstallation]:
         """Always reports the one RetroDECK installation the plugin has always assumed.
@@ -107,4 +130,4 @@ class RetroDeckLauncherBackendFactory:
     def bind(self, installation_id: str) -> RetroDeckLauncherBackend | None:
         if installation_id != RETRODECK_BACKEND_ID:
             return None
-        return RetroDeckLauncherBackend(paths=self._paths)
+        return RetroDeckLauncherBackend(paths=self._paths, core_info=self._core_info)

@@ -27,6 +27,7 @@ from lib.list_result import ErrorCode
 if TYPE_CHECKING:
     import asyncio
     import logging
+    from collections.abc import Callable
 
     from domain.rom import Rom
     from domain.rom_install import RomInstall
@@ -47,8 +48,11 @@ if TYPE_CHECKING:
 class CoreServiceConfig:
     """Frozen wiring bundle handed to ``CoreService.__init__``.
 
-    Carries the runtime infrastructure (event loop, logger), the ES-DE
-    core-info read seam, the platform-slug-to-system resolver, the live
+    Carries the runtime infrastructure (event loop, logger), the ACTIVE
+    launcher backend's core-info read seam and its ``backend_id`` (issue
+    #918's per-backend picker follow-up — both the per-platform/per-game pin
+    storage below and the emulator catalogue are scoped to whichever backend
+    is currently selected), the platform-slug-to-system resolver, the live
     ``settings`` dict + its persister (where the per-platform core lands), the
     cross-service BIOS checker, the SQLite Unit-of-Work factory (to read the ROM
     + its install and write the per-game pin), the shared per-ROM
@@ -58,11 +62,17 @@ class CoreServiceConfig:
     the m3u), and the active launcher backend's rendering seam (issue #918) so
     a re-bake matches whichever backend is currently selected. Bundled here so
     the ctor stays within the S107 parameter budget.
+
+    Unlike ``ActiveCoreResolverConfig``, ``core_info``/``active_backend_id``
+    are plain values here, not ``LateBinding`` — ``CoreService`` is
+    constructed after ``LauncherBackendService`` exists in
+    ``bootstrap/services.py``, so there is no producer/consumer cycle to break.
     """
 
     loop: asyncio.AbstractEventLoop
     logger: logging.Logger
     core_info: CoreInfoProvider
+    active_backend_id: Callable[[], str]
     resolve_system: SystemResolver
     settings: dict[str, Any]
     settings_persister: SettingsPersister
@@ -80,6 +90,7 @@ class CoreService:
         self._loop = config.loop
         self._logger = config.logger
         self._core_info = config.core_info
+        self._active_backend_id = config.active_backend_id
         self._resolve_system = config.resolve_system
         self._settings = config.settings
         self._settings_persister = config.settings_persister
@@ -123,16 +134,18 @@ class CoreService:
                 "platform_core_label": None,
                 "has_game_override": False,
             }
+        backend_id = self._active_backend_id()
         system = self._resolve_system(rom.platform_slug)
         options = self._core_info.get_emulator_options(system)
         active_so, active_label = self._active_core.active_core_for_rom(rom_id)
+        backend_platform_cores = self._settings.get("platform_cores", {}).get(backend_id, {})
         return {
             "emulators": options_to_payload(options["options"]),
             "emulator_data_available": options["available"],
             "active_core": active_so,
             "active_core_label": active_label,
-            "platform_core_label": self._settings.get("platform_cores", {}).get(rom.platform_slug),
-            "has_game_override": rom.emulator_override is not None,
+            "platform_core_label": backend_platform_cores.get(rom.platform_slug),
+            "has_game_override": rom.emulator_override_for(backend_id) is not None,
         }
 
     def _set_system_core_io(self, platform_slug: str, core_label: str) -> list[dict[str, Any]]:
@@ -146,19 +159,21 @@ class CoreService:
 
         Returns one ``{"app_id", "launch_options"}`` entry per installed+bound ROM
         on the platform whose active core is the new per-platform selection. ROMs
-        with a per-game ``emulator_override`` are skipped (the pin wins over the
-        platform default), as are uninstalled or unbound ROMs (no live shortcut to
-        rewrite). Each entry's ``launch_options`` is the FULL active core baked by
-        the shared resolver — the ``-e`` override form, or the plain launch when
+        with a per-game override FOR THE ACTIVE BACKEND are skipped (the pin wins
+        over the platform default), as are uninstalled or unbound ROMs (no live
+        shortcut to rewrite) — a pin set under a DIFFERENT backend never blocks
+        this fan-out. Each entry's ``launch_options`` is the FULL active core baked
+        by the shared resolver — the ``-e`` override form, or the plain launch when
         the resolver yields ``(None, None)`` — over the disc-resolved bake path,
         so a multi-disc ROM keeps its persisted ``selected_disc`` rather than
         reverting to disc 1 / the m3u (a single-disc ROM bakes its ``file_path``
         unchanged).
         """
+        backend_id = self._active_backend_id()
         if core_label:
-            self._settings["platform_cores"][platform_slug] = core_label
+            self._settings["platform_cores"].setdefault(backend_id, {})[platform_slug] = core_label
         else:
-            self._settings["platform_cores"].pop(platform_slug, None)
+            self._settings["platform_cores"].get(backend_id, {}).pop(platform_slug, None)
         self._settings_persister.save_settings()
         self._core_info.reset_cache()
 
@@ -171,7 +186,7 @@ class CoreService:
         pending: list[tuple[Rom, RomInstall]] = []
         with self._uow_factory() as uow:
             for rom in uow.roms.iter_by_platform(platform_slug):
-                if rom.emulator_override is not None:
+                if rom.emulator_override_for(backend_id) is not None:
                     continue
                 if rom.shortcut_app_id is None:
                     continue
@@ -251,11 +266,13 @@ class CoreService:
                     "reason": "not_found",
                     "message": f"ROM {rom_id} is not tracked",
                 }
+            backend_id = self._active_backend_id()
             system = self._resolve_system(rom.platform_slug)
             invocation = label_to_invocation(self._core_info.get_emulator_options(system)["options"], label)
             if invocation is None:
                 # Hard-fail BEFORE any write — never persist a label that does not
-                # resolve to a bakeable emulator (unknown / needs_setup / un-bakeable).
+                # resolve to a bakeable emulator (unknown / needs_setup / un-bakeable)
+                # on the ACTIVE backend's own catalogue.
                 return {
                     "success": False,
                     "reason": "core_unavailable",
@@ -263,9 +280,10 @@ class CoreService:
                 }
             # Enforce the aggregate invariant (strip / reject blank) via the
             # verb method, then persist the resulting label through the pin-only
-            # write path (never the sync UPSERT).
-            rom.pin_emulator_override(label)
-            uow.roms.set_emulator_override(rom_id, rom.emulator_override)
+            # write path (never the sync UPSERT) — scoped to the active backend,
+            # leaving any other backend's pin for this ROM untouched.
+            rom.pin_emulator_override(backend_id, label)
+            uow.roms.set_emulator_override(rom_id, backend_id, rom.emulator_override_for(backend_id))
             install = uow.rom_installs.get(rom_id)
         # Bake outside the committed write UoW, uniform with the clear path (the
         # pinned override is the just-resolved emulator, so there is no resolver
@@ -298,8 +316,9 @@ class CoreService:
                     "reason": "not_found",
                     "message": f"ROM {rom_id} is not tracked",
                 }
-            rom.clear_emulator_override()
-            uow.roms.set_emulator_override(rom_id, rom.emulator_override)
+            backend_id = self._active_backend_id()
+            rom.clear_emulator_override(backend_id)
+            uow.roms.set_emulator_override(rom_id, backend_id, rom.emulator_override_for(backend_id))
             install = uow.rom_installs.get(rom_id)
         # Cleared pin → follow the per-platform/system default. The write UoW has
         # committed, so the resolver's own UoW now reads the landed NULL and

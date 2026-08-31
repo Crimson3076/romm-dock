@@ -15,7 +15,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, libretro_option, standalone_option
+from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.late_binding import bound
 
 from domain.rom import Rom
 from domain.rom_install import RomInstall
@@ -43,31 +45,15 @@ class FakeSystemResolver:
         return self.mapping.get(platform_slug, platform_slug)
 
 
-class FakePlatformCoreReader:
-    """In-memory ``PlatformCoreReader`` mapping platform slugs to core labels.
-
-    Returns the configured label for a slug, or ``None`` when absent. Records
-    each queried slug so a test can assert the per-platform layer was consulted
-    (or skipped when a per-game override already resolved).
-    """
-
-    def __init__(self, mapping: dict[str, str] | None = None) -> None:
-        self.mapping = mapping if mapping is not None else {}
-        self.calls: list[str] = []
-
-    def get_platform_core(self, platform_slug: str) -> str | None:
-        self.calls.append(platform_slug)
-        return self.mapping.get(platform_slug)
-
-
 def _seed_rom(
     uow: FakeUnitOfWork,
     *,
     rom_id: int,
     platform_slug: str,
     emulator_override: str | None = None,
+    backend_id: str = "retrodeck",
 ) -> None:
-    """Seed one ``Rom`` (optionally pinned to ``emulator_override``) into the UoW."""
+    """Seed one ``Rom`` (optionally pinned to ``emulator_override`` on *backend_id*) into the UoW."""
     uow.roms.save(
         Rom(
             rom_id=rom_id,
@@ -76,7 +62,7 @@ def _seed_rom(
             fs_name=f"rom-{rom_id}.gba",
             shortcut_app_id=rom_id,
             last_synced_at="2026-01-01T00:00:00+00:00",
-            emulator_override=emulator_override,
+            emulator_overrides={backend_id: emulator_override} if emulator_override is not None else {},
         )
     )
 
@@ -109,13 +95,15 @@ def _make_resolver(
     core_info: FakeCoreInfoProvider,
     resolve_system: FakeSystemResolver | None = None,
     platform_core_reader: FakePlatformCoreReader | None = None,
+    active_backend_id: str = "retrodeck",
 ) -> tuple[ActiveCoreResolver, FakeSystemResolver]:
     resolver_fn = resolve_system if resolve_system is not None else FakeSystemResolver()
     platform_reader = platform_core_reader if platform_core_reader is not None else FakePlatformCoreReader()
     resolver = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
-            core_info=core_info,
+            core_info=bound(core_info),
+            active_backend_id=bound(active_backend_id),
             platform_core_reader=platform_reader,
             resolve_system=resolver_fn,
             logger=logging.getLogger("test"),
@@ -206,13 +194,13 @@ def test_per_platform_core_beats_es_systems_default() -> None:
         # es_systems default is Snes9x — the per-platform core must override it.
         active_core=("snes9x_libretro", "Snes9x"),
     )
-    platform_reader = FakePlatformCoreReader(mapping={"snes": "bsnes"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"snes": "bsnes"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     assert resolver.active_core_for_rom(20) == ("bsnes_libretro", "bsnes")
     # The es_systems default layer was never consulted — the per-platform core resolved.
     assert core_info.active_core_calls == []
-    assert platform_reader.calls == ["snes"]
+    assert platform_reader.calls == [("retrodeck", "snes")]
 
 
 def test_per_game_override_beats_per_platform_core() -> None:
@@ -227,7 +215,7 @@ def test_per_game_override_beats_per_platform_core() -> None:
         ],
         active_core=("bsnes_libretro", "bsnes"),
     )
-    platform_reader = FakePlatformCoreReader(mapping={"snes": "bsnes"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"snes": "bsnes"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     assert resolver.active_core_for_rom(21) == ("snes9x_libretro", "Snes9x")
@@ -283,14 +271,14 @@ def test_stale_per_platform_core_degrades_to_system_default() -> None:
         available_cores=[{"core_so": "mgba_libretro", "label": "mGBA", "is_default": True}],
         active_core=("mgba_libretro", "mGBA"),
     )
-    platform_reader = FakePlatformCoreReader(mapping={"gba": "Removed Core"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"gba": "Removed Core"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     result = resolver.active_core_for_rom(30)
 
     # Degrades to the es_systems default — never a bogus "None.so", never raises.
     assert result == ("mgba_libretro", "mGBA")
-    assert platform_reader.calls == ["gba"]
+    assert platform_reader.calls == [("retrodeck", "gba")]
     assert core_info.active_core_calls == ["gba"]
 
 
@@ -301,7 +289,7 @@ def test_stale_per_platform_core_logs_warning(caplog: pytest.LogCaptureFixture) 
         available_cores=[{"core_so": "mgba_libretro", "label": "mGBA", "is_default": True}],
         active_core=("mgba_libretro", "mGBA"),
     )
-    platform_reader = FakePlatformCoreReader(mapping={"gba": "Removed Core"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"gba": "Removed Core"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     with caplog.at_level(logging.WARNING, logger="test"):
@@ -326,7 +314,7 @@ def test_no_per_platform_core_falls_through_to_system_default() -> None:
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     assert resolver.active_core_for_rom(40) == ("snes9x_libretro", "Snes9x")
-    assert platform_reader.calls == ["snes"]
+    assert platform_reader.calls == [("retrodeck", "snes")]
     assert core_info.active_core_calls == ["snes"]
 
 
@@ -336,7 +324,7 @@ def test_no_per_platform_core_falls_through_to_system_default() -> None:
 def test_missing_rom_resolves_to_none_with_warning(caplog: pytest.LogCaptureFixture) -> None:
     uow = FakeUnitOfWork()
     core_info = FakeCoreInfoProvider(active_core=("mgba_libretro", "mGBA"))
-    platform_reader = FakePlatformCoreReader(mapping={"gba": "mGBA"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"gba": "mGBA"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     with caplog.at_level(logging.WARNING, logger="test"):
@@ -390,7 +378,7 @@ def test_per_platform_core_beats_standalone_system_default() -> None:
         available_cores=[{"core_so": "pcsx2_libretro", "label": "LRPS2", "is_default": False}],
         standalone={"ps2": EmulatorInvocation.standalone("%EMULATOR_PCSX2% -batch %ROM%", "PCSX2 (Standalone)")},
     )
-    platform_reader = FakePlatformCoreReader(mapping={"ps2": "LRPS2"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"ps2": "LRPS2"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     assert resolver.active_emulator_for_rom(52) == EmulatorInvocation.libretro("pcsx2_libretro", "LRPS2")
@@ -443,7 +431,7 @@ def test_per_platform_standalone_label_resolves_standalone() -> None:
     uow = FakeUnitOfWork()
     _seed_rom(uow, rom_id=61, platform_slug="ps3", emulator_override=None)
     core_info = FakeCoreInfoProvider(options=[standalone_option(_RPCS3_COMMAND, _RPCS3_LABEL)])
-    platform_reader = FakePlatformCoreReader(mapping={"ps3": "RPCS3 Directory (Standalone)"})
+    platform_reader = FakePlatformCoreReader(retrodeck={"ps3": "RPCS3 Directory (Standalone)"})
     resolver, _ = _make_resolver(uow=uow, core_info=core_info, platform_core_reader=platform_reader)
 
     assert resolver.active_emulator_for_rom(61) == _RPCS3
@@ -583,3 +571,41 @@ def test_folder_boot_standalone_unresolvable_launcher_keeps_run_game_and_warns(
 
     assert result == _RPCS3
     assert any("sandbox" in r.message and "launcher" in r.message for r in caplog.records)
+
+
+# --- per-backend independence (issue #918 follow-up) ------------------------
+
+
+def test_per_game_pin_set_under_one_backend_is_invisible_to_another() -> None:
+    """A per-game pin recorded while EmuDeck was active never leaks into RetroDECK's
+    resolution for the same ROM — each backend's precedence chain reads its own key."""
+    uow = FakeUnitOfWork()
+    _seed_rom(uow, rom_id=80, platform_slug="n64", emulator_override="ParaLLEl N64", backend_id="emudeck")
+    core_info = FakeCoreInfoProvider(
+        active_core=("mupen64plus_next_libretro", "Mupen64Plus-Next"),
+        available_cores=[{"core_so": "mupen64plus_next_libretro", "label": "Mupen64Plus-Next", "is_default": True}],
+    )
+    resolver, _ = _make_resolver(uow=uow, core_info=core_info, active_backend_id="retrodeck")
+
+    # RetroDECK never pinned anything for this ROM — falls through to the system default,
+    # never EmuDeck's "ParaLLEl N64" pin.
+    assert resolver.active_core_for_rom(80) == ("mupen64plus_next_libretro", "Mupen64Plus-Next")
+
+
+def test_per_platform_pin_is_scoped_to_its_own_backend() -> None:
+    """A per-platform core set for one backend never applies while a different
+    backend is active, even for the same platform slug."""
+    uow = FakeUnitOfWork()
+    _seed_rom(uow, rom_id=81, platform_slug="snes")
+    platform_reader = FakePlatformCoreReader(mapping={"emudeck": {"snes": "bsnes-hd"}})
+    core_info = FakeCoreInfoProvider(
+        active_core=("snes9x_libretro", "Snes9x"),
+        available_cores=[{"core_so": "snes9x_libretro", "label": "Snes9x", "is_default": True}],
+    )
+    resolver, _ = _make_resolver(
+        uow=uow, core_info=core_info, platform_core_reader=platform_reader, active_backend_id="retrodeck"
+    )
+
+    # RetroDECK has no per-platform pin for snes — falls through to the system default,
+    # never EmuDeck's "bsnes-hd".
+    assert resolver.active_core_for_rom(81) == ("snes9x_libretro", "Snes9x")

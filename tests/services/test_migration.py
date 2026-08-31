@@ -23,6 +23,7 @@ from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.late_binding import bound
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
@@ -86,7 +87,8 @@ def plugin(tmp_path, fake_romm_api):
     p._active_core = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
-            core_info=p._core_info,
+            core_info=bound(p._core_info),
+            active_backend_id=bound("retrodeck"),
             platform_core_reader=FakePlatformCoreReader(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             logger=decky.logger,
@@ -102,6 +104,7 @@ def plugin(tmp_path, fake_romm_api):
             firmware_file_store=FirmwareFileAdapter(),
             launcher_paths=FakeRetroDeckPaths(),
             core_info=FakeCoreInfoProvider(),
+            active_backend_id=lambda: "retrodeck",
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             platform_core_reader=FakePlatformCoreReader(),
             uow_factory=FakeUnitOfWorkFactory(),
@@ -1160,7 +1163,7 @@ class TestMigrationRelaunchOptions:
             uow.kv_config.set("retrodeck_home_path", new_home)
         _seed_install(plugin._uow, 1, file_path=old_rom, system="psx", platform_slug="psx", app_id=4242)
         with plugin._uow as uow:
-            uow.roms.set_emulator_override(1, "PCSX ReARMed")
+            uow.roms.set_emulator_override(1, "retrodeck", "PCSX ReARMed")
 
         result = await plugin.migrate_retrodeck_files()
         assert result["success"] is True
@@ -1205,7 +1208,7 @@ class TestMigrationRelaunchOptions:
             uow.kv_config.set("retrodeck_home_path", new_home)
         _seed_install(plugin._uow, 1, file_path=old_rom, system="psx", platform_slug="psx", app_id=4242)
         with plugin._uow as uow:
-            uow.roms.set_emulator_override(1, "Removed Core")
+            uow.roms.set_emulator_override(1, "retrodeck", "Removed Core")
 
         with caplog.at_level(logging.WARNING):
             result = await plugin.migrate_retrodeck_files()

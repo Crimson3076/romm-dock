@@ -1650,7 +1650,7 @@ class TestDoSyncPerUnit:
         _seed_install(plugin, 10, file_path="/roms/psx/pinned.chd", platform_slug="psx")
         _seed_install(plugin, 11, file_path="/roms/psx/plain.chd", platform_slug="psx")
         with plugin._uow:
-            plugin._uow.roms.set_emulator_override(10, "PCSX ReARMed")
+            plugin._uow.roms.set_emulator_override(10, "retrodeck", "PCSX ReARMed")
 
         plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
         plugin._sync_service._chunk_dispatcher._wait_for_unit_complete = _fake_wait_set_event
@@ -1692,7 +1692,7 @@ class TestDoSyncPerUnit:
         plugin.settings["enabled_platforms"] = {"1": True}
         _seed_install(plugin, 10, file_path="/roms/psx/stale.chd", platform_slug="psx")
         with plugin._uow:
-            plugin._uow.roms.set_emulator_override(10, "Removed Core")
+            plugin._uow.roms.set_emulator_override(10, "retrodeck", "Removed Core")
 
         plugin._sync_service._orchestrator._download_artwork = AsyncMock(return_value={})
         plugin._sync_service._chunk_dispatcher._wait_for_unit_complete = _fake_wait_set_event

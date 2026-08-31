@@ -69,7 +69,6 @@ if TYPE_CHECKING:
         AdoptionMoveStore,
         Clock,
         ComputeSyncActionFn,
-        CoreInfoProvider,
         CoreNameProviderFn,
         CoverArtFileStore,
         DebugLogger,
@@ -130,7 +129,6 @@ class AdapterBundle:
     rom_file_store: RomFileStore
     save_file_store: SaveFileStore
     path_probe: PathExistsReader
-    core_info_provider: CoreInfoProvider
     renderer_rss: RendererRssFn
     renderer_gc: RendererGcFn
     game_process: GameProcessControl
@@ -347,7 +345,7 @@ def bootstrap(
     # preserving wrapper over retrodeck_paths) and EmuDeck (emu-atlas-backed).
     # Both share http_adapter.resolve_system, the same platform->system seam
     # CoreService's own bake resolves through.
-    retrodeck_launcher_backend_factory = RetroDeckLauncherBackendFactory(paths=retrodeck_paths)
+    retrodeck_launcher_backend_factory = RetroDeckLauncherBackendFactory(paths=retrodeck_paths, core_info=core_resolver)
     emudeck_launcher_backend_factory = EmuDeckLauncherBackendFactory(
         user_home=user_home,
         resolve_system=http_adapter.resolve_system,
@@ -392,7 +390,6 @@ def bootstrap(
         rom_file_store=rom_file_store,
         save_file_store=save_file_store,
         path_probe=path_probe,
-        core_info_provider=core_resolver,
         renderer_rss=renderer_rss,
         renderer_gc=renderer_gc,
         game_process=game_process,

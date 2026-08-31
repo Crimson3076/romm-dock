@@ -9,15 +9,24 @@ seam, built once EmuDeck became a concrete second target (see
 [ADR-0029](../adr/0029-launcher-backend-seam-and-switch-as-rebake.md) for the full decision record, including why it
 does not reintroduce the runtime-dispatch shape ADR-0009 retired).
 
-The seam covers two independent things a backend answers: **rendering** (`LaunchCommandRenderer` — how an
-`EmulatorInvocation` becomes an OS-executable command) and **file placement** (`LauncherPaths` — where downloads,
-BIOS files, saves, and savestates land on disk). An install that has only EmuDeck — no RetroDECK at all — needs both:
-rendering alone would launch games but still write every downloaded ROM and BIOS file under RetroDECK's paths.
+The seam covers three independent things a backend answers: **rendering** (`LaunchCommandRenderer` — how an
+`EmulatorInvocation` becomes an OS-executable command), **file placement** (`LauncherPaths` — where downloads,
+BIOS files, saves, and savestates land on disk), and **emulator selection** (`CoreInfoProvider` — which emulators
+exist to choose between for a system, and which one is the default). An install that has only EmuDeck — no RetroDECK
+at all — needs all three: rendering and paths alone would launch games and place files correctly, but the System-page
+and per-game picker menus would still be empty (RetroDECK's `es_systems.xml` is unreadable with no RetroDECK
+installed), and there would be nothing to pick.
 
-**Nothing about emulator selection changes.** [Core & Emulator Selection](core-emulator-selection.md)'s
-`ActiveCoreResolver` — the per-game/per-platform override layered over the es_systems default — decides WHICH
-`EmulatorInvocation` a ROM resolves to, exactly as before, on every backend. The launcher-backend seam decides only
-how that invocation is **rendered** into an OS-executable command on the currently-selected backend.
+**Emulator selection follows the active backend too.** [Core & Emulator
+Selection](core-emulator-selection.md)'s `ActiveCoreResolver` still decides WHICH `EmulatorInvocation` a ROM resolves
+to — the per-game/per-platform override layered over the system default — but both the OPTIONS it chooses from and
+EACH LAYER'S STORAGE are now scoped to whichever backend is currently active: `CoreInfoProvider.get_emulator_options`
+comes from the active backend's own catalogue (RetroDECK's `es_systems.xml`, or EmuDeck's atlas-read catalogue), and
+the per-game (`roms.emulator_override`, a JSON object keyed by `backend_id`) and per-platform (`settings.json`
+`platform_cores`, nested `{backend_id: {platform_slug: label}}`) pins are independent per backend — pinning a core
+under EmuDeck never touches, overwrites, or is visible from RetroDECK's pin for the same ROM/platform, and vice versa.
+Switching backends switches the picker's contents and which pin layer applies, exactly like it already switches
+rendering and file placement.
 
 ## The seam
 
@@ -28,21 +37,30 @@ Two Protocols in `services/protocols/launcher_backend.py`:
   (`services/launcher_backend/registry.py`) — the extensibility point a third backend registers against with no
   call-site change anywhere else.
 - **`LauncherBackend`** — a factory-bound instance: `resolve_invocation(rom, emulator)`, `build_launch_options(invocation,
-  path)`, `roms_path()`, `bios_path()`, `saves_path()`, `states_path()`, `validate()`. The path getters use the same
-  names as `RetroDeckPaths` on purpose — same shape, same best-effort/never-raise contract — so a backend is a
-  drop-in behind `LauncherPaths` wherever a service used to read RetroDECK's paths directly. `states_path()` may
-  return `""` where a backend has no flat savestate root (EmuDeck's savestate location is per-core/per-content via
-  atlas, not a single directory the way saves/roms/bios are).
+  path)`, `roms_path()`, `bios_path()`, `saves_path()`, `states_path()`, `validate()`, plus the five `CoreInfoProvider`
+  methods (`get_active_core`, `get_default_emulator`, `get_emulator_options`, `resolve_sandbox_launcher`,
+  `reset_cache` — `LauncherBackend` extends `CoreInfoProvider`). The path getters use the same names as
+  `RetroDeckPaths` on purpose — same shape, same best-effort/never-raise contract — so a backend is a drop-in behind
+  `LauncherPaths` wherever a service used to read RetroDECK's paths directly. `states_path()` may return `""` where a
+  backend has no flat savestate root (EmuDeck's savestate location is per-core/per-content via atlas, not a single
+  directory the way saves/roms/bios are).
 
 `LauncherBackendService` (`services/launcher_backend/service.py`) owns the **active** binding — read from
 `settings.json`'s `launcher_backend` / `launcher_backend_installation` keys (seeded to `"retrodeck"` by migration
-v14) — and implements two narrower Protocols by delegating to whichever `LauncherBackend` is currently bound:
+v14) — and implements three narrower Protocols by delegating to whichever `LauncherBackend` is currently bound:
 
 - **`LaunchCommandRenderer`** (`resolve_invocation` / `build_launch_options` only). Five call sites take this
   renderer as an injected config field instead of importing `domain.shortcut_data`'s RetroDECK functions directly:
   `DiscService`, `RelaunchOptionsResolver`, `CoreService`, `RomInstallRecorder`, and `SyncOrchestrator` (via
   `domain.shortcut_data.build_shortcuts_data`'s `resolve_invocation`/`render_launch_options` keyword parameters,
   which default to the RetroDECK functions so every caller that doesn't opt in is unaffected).
+- **`CoreInfoProvider`** (all five methods). `ActiveCoreResolver`, `CoreService`, and `FirmwareService` take this as
+  an injected `core_info` field instead of the concrete `adapters.es_de_config.CoreResolver` — the same three
+  consumers [Core & Emulator Selection](core-emulator-selection.md) already documents, now reading through the
+  active backend rather than always RetroDECK's `es_systems.xml`. `ActiveCoreResolver` is constructed before
+  `LauncherBackendService` exists (the same producer/consumer cycle `launch_renderer` breaks), so its `core_info` and
+  `active_backend_id` fields are `LateBinding`, bound once `LauncherBackendService` is built;
+  `CoreService`/`FirmwareService` are constructed after and take plain values.
 - **`LauncherPaths`** (`roms_path` / `bios_path` / `saves_path` / `states_path`, deliberately omitting
   `retrodeck_home`/`config_path`/`config_health`, which stay RetroDECK-specific vocabulary). Eleven services take
   this as an injected `launcher_paths` config field instead of `RetroDeckPaths` directly — every downloads, BIOS,
@@ -183,7 +201,8 @@ existing shortcut's `launch_options` (however it got there) to the newly-selecte
 
 ## Related pages
 
-- [Core & Emulator Selection](core-emulator-selection.md) — emulator selection, unchanged by which backend is active.
+- [Core & Emulator Selection](core-emulator-selection.md) — the per-game/per-platform precedence chain, and the
+  per-backend storage shape this page's `CoreInfoProvider` section covers.
 - [Steam Non-Steam Shortcuts](steam-non-steam-shortcuts.md) — `launch_options` writes, appId stability.
 - [ADR-0029](../adr/0029-launcher-backend-seam-and-switch-as-rebake.md) — the decision record.
 - [ADR-0009](../adr/0009-launcher-pure-exec-wrapper-baked-launch-options.md) — the exec-wrapper + baked-command model

@@ -87,6 +87,7 @@ def _make_firmware_service(
     firmware_file_store=None,
     launcher_paths: FakeRetroDeckPaths | None = None,
     core_info: FakeCoreInfoProvider | None = None,
+    active_backend_id=None,
     resolve_system: FakeSystemResolver | None = None,
     platform_core_reader: FakePlatformCoreReader | None = None,
     logger=None,
@@ -97,6 +98,8 @@ def _make_firmware_service(
     Mirrors the SQLite wiring: persistence flows entirely through
     ``uow_factory`` (no state dict, no persisters). Defaults keep every
     call-site terse; pass overrides only for the axis under test.
+    ``active_backend_id`` defaults to the "retrodeck" backend, mirroring the
+    plugin's default before any backend switch.
     """
     import decky
 
@@ -110,6 +113,7 @@ def _make_firmware_service(
             firmware_file_store=firmware_file_store if firmware_file_store is not None else FirmwareFileAdapter(),
             launcher_paths=launcher_paths if launcher_paths is not None else FakeRetroDeckPaths(),
             core_info=core_info if core_info is not None else FakeCoreInfoProvider(),
+            active_backend_id=active_backend_id if active_backend_id is not None else lambda: "retrodeck",
             resolve_system=resolve_system if resolve_system is not None else FakeSystemResolver(),
             platform_core_reader=platform_core_reader if platform_core_reader is not None else FakePlatformCoreReader(),
             uow_factory=uow_factory if uow_factory is not None else FakeUnitOfWorkFactory(),
@@ -387,13 +391,13 @@ class TestGetFirmwareStatus:
     @pytest.mark.asyncio
     async def test_active_core_label_reflects_per_platform_override(self):
         """A per-platform pin surfaces on the System-page label immediately (#1305)."""
-        label = await self._psp_active_core_label(FakePlatformCoreReader({"psp": "PPSSPP"}))
+        label = await self._psp_active_core_label(FakePlatformCoreReader(retrodeck={"psp": "PPSSPP"}))
         assert label == "PPSSPP"
 
     @pytest.mark.asyncio
     async def test_active_core_label_degrades_when_override_stale(self):
         """An override that no longer resolves falls back to the default emulator label."""
-        label = await self._psp_active_core_label(FakePlatformCoreReader({"psp": "No Longer Here"}))
+        label = await self._psp_active_core_label(FakePlatformCoreReader(retrodeck={"psp": "No Longer Here"}))
         assert label == "PPSSPP (Standalone)"
 
     @pytest.mark.asyncio

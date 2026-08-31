@@ -54,6 +54,11 @@ class _FakeIssue:
 class _FakeCatalogueAnswer:
     entries: tuple[_FakeEntry, ...] = ()
     caveats: tuple[_FakeIssue, ...] = ()
+    # Non-empty by default: every existing fixture represents a catalogue that
+    # WAS read (possibly with zero entries for a given system) — the real
+    # atlas answer's ``sources`` distinguishes that from "no catalogue found
+    # at all", which ``get_emulator_options``'s ``available`` flag keys on.
+    sources: tuple[str, ...] = ("fake",)
 
 
 @dataclass
@@ -450,6 +455,92 @@ class TestPathDelegation:
         # atlas has no flat savestates root for EmuDeck — resolved per-content, not as a directory.
         backend = _backend(tmp_path, _FakeInstallation())
         assert backend.states_path() == ""
+
+
+class TestCoreInfoProvider:
+    """The emulator-selection catalogue this backend exposes to the System-page
+    and per-game picker menus, and to ActiveCoreResolver (#918 follow-up)."""
+
+    def _two_libretro_entries(self) -> dict[str, list[_FakeEntry]]:
+        return {
+            "snes": [
+                _FakeEntry(label="Mgba", command="%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/mgba_libretro.so %ROM%"),
+                _FakeEntry(label="Snes9x", command="%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/snes9x_libretro.so %ROM%"),
+            ]
+        }
+
+    def test_get_emulator_options_classifies_every_entry(self, tmp_path):
+        installation = _FakeInstallation(entries_by_system=self._two_libretro_entries())
+        backend = _backend(tmp_path, installation)
+        result = backend.get_emulator_options("snes")
+        assert result["available"] is True
+        assert [o.label for o in result["options"]] == ["Mgba", "Snes9x"]
+        assert [o.core_so for o in result["options"]] == ["mgba_libretro", "snes9x_libretro"]
+
+    def test_get_emulator_options_unavailable_when_no_catalogue_source(self, tmp_path):
+        installation = _FakeInstallation(entries_by_system={})
+
+        def emulators_for(system: str, *, content_path: str | None = None) -> _FakeCatalogueAnswer:
+            return _FakeCatalogueAnswer(sources=())
+
+        installation.emulators_for = emulators_for  # type: ignore[method-assign]
+        backend = _backend(tmp_path, installation)
+        result = backend.get_emulator_options("snes")
+        assert result == {"available": False, "options": []}
+
+    def test_get_emulator_options_available_for_known_system_with_no_entries(self, tmp_path):
+        # A catalogue WAS read, it just declares nothing for this system —
+        # distinct from no catalogue at all.
+        installation = _FakeInstallation(entries_by_system={})
+        backend = _backend(tmp_path, installation)
+        assert backend.get_emulator_options("snes") == {"available": True, "options": []}
+
+    def test_get_default_emulator_is_first_bakeable_entry(self, tmp_path):
+        installation = _FakeInstallation(entries_by_system=self._two_libretro_entries())
+        backend = _backend(tmp_path, installation)
+        assert backend.get_default_emulator("snes") == EmulatorInvocation.libretro("mgba_libretro", "Mgba")
+
+    def test_get_default_emulator_none_when_unavailable(self, tmp_path):
+        installation = _FakeInstallation(entries_by_system={})
+
+        def emulators_for(system: str, *, content_path: str | None = None) -> _FakeCatalogueAnswer:
+            return _FakeCatalogueAnswer(sources=())
+
+        installation.emulators_for = emulators_for  # type: ignore[method-assign]
+        backend = _backend(tmp_path, installation)
+        assert backend.get_default_emulator("snes") is None
+
+    def test_get_active_core_skips_a_leading_standalone_entry(self, tmp_path):
+        installation = _FakeInstallation(
+            entries_by_system={
+                "gba": [
+                    _FakeEntry(label="mGBA (Standalone)", command="%EMULATOR_MGBA% %ROM%"),
+                    _FakeEntry(label="mGBA", command="%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/mgba_libretro.so %ROM%"),
+                ]
+            }
+        )
+        backend = _backend(tmp_path, installation, system="gba")
+        # The first entry (standalone) is skipped; the first LIBRETRO-classified
+        # entry — not necessarily the system default — is reported.
+        assert backend.get_active_core("gba") == ("mgba_libretro", "mGBA")
+
+    def test_get_active_core_none_when_no_libretro_entry(self, tmp_path):
+        installation = _FakeInstallation(
+            entries_by_system={"wiiu": [_FakeEntry(label="Cemu", command="%EMULATOR_CEMU% %ROM%")]}
+        )
+        backend = _backend(tmp_path, installation, system="wiiu")
+        assert backend.get_active_core("wiiu") == (None, None)
+
+    def test_resolve_sandbox_launcher_always_none(self, tmp_path):
+        # EmuDeck has no RetroDECK sandbox indirection to resolve.
+        backend = _backend(tmp_path, _FakeInstallation())
+        assert (
+            backend.resolve_sandbox_launcher("%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/mgba_libretro.so %ROM%") is None
+        )
+
+    def test_reset_cache_is_a_harmless_noop(self, tmp_path):
+        backend = _backend(tmp_path, _FakeInstallation())
+        backend.reset_cache()  # must not raise
 
 
 class TestValidate:

@@ -41,7 +41,6 @@ _EXPECTED_READS = frozenset(
     {
         "count",
         "get",
-        "get_all_emulator_overrides",
         "get_by_app_id",
         "get_cache_epoch",
         "get_latest_completed",
@@ -163,7 +162,6 @@ class TestReadsAreNotFlagged:
             "def go(uow):\n"
             "    uow.roms.get(1)\n"
             "    uow.roms.get_by_app_id(2)\n"
-            "    uow.roms.get_all_emulator_overrides()\n"
             "    uow.roms.iter_all()\n"
             "    uow.roms.iter_by_platform('n64')\n"
             "    uow.roms.iter_by_group_key('k')\n"

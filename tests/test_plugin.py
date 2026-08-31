@@ -1127,7 +1127,6 @@ class TestMainStartupOrdering:
                 rom_file_store=MagicMock(),
                 save_file_store=MagicMock(),
                 path_probe=MagicMock(),
-                core_info_provider=MagicMock(),
                 renderer_rss=FakeRendererRss(),
                 renderer_gc=FakeRendererGc(),
                 game_process=FakeGameProcessControlAdapter(),
