@@ -78,9 +78,10 @@ class TestResolveLaunchOptions:
     def test_happy_path_renders_proton_command(self):
         resolver = _resolver(files=[_EXE1])
         result = resolver.resolve_launch_options(_install(), None)
-        assert result.startswith('mkdir -p "/runtime/proton-prefixes/1"')
+        assert result.startswith("env ")
         assert result.endswith(f'"{_EXE1}"')
         assert '"/steam/proton" run' in result
+        assert "&&" not in result
 
     def test_no_proton_found_is_unlaunchable(self):
         resolver = _resolver(files=[_EXE1], proton=None)

@@ -506,20 +506,26 @@ class TestResolveProtonInvocation:
             steam_install_path="/steam",
         )
 
-    def test_renders_mkdir_env_and_run(self):
+    def test_renders_env_and_run_with_no_shell_operators(self):
         result = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/42")
         assert result == (
-            'mkdir -p "/runtime/proton-prefixes/42" && env '
+            "env "
             'STEAM_COMPAT_DATA_PATH="/runtime/proton-prefixes/42" '
             'STEAM_COMPAT_CLIENT_INSTALL_PATH="/steam" '
             '"/steam/compatibilitytools.d/GE-Proton9-27/proton" run'
         )
+        # No shell control operators (&&, ;, |) — bin/rom-launcher is a plain
+        # `exec "$@"`, and whether Steam hands a shortcut's launch options to
+        # that as pre-split argv or through a real shell is unverified either
+        # way, so the baked command must be a single flat exec.
+        assert "&&" not in result
+        assert ";" not in result
 
     def test_composes_with_build_launch_options(self):
         invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1")
         launch_options = build_launch_options(invocation, "/roms/win/game-1/Game.exe")
         assert launch_options == (
-            'mkdir -p "/runtime/proton-prefixes/1" && env '
+            "env "
             'STEAM_COMPAT_DATA_PATH="/runtime/proton-prefixes/1" '
             'STEAM_COMPAT_CLIENT_INSTALL_PATH="/steam" '
             '"/steam/compatibilitytools.d/GE-Proton9-27/proton" run "/roms/win/game-1/Game.exe"'
@@ -543,7 +549,7 @@ class TestResolveProtonInvocation:
 class TestBuildShortcutsDataWindows:
     """Tests for build_shortcuts_data()'s native-Windows branch."""
 
-    _WIN_LAUNCH_OPTIONS = 'mkdir -p "/prefixes/1" && env ... "/steam/proton" run "/roms/win/g/Game.exe"'
+    _WIN_LAUNCH_OPTIONS = 'env ... "/steam/proton" run "/roms/win/g/Game.exe"'
 
     def test_windows_rom_uses_windows_launch_options(self):
         roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]

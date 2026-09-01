@@ -189,12 +189,18 @@ def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str)
 
     Mirrors :func:`resolve_emulator_invocation`'s role for the RetroDECK/ES-DE
     launch: the prefix :func:`build_launch_options` appends the picked ``.exe``
-    path to (single-quoted-argument composition, same call). *compat_data_path*
-    is prefixed with a self-healing ``mkdir -p`` — the per-ROM Proton prefix
-    directory (``ProtonLocator.compat_data_path``) is never created ahead of
-    time, so the baked command creates it itself on every launch instead of a
-    service performing raw filesystem I/O (services.md forbids that) or a
-    one-time creation a user could delete out from under a later launch.
+    path to (single-quoted-argument composition, same call). This is a single
+    flat ``env VAR=... VAR=... <binary> run`` command, deliberately with no
+    shell control operators (no ``&&``, no ``;``): ``bin/rom-launcher`` is a
+    plain ``exec "$@"``, and whether Steam hands a shortcut's exe+launch
+    options to that as pre-split argv or through a real shell is not
+    something this plugin controls or has verified either way — a command
+    that only a shell could interpret correctly is not safe to bake. The
+    per-ROM compat-data prefix (``ProtonLocator.compat_data_path``) is
+    therefore never created here: Proton's own launcher script creates
+    ``STEAM_COMPAT_DATA_PATH`` (and initializes the wine prefix inside it) on
+    first run when it does not already exist — the same thing Steam's own
+    compat-tool assignment relies on for any other non-Steam Windows game.
 
     Every path rendered here — the compat-data prefix, Steam's own install
     root, the Proton binary — is plugin/system-derived, never
@@ -203,7 +209,7 @@ def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str)
     :func:`build_launch_options` appends is.
     """
     return (
-        f'mkdir -p "{compat_data_path}" && env '
+        f"env "
         f'STEAM_COMPAT_DATA_PATH="{compat_data_path}" '
         f'STEAM_COMPAT_CLIENT_INSTALL_PATH="{proton.steam_install_path}" '
         f'"{proton.binary_path}" run'
