@@ -113,7 +113,16 @@ class CoreService:
 
     def _platform_core_info_io(self, rom_id: int) -> dict[str, Any]:
         rom = self._read_rom(rom_id)
-        if rom is None:
+        # A native-Windows ROM (raw platform_slug == "win") has no emulator/core
+        # step at all (ADR-0029) — it launches through the dedicated exe picker +
+        # Proton, never RetroDECK/ES-DE. Guarded explicitly rather than relying on
+        # "win" having no es_systems.xml entry, which is what actually keeps this
+        # unreachable today: CoreService has no windows_resolver seam of its own,
+        # so a future platform_map entry for "win" would otherwise let a per-game
+        # or per-platform core pin silently override the Proton-baked launch with
+        # a plain RetroDECK one (the raw file_path — e.g. a Windows ROM's largest
+        # data file, never an .exe — as the bake path).
+        if rom is None or rom.platform_slug == "win":
             return {
                 "emulators": [],
                 "emulator_data_available": True,
@@ -153,7 +162,15 @@ class CoreService:
         so a multi-disc ROM keeps its persisted ``selected_disc`` rather than
         reverting to disc 1 / the m3u (a single-disc ROM bakes its ``file_path``
         unchanged).
+
+        A no-op for the native-Windows pseudo-platform (``platform_slug ==
+        "win"``, ADR-0029): it has no emulator/core concept, so nothing is
+        written to ``settings.json`` and no ROM is rebaked. The caller
+        (:meth:`set_system_core`) still returns success — there is nothing to
+        fail, just nothing to do.
         """
+        if platform_slug == "win":
+            return []
         if core_label:
             self._settings["platform_cores"][platform_slug] = core_label
         else:
@@ -248,6 +265,16 @@ class CoreService:
                     "reason": "not_found",
                     "message": f"ROM {rom_id} is not tracked",
                 }
+            # A native-Windows ROM has no emulator/core step at all (ADR-0029) —
+            # refuse before any write rather than depending on "win" resolving to
+            # an empty ES-DE options list. See the matching guard in
+            # _platform_core_info_io.
+            if rom.platform_slug == "win":
+                return {
+                    "success": False,
+                    "reason": ErrorCode.UNSUPPORTED.value,
+                    "message": f"ROM {rom_id} is a native-Windows ROM — use the executable picker instead",
+                }
             system = self._resolve_system(rom.platform_slug)
             invocation = label_to_invocation(self._core_info.get_emulator_options(system)["options"], label)
             if invocation is None:
@@ -279,10 +306,13 @@ class CoreService:
         on the live shortcut. Because the resolved default may itself be a
         per-platform core, the recomputed command bakes the ROM's FULL active core
         (the ``-e`` override form, or the plain launch when the platform resolves
-        to ``(None, None)``) — never an unconditional plain launch. Clearing is
-        always valid — there is no label to resolve. When the ROM is unknown the
-        canonical failure shape is returned; when it is uninstalled or unbound the
-        NULL still lands and ``launch_options``/``app_id`` are ``None``.
+        to ``(None, None)``) — never an unconditional plain launch. Clearing
+        needs no label to resolve, so it is otherwise always valid — except a
+        native-Windows ROM (``platform_slug == "win"``, ADR-0029), which has no
+        emulator-override concept and is refused with the canonical failure
+        shape before any write. When the ROM is unknown the same canonical
+        failure shape is returned; when it is uninstalled or unbound the NULL
+        still lands and ``launch_options``/``app_id`` are ``None``.
         """
         return await self._loop.run_in_executor(None, self._clear_game_core_io, rom_id)
 
@@ -294,6 +324,17 @@ class CoreService:
                     "success": False,
                     "reason": "not_found",
                     "message": f"ROM {rom_id} is not tracked",
+                }
+            # A native-Windows ROM has no emulator/core concept to clear
+            # (ADR-0029) — same guard as _set_game_core_io, so a stray clear can
+            # never re-bake the shortcut through the RetroDECK/active_core path
+            # (which would discard the Proton-wrapped exe launch for the raw
+            # install file_path).
+            if rom.platform_slug == "win":
+                return {
+                    "success": False,
+                    "reason": ErrorCode.UNSUPPORTED.value,
+                    "message": f"ROM {rom_id} is a native-Windows ROM — use the executable picker instead",
                 }
             rom.clear_emulator_override()
             uow.roms.set_emulator_override(rom_id, rom.emulator_override)
