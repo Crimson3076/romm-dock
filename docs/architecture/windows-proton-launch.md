@@ -145,8 +145,8 @@ a path relative to the exe's own folder. Every Steam shortcut this plugin create
 other platform, since RetroDECK/ES-DE takes the ROM path as an argument and never depends on the launcher's own working
 directory. A native-Windows executable is different: many resolve their own data files relative to their own folder,
 exactly as a real Windows game launched from its own install directory would, and nothing in the launch model gave one
-that folder as its working directory until this fix. `-C` folds into the SAME flat `env` invocation rather than a
-second command or a shell `cd`, so the no-shell-operator property still holds.
+that folder as its working directory until this fix. `-C` folds into the SAME flat `env` invocation rather than a second
+command or a shell `cd`, so the no-shell-operator property still holds.
 
 ## Why the plugin locates and invokes Proton itself
 
