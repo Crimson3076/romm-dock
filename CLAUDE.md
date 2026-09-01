@@ -1267,7 +1267,7 @@ Format: **invariant** — tier — enforced by.
   is not a hypothetical: an earlier `mkdir -p "<prefix>" && env …` form was written, then reverted before merge once
   the gap was noticed — the only enforcement this rule has had so far is that one review catching it once. See
   [ADR-0038](docs/adr/0038-plugin-owns-proton-invocation.md) and
-  [windows-proton-launch.md](docs/architecture/windows-proton-launch.md#why-the-compat-data-prefix-is-never-pre-created-and-the-shell-operator-finding)
+  [windows-proton-launch.md](docs/architecture/windows-proton-launch.md#why-the-compat-data-prefix-is-created-in-python-not-in-the-baked-command)
 
 When a change applies a guard / sanitize / backup / grouping pattern, sweep for sibling sites of the same pattern — the
 register is what that sweep checks against.

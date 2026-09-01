@@ -60,7 +60,17 @@ class ProtonLocatorAdapter:
         return None
 
     def compat_data_path(self, rom_id: int) -> str:
-        return os.path.join(self._runtime_dir, "proton-prefixes", str(rom_id))
+        # Created here, not baked as a shell `mkdir` in the launch command
+        # (ADR-0029 decision 4 rejected that for depending on unverified shell
+        # interpretation). This directory is under the plugin's OWN runtime_dir
+        # tree, not Steam's compatdata layout, so nothing else — not Steam, not
+        # Proton — has ever created `proton-prefixes/` or the per-ROM leaf
+        # under it; a real Steam-library game gets this for free because Steam
+        # itself pre-creates the compatdata dir before invoking Proton, which
+        # doesn't apply to a non-Steam-launched executable like this one's.
+        path = os.path.join(self._runtime_dir, "proton-prefixes", str(rom_id))
+        os.makedirs(path, exist_ok=True)
+        return path
 
     def _resolve_steam_root(self) -> str | None:
         # .local/share/Steam checked first — matches SteamConfigAdapter.find_steam_user_dir

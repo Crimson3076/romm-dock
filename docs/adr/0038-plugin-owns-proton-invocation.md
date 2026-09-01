@@ -99,11 +99,22 @@ former, `&&` is not a control operator at all — it is a literal, meaningless a
 path, and the entire launch silently fails. A command whose correctness depends on shell interpretation is not safe to
 bake without proof that a shell is actually in the loop, and no such proof exists for this launch path.
 
-The fix needed no workaround: Proton's own launcher script creates `STEAM_COMPAT_DATA_PATH` (and initializes the wine
-prefix inside it) on first run when it does not already exist — the same behavior Steam's own compat-tool assignment
-already relies on for every other non-Steam Windows game. Dropping the `mkdir -p` prefix entirely leaves a single flat
-`env VAR=… VAR=… "<proton>" run "<exe>"` command with no control operators of any kind, safe under either invocation
-mechanism.
+Dropping the `mkdir -p` prefix from the _baked command_ was still right — a shell-dependent launch string is never safe
+to ship — but the assumption that replaced it (Proton's own launcher script creates `STEAM_COMPAT_DATA_PATH` on first
+run, the same behavior Steam's own compat-tool assignment relies on) turned out to be unverified and, on real hardware,
+wrong for this launch path specifically: a real Steam-library game gets that directory for free because **Steam
+itself** pre-creates `steamapps/compatdata/<appid>/` before ever invoking Proton — Proton has never needed to create
+its own prefix root from scratch. This plugin's per-ROM prefix lives under its own `runtime_dir`
+(`<runtime_dir>/proton-prefixes/<rom_id>`), a tree nothing else creates, so nothing created it — and the game silently
+failed to launch: Proton exits before ever reaching the target `.exe`, and nothing surfaces that failure back through
+Steam's non-Steam-shortcut launch path.
+
+The actual fix creates the directory in Python, not in the baked shell string:
+`adapters.proton_locator.ProtonLocatorAdapter.compat_data_path` calls `os.makedirs(path, exist_ok=True)` itself before
+returning the path, so the directory exists by the time `resolve_proton_invocation` ever sees it. This keeps the
+no-shell-operator property intact (the invocation string still has none) without depending on an unverified claim about
+Proton's own behavior — the plugin owns the one filesystem fact its own launch path needs, in the layer that already
+owns I/O (adapters), rather than baking it into a command a shell may or may not interpret.
 
 ## Consequences
 

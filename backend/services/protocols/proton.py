@@ -25,8 +25,10 @@ class ProtonLocator(Protocol):
     ``locate`` scans the standard Steam install locations for a Proton build
     (official Valve Proton and community GE-Proton) and returns the one to
     launch with, or ``None`` when none is found. ``compat_data_path`` computes
-    (but never creates) the directory a ROM's ``STEAM_COMPAT_DATA_PATH`` should
-    point at — a service-layer concern owns creating it.
+    AND creates the directory a ROM's ``STEAM_COMPAT_DATA_PATH`` should point
+    at — unlike a real Steam-library game, nothing else ever creates this
+    directory (it lives under the plugin's own ``runtime_dir``, not Steam's
+    ``compatdata/`` layout), so the read seam owns making it exist too.
     """
 
     def locate(self) -> ProtonInstallation | None:
@@ -38,8 +40,8 @@ class ProtonLocator(Protocol):
         ...
 
     def compat_data_path(self, rom_id: int) -> str:
-        """Return the per-ROM ``STEAM_COMPAT_DATA_PATH`` prefix for *rom_id*.
+        """Return the per-ROM ``STEAM_COMPAT_DATA_PATH`` prefix for *rom_id*, creating it.
 
-        A path string only — the directory is not created here.
+        Idempotent — safe to call on every bake, not just the first launch.
         """
         ...
