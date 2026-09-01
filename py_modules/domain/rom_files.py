@@ -39,6 +39,36 @@ def is_multi_file_download(rom_detail: dict[str, Any]) -> bool:
     return len(files) > 1 or bool(rom_detail.get("has_multiple_files", False))
 
 
+def should_extract_windows_archive(platform_slug: str, file_name: str) -> bool:
+    """Decide whether a downloaded native-Windows ``.zip`` must be extracted to find its ``.exe``.
+
+    This is a SEPARATE decision from :func:`is_multi_file_download`, which is
+    RomM's own "will the download endpoint serve this as a ZIP" gate. This gate
+    answers a different question — "even though RomM served this as a single
+    file, must the plugin unpack it to find something launchable" — and applies
+    only on the single-file path: a RomM-reported multi-file Windows ROM is
+    already extracted correctly by the existing generic multi-file path, which
+    never consults this function.
+
+    A single-file Windows ROM is exactly what RomM reports when someone uploads
+    an already-zipped PC game backup without pre-extracting it: RomM's scanner
+    sees one file (``AM2R.zip``), so ``is_multi_file_download`` is ``False`` and
+    the raw ZIP bytes would otherwise be written verbatim — a file no Proton
+    invocation can launch, because there is no "core" to load a zipped Windows
+    game the way RetroArch loads a zipped console ROM.
+
+    ``platform_slug`` must equal the literal RomM slug ``"win"`` — an exact,
+    case-sensitive match against the raw server value, never a normalized
+    ``system``. This is the single most safety-critical property of this
+    function: any looser match risks unzipping and discarding a normal console
+    ROM that must stay a ``.zip`` for its emulator to load. ``file_name`` must
+    end with ``.zip`` (case-insensitive). No other archive format is supported —
+    ``.7z``/``.rar`` extraction would need new vendored dependencies and is
+    explicitly out of scope.
+    """
+    return platform_slug == "win" and file_name.lower().endswith(".zip")
+
+
 def needs_m3u(disc_files: list[str], m3u_supported: bool) -> bool:
     """Return True if an M3U playlist should be generated.
 

@@ -3,6 +3,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 
 from domain.rom_files import (
@@ -16,6 +18,7 @@ from domain.rom_files import (
     needs_m3u,
     resolve_extract_dir_name,
     resolve_local_file_name,
+    should_extract_windows_archive,
     synthetic_rom_name,
 )
 
@@ -93,6 +96,48 @@ class TestIsMultiFileDownload:
     def test_files_explicitly_none_uses_flag_only(self):
         assert is_multi_file_download({"files": None, "has_multiple_files": True}) is True
         assert is_multi_file_download({"files": None}) is False
+
+
+class TestShouldExtractWindowsArchive:
+    def test_win_platform_zip_extracts(self):
+        assert should_extract_windows_archive("win", "AM2R.zip") is True
+
+    def test_win_platform_zip_is_case_insensitive_on_extension(self):
+        assert should_extract_windows_archive("win", "AM2R.ZIP") is True
+        assert should_extract_windows_archive("win", "AM2R.Zip") is True
+
+    def test_win_platform_non_zip_does_not_extract(self):
+        assert should_extract_windows_archive("win", "AM2R.exe") is False
+        assert should_extract_windows_archive("win", "AM2R.7z") is False
+        assert should_extract_windows_archive("win", "AM2R.rar") is False
+
+    @pytest.mark.parametrize(
+        "platform_slug",
+        [
+            "n64",
+            "psx",
+            "switch",
+            "ps3",
+            "wiiu",
+            "gba",
+            "dc",
+            "3ds",
+            "wii",
+            "gc",
+            "",
+            "Win",  # case-sensitive: must NOT match a differently-cased slug
+            "WIN",
+            "windows",  # a plausible-but-wrong slug must never match either
+        ],
+    )
+    def test_every_non_win_platform_zip_never_extracts(self, platform_slug):
+        # The single most safety-critical property of this function: a false
+        # positive here would try to unzip and discard a normal console ROM
+        # that must stay a .zip for its emulator to load.
+        assert should_extract_windows_archive(platform_slug, "game.zip") is False
+
+    def test_empty_file_name_does_not_extract(self):
+        assert should_extract_windows_archive("win", "") is False
 
 
 class TestNeedsM3u:

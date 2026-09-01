@@ -296,6 +296,29 @@ class DownloadFileStore(Protocol):
         """
         ...
 
+    def extract_windows_archive(
+        self,
+        archive_path: str,
+        extract_dir: str,
+        safe_root: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> str:
+        """Extract a single-file native-Windows ``.zip`` and resolve its launch ``.exe``.
+
+        Combines :meth:`extract_zip` (ZIP-slip protected), :meth:`remove_file`
+        of *archive_path*, and :meth:`decode_url_encoded_names` — the same
+        extraction shape :meth:`extract_zip`'s other callers use — then resolves
+        the default launch target the way ``domain.windows_launch.resolve_launch_path``
+        does: the first ``.exe`` found (alphabetical by basename), or
+        *extract_dir* itself when the archive holds none. The one place a
+        ``DownloadFileStore`` method makes a domain-level decision rather than a
+        raw I/O call — kept here (not in the download service) purely so
+        ``services/downloads.py`` stays under its module-size ceiling; the
+        decision itself is the same pure kernel every other native-Windows read
+        resolves through.
+        """
+        ...
+
     def decode_url_encoded_names(self, directory: str) -> None:
         """Recursively rename URL-encoded entries under *directory*.
 

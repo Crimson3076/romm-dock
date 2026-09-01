@@ -20,6 +20,7 @@ import zlib
 from typing import TYPE_CHECKING
 
 from domain.rom_candidates import DIR, FILE, LINK, Kind
+from domain.windows_launch import resolve_launch_path
 from lib.path_safety import safe_path_component
 
 if TYPE_CHECKING:
@@ -380,6 +381,29 @@ class DownloadFileAdapter:
                         extracted += len(chunk)
                         if progress_callback is not None:
                             progress_callback(extracted, total)
+
+    def extract_windows_archive(
+        self,
+        archive_path: str,
+        extract_dir: str,
+        safe_root: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> str:
+        """Extract a single-file native-Windows ``.zip`` and resolve its launch ``.exe``.
+
+        See ``services.protocols.DownloadFileStore.extract_windows_archive``
+        for the contract. Chains :meth:`extract_zip` + :meth:`remove_file` +
+        :meth:`decode_url_encoded_names` (the shape every other
+        :meth:`extract_zip` caller uses) with
+        :func:`domain.windows_launch.resolve_launch_path` over the freshly
+        extracted listing.
+        """
+        self.make_dirs(extract_dir)
+        self.extract_zip(archive_path, extract_dir, safe_root, progress_callback=progress_callback)
+        self.remove_file(archive_path)
+        self.decode_url_encoded_names(extract_dir)
+        files = [path for path, _size in self.scan_files_with_sizes(extract_dir)]
+        return resolve_launch_path(files, selected_exe=None) or extract_dir
 
     def decode_url_encoded_names(self, directory: str) -> None:
         """Rename URL-encoded files and directories under *directory* in place.
