@@ -56,6 +56,8 @@ _Named after the railway car behind a steam locomotive, or the boat that shuttle
   install and BIOS status, save management, and per-game actions
 - **Multi-disc & multi-version** — Pick the disc for multi-disc games and switch between regions or revisions of the
   same game, right from its Steam page
+- **Native-Windows games** — Windows-only titles launch straight through Proton, which the plugin finds and runs for
+  you; pick which `.exe` to launch when an install has more than one
 - **Emulator cores** — Set the core per system, or override it for a single game
 - **Steam Input** — Pick a Steam Input mode (Default / Force On / Force Off) and apply it to every shortcut the plugin
   created

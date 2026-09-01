@@ -48,6 +48,8 @@ Developer-oriented documentation for contributors and those interested in the in
   parser layout template for local config/metadata files
 - **[Core and Emulator Selection](architecture/core-emulator-selection.md)** — Per-game vs per-system core overrides,
   the single read seam, and how the chosen core is baked into the launch command
+- **[Native-Windows Games and Proton Launch](architecture/windows-proton-launch.md)** — Native-Windows ROM detection,
+  the emulator-selection bypass, Proton discovery, and the exe-picker
 - **[Development](contributing/development.md)** — Developer setup, building, testing, dev reload
 - **[Save File Sync Architecture](architecture/save-file-sync-architecture.md)** — Three-way conflict detection, session
   tracking, state schema, device registration

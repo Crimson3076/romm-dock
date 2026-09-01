@@ -469,6 +469,58 @@ the plugin doesn't manage.
     systems are fully covered; systems that need an external standalone emulator to run at all are a separate roadmap
     item.
 
+## Playing Native-Windows Games
+
+Some RomM libraries include native-Windows titles alongside your console ROMs — games distributed as a `.exe` rather
+than a console dump. These launch through [Proton](https://github.com/ValveSoftware/Proton) instead of RetroDECK, and
+the plugin handles finding and running Proton for you; there's nothing to configure beyond having a Proton build
+installed.
+
+### Requirements
+
+Steam needs at least one Proton build installed — the plugin does not install one for you. Either of these counts:
+
+- **Official Proton**, which Steam already ships. If you've never disabled it, check Steam → **Settings** →
+  **Compatibility** and make sure **Enable Steam Play for all other titles** is on, or install a specific Proton version
+  from the **Steam Play compatibility tools** list.
+- **GE-Proton** (a community build), typically installed with a tool like
+  [ProtonUp-Qt](https://github.com/DavidoTek/ProtonUp-Qt).
+
+If both an official build and a GE-Proton build are installed, the plugin prefers GE-Proton — community builds are
+generally the more compatible choice for a non-Steam title. Within whichever it picks, the newest installed version is
+used.
+
+### Picking which `.exe` launches
+
+A native-Windows install can contain more than one `.exe` — a launcher plus the real game binary, an uninstaller, or
+per-DLC executables. When an installed native-Windows game has more than one, a small **picker icon** (a Windows logo)
+appears on its detail page, right next to the Play button — in the same spot the disc and version pickers occupy for
+other games. Its color shows whether you've made a pick: grey means the plugin is using its default (the first `.exe` it
+finds), accent-colored means you've pinned a specific one.
+
+To change it:
+
+1. Open the game's detail page in the Steam Library.
+2. Tap the picker icon next to Play.
+3. Choose the `.exe` you want. The Play button now launches that one.
+
+Like the disc picker, this takes effect immediately — no re-sync needed — and your pick is remembered: it survives
+uninstalling and re-downloading the game, since it's tied to the game itself rather than to the downloaded files. If the
+`.exe` you picked ever goes missing (say, from a partial re-download), the game quietly falls back to the default `.exe`
+instead of failing to launch. A game whose install has only one `.exe` shows no picker at all — there is nothing to
+choose between.
+
+### When no Proton is found
+
+If Steam has no Proton build installed at all, a native-Windows game has no way to launch — but unlike
+[a download with nothing launchable](#when-a-download-has-nothing-launchable), the game detail page won't call this out
+directly; the game still shows as Installed, with no warning badge. Pressing **Play** simply does nothing, the same as
+[pressing Play on a ROM that isn't downloaded yet](troubleshooting.md#rom-not-downloaded).
+
+Install a Proton build (see [Requirements](#requirements) above) and try **Play** again — no re-sync or re-download
+needed. The plugin checks for an installed Proton build fresh every time you press Play, so the very next press launches
+the game once a build is in place.
+
 ## Uninstalling ROMs
 
 To remove a downloaded ROM file:
