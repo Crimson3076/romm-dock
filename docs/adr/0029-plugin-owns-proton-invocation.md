@@ -128,9 +128,9 @@ exactly like a real Windows game launched from its own install directory would, 
 model ever gave one that folder as its working directory.
 
 The fix folds `-C <dir>` (GNU `env`'s `--chdir`) into the SAME single flat command `resolve_proton_invocation` already
-renders — `env -C "<exe_dir>" VAR=… VAR=… "<proton>" run "<exe>"` — rather than a second command, a wrapper script, or
-a shell `cd`. This preserves decision 4's no-shell-operator property (still zero control operators) while giving the
-game the working directory it needs. Unlike every other path this function renders, `exe_dir` is derived from the same
+renders — `env -C "<exe_dir>" VAR=… VAR=… "<proton>" run "<exe>"` — rather than a second command, a wrapper script, or a
+shell `cd`. This preserves decision 4's no-shell-operator property (still zero control operators) while giving the game
+the working directory it needs. Unlike every other path this function renders, `exe_dir` is derived from the same
 on-disk directory name a server-controlled download could shape, so it gets the same backslash/quote escaping
 `build_launch_options` already applies to the final `.exe` argument (both now share `_escape_launch_arg`).
 
