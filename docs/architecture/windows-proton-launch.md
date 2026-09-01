@@ -167,17 +167,19 @@ no playlist concept to fall back to, only "the first `.exe` enumerated," which t
 
 `services/cores.py` (`set_game_core`, `clear_game_core`, `set_system_core`, `get_platform_core_info`) is the one launch
 seam that is **not** built on `WindowsLaunchResolver` — a native-Windows ROM has no emulator/core concept at all
-(ADR-0029), so there is nothing for `CoreService` to resolve through. Each entry point guards `rom.platform_slug ==
-"win"` explicitly and refuses (`{"success": False, "reason": "unsupported", ...}` for the per-game pin/clear;
-`get_platform_core_info` reports no emulators; `set_system_core` is a silent no-op) rather than depending on `"win"`
-happening to have no `es_systems.xml` entry to fall back on. That absence is what keeps the picker/gear-button UI from
-rendering for a Windows platform today (`platform.emulators.length > 1` in `SystemPage.tsx` / `RomMPlaySection.tsx`
-stays `0`), but it was never a proof — a future `platform_map` entry, or any other change that gives `"win"` ES-DE
-options, would otherwise let a per-game or per-platform core pin resolve through `ActiveCoreResolver` and re-bake the
-shortcut's `launch_options` via the plain RetroDECK path (`disc_resolver.resolve_for_install`, i.e. the install's raw
-`file_path` — for a multi-file native-Windows ROM, whatever `detect_launch_file`'s largest-file heuristic guessed at
-download time, almost never an `.exe`), silently discarding the Proton-wrapped launch the exe picker built. The explicit
-guard makes the refusal the enforced contract instead of an accident of today's data.
+(ADR-0029), so there is nothing for `CoreService` to resolve through. Each entry point guards
+`rom.platform_slug ==
+"win"` explicitly and refuses (`{"success": False, "reason": "unsupported", ...}` for the per-game
+pin/clear; `get_platform_core_info` reports no emulators; `set_system_core` is a silent no-op) rather than depending on
+`"win"` happening to have no `es_systems.xml` entry to fall back on. That absence is what keeps the picker/gear-button
+UI from rendering for a Windows platform today (`platform.emulators.length > 1` in `SystemPage.tsx` /
+`RomMPlaySection.tsx` stays `0`), but it was never a proof — a future `platform_map` entry, or any other change that
+gives `"win"` ES-DE options, would otherwise let a per-game or per-platform core pin resolve through
+`ActiveCoreResolver` and re-bake the shortcut's `launch_options` via the plain RetroDECK path
+(`disc_resolver.resolve_for_install`, i.e. the install's raw `file_path` — for a multi-file native-Windows ROM, whatever
+`detect_launch_file`'s largest-file heuristic guessed at download time, almost never an `.exe`), silently discarding the
+Proton-wrapped launch the exe picker built. The explicit guard makes the refusal the enforced contract instead of an
+accident of today's data.
 
 ## Key Files
 
