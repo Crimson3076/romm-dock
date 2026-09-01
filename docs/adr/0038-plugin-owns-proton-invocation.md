@@ -102,9 +102,9 @@ bake without proof that a shell is actually in the loop, and no such proof exist
 Dropping the `mkdir -p` prefix from the _baked command_ was still right — a shell-dependent launch string is never safe
 to ship — but the assumption that replaced it (Proton's own launcher script creates `STEAM_COMPAT_DATA_PATH` on first
 run, the same behavior Steam's own compat-tool assignment relies on) turned out to be unverified and, on real hardware,
-wrong for this launch path specifically: a real Steam-library game gets that directory for free because **Steam
-itself** pre-creates `steamapps/compatdata/<appid>/` before ever invoking Proton — Proton has never needed to create
-its own prefix root from scratch. This plugin's per-ROM prefix lives under its own `runtime_dir`
+wrong for this launch path specifically: a real Steam-library game gets that directory for free because **Steam itself**
+pre-creates `steamapps/compatdata/<appid>/` before ever invoking Proton — Proton has never needed to create its own
+prefix root from scratch. This plugin's per-ROM prefix lives under its own `runtime_dir`
 (`<runtime_dir>/proton-prefixes/<rom_id>`), a tree nothing else creates, so nothing created it — and the game silently
 failed to launch: Proton exits before ever reaching the target `.exe`, and nothing surfaces that failure back through
 Steam's non-Steam-shortcut launch path.
