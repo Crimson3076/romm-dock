@@ -258,6 +258,7 @@ class TestWireServices:
             "recovery_store": MagicMock(),
             "prune_artifacts": MagicMock(),
             "steam_recovery": MagicMock(),
+            "proton_locator": MagicMock(),
             "settings": settings,
             "loop": asyncio.new_event_loop(),
             "logger": logger,
@@ -318,6 +319,7 @@ class TestWireServices:
                 recovery_store=deps["recovery_store"],
                 prune_artifacts=deps["prune_artifacts"],
                 steam_recovery=deps["steam_recovery"],
+                proton_locator=deps["proton_locator"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -403,7 +405,7 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(result) == 25
+        assert len(result) == 26
         assert "migration_service" in result
         assert "game_detail_service" in result
         assert "rom_removal_service" in result

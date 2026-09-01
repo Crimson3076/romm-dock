@@ -26,6 +26,7 @@ from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_romm_api import FakeRommApi
 from fakes.fake_save_quarantine import FakeSaveQuarantine
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.system_time import FakeClock
 
 from domain.rom import Rom
@@ -169,6 +170,7 @@ class Harness:
                 system_extensions=lambda system_name: self.system_extensions.get(system_name, frozenset()),
                 active_core=FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=FakeDiscResolver(),
+                windows_resolver=FakeWindowsResolver(),
             ),
         )
         self.paths = FakeRetroDeckPaths(roms=_ROMS, saves=_SAVES, states=_STATES)

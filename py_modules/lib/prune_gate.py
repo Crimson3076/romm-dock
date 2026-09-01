@@ -27,6 +27,7 @@ _HOLDER_NAMES = {
     "system_core": "changing an emulator core",
     "game_core": "changing an emulator core",
     "disc_selection": "changing the selected disc",
+    "executable_selection": "changing the selected executable",
     "sync_complete": "finishing a library sync",
     "sync_stale": "finishing a library sync",
     "download_complete": "finishing a download",

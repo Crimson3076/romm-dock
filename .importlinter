@@ -142,3 +142,5 @@ modules =
     services.startup_healing
     services.steamgrid
     services.version_switch
+    services.windows_game
+    services.windows_launch_resolver

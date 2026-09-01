@@ -3,12 +3,14 @@
 import os
 import shlex
 
+from domain.proton import ProtonInstallation
 from domain.shortcut_data import (
     RETRODECK_INVOCATION,
     EmulatorInvocation,
     build_launch_options,
     build_shortcuts_data,
     resolve_emulator_invocation,
+    resolve_proton_invocation,
 )
 
 
@@ -492,3 +494,98 @@ class TestBuildShortcutsDataVersionMetadata:
 
         emitted = collapse_sibling_groups(result, registry={}, installed_rom_ids=set(), complete_group_view=True)
         assert len(emitted) == 1  # one bucket → one representative
+
+
+class TestResolveProtonInvocation:
+    """Tests for resolve_proton_invocation()."""
+
+    def _proton(self) -> ProtonInstallation:
+        return ProtonInstallation(
+            name="GE-Proton9-27",
+            binary_path="/steam/compatibilitytools.d/GE-Proton9-27/proton",
+            steam_install_path="/steam",
+        )
+
+    def test_renders_mkdir_env_and_run(self):
+        result = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/42")
+        assert result == (
+            'mkdir -p "/runtime/proton-prefixes/42" && env '
+            'STEAM_COMPAT_DATA_PATH="/runtime/proton-prefixes/42" '
+            'STEAM_COMPAT_CLIENT_INSTALL_PATH="/steam" '
+            '"/steam/compatibilitytools.d/GE-Proton9-27/proton" run'
+        )
+
+    def test_composes_with_build_launch_options(self):
+        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1")
+        launch_options = build_launch_options(invocation, "/roms/win/game-1/Game.exe")
+        assert launch_options == (
+            'mkdir -p "/runtime/proton-prefixes/1" && env '
+            'STEAM_COMPAT_DATA_PATH="/runtime/proton-prefixes/1" '
+            'STEAM_COMPAT_CLIENT_INSTALL_PATH="/steam" '
+            '"/steam/compatibilitytools.d/GE-Proton9-27/proton" run "/roms/win/game-1/Game.exe"'
+        )
+
+    def test_exe_path_with_spaces_is_quoted_and_escaped(self):
+        # The exe path is the only server/user-controlled piece of the command —
+        # build_launch_options escapes it exactly like every other platform.
+        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1")
+        launch_options = build_launch_options(invocation, '/roms/win/My Game/Odd "Name".exe')
+        assert launch_options.endswith('"/roms/win/My Game/Odd \\"Name\\".exe"')
+
+    def test_paths_are_not_shell_escaped(self):
+        # Every path rendered here is plugin/system-derived, never attacker-
+        # controlled (mirroring RETRODECK_APP_ID and the RetroArch cores dir).
+        proton = ProtonInstallation(name="X", binary_path="/steam/Proton/proton", steam_install_path="/steam root")
+        result = resolve_proton_invocation(proton, "/prefixes/1")
+        assert '"/steam root"' in result
+
+
+class TestBuildShortcutsDataWindows:
+    """Tests for build_shortcuts_data()'s native-Windows branch."""
+
+    _WIN_LAUNCH_OPTIONS = 'mkdir -p "/prefixes/1" && env ... "/steam/proton" run "/roms/win/g/Game.exe"'
+
+    def test_windows_rom_uses_windows_launch_options(self):
+        roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: "/roms/win/g/Game.exe"}, {}, {1: self._WIN_LAUNCH_OPTIONS})
+        assert result[0]["launch_options"] == self._WIN_LAUNCH_OPTIONS
+
+    def test_windows_rom_ignores_core_overrides(self):
+        # A native-Windows ROM has no emulator/core step — core_overrides must
+        # never leak into its launch_options even if (erroneously) populated.
+        roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
+        core_overrides = {1: EmulatorInvocation.libretro("some_core")}
+        result = build_shortcuts_data(
+            roms, "/plugin", {1: "/roms/win/g/Game.exe"}, core_overrides, {1: self._WIN_LAUNCH_OPTIONS}
+        )
+        assert result[0]["launch_options"] == self._WIN_LAUNCH_OPTIONS
+        assert "some_core" not in result[0]["launch_options"]
+
+    def test_windows_rom_absent_from_map_is_unlaunchable(self):
+        # No Proton found, or no .exe present — the resolver omits the ROM from
+        # the map entirely, which must bake the same empty placeholder every
+        # other unlaunchable install gets.
+        roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: "/roms/win/g/Game.exe"}, {}, {})
+        assert result[0]["launch_options"] == ""
+
+    def test_windows_rom_uninstalled_is_empty_regardless_of_windows_map(self):
+        # An uninstalled ROM (absent from installed_paths) never bakes a command,
+        # even if windows_launch_options carries a stale entry for it.
+        roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
+        result = build_shortcuts_data(roms, "/plugin", {}, {}, {1: self._WIN_LAUNCH_OPTIONS})
+        assert result[0]["launch_options"] == ""
+
+    def test_non_windows_rom_unaffected_by_windows_map(self):
+        # A stray windows_launch_options entry for a non-Windows rom_id must
+        # never leak into that ROM's launch_options.
+        roms = [{"id": 1, "name": "N64 Game", "platform_slug": "n64"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: "/roms/n64/game.z64"}, {}, {1: self._WIN_LAUNCH_OPTIONS})
+        assert result[0]["launch_options"] == 'flatpak run net.retrodeck.retrodeck "/roms/n64/game.z64"'
+
+    def test_default_none_windows_launch_options_matches_omitted(self):
+        # The optional 5th parameter must be safely omittable by every existing
+        # caller that predates this feature.
+        roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: "/roms/win/g/Game.exe"}, {})
+        assert result[0]["launch_options"] == ""

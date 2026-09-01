@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         SteamConfigStore,
         UnitOfWorkFactory,
         UuidGen,
+        WindowsResolver,
     )
 
 
@@ -91,6 +92,7 @@ class LibraryServiceConfig:
     uow_factory: UnitOfWorkFactory
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
+    windows_resolver: WindowsResolver
     renderer_rss: RendererRssFn
     renderer_gc: RendererGcFn
 
@@ -146,6 +148,7 @@ class LibraryService:
                 uow_factory=config.uow_factory,
                 active_core=config.active_core,
                 disc_resolver=config.disc_resolver,
+                windows_resolver=config.windows_resolver,
             )
         )
 

@@ -37,6 +37,7 @@ from adapters.persistence import (
     SettingsPersisterAdapter,
 )
 from adapters.plugin_metadata import PluginMetadataAdapter
+from adapters.proton_locator import ProtonLocatorAdapter
 from adapters.prune_artifacts import PruneArtifactAdapter
 from adapters.recovery_bundle import RecoveryBundleAdapter
 from adapters.renderer_gc import RendererGcAdapter
@@ -82,6 +83,7 @@ if TYPE_CHECKING:
         PathExistsReader,
         PlatformCoreReader,
         PluginMetadataReader,
+        ProtonLocator,
         PruneArtifactStore,
         RecoveryBundleStore,
         RendererGcFn,
@@ -136,6 +138,7 @@ class AdapterBundle:
     recovery_store: RecoveryBundleStore
     prune_artifacts: PruneArtifactStore
     steam_recovery: SteamRecoveryStore
+    proton_locator: ProtonLocator
 
 
 @dataclass(frozen=True)
@@ -335,6 +338,7 @@ def bootstrap(
     )
     prune_artifacts = PruneArtifactAdapter(runtime_dir=runtime_dir)
     steam_recovery = SteamRecoveryAdapter(user_home=user_home, logger=logger)
+    proton_locator = ProtonLocatorAdapter(user_home=user_home, runtime_dir=runtime_dir)
     http_adapter = RommHttpAdapter(settings, plugin_dir, logger, user_agent)
     romm_api = RommApiAdapter(http_adapter)
     steam_config = SteamConfigAdapter(user_home=user_home, logger=logger)
@@ -386,6 +390,7 @@ def bootstrap(
         recovery_store=recovery_store,
         prune_artifacts=prune_artifacts,
         steam_recovery=steam_recovery,
+        proton_locator=proton_locator,
     )
     stores = StateBundle(
         settings=settings,

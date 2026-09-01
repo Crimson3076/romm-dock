@@ -44,6 +44,8 @@ from services.shortcut_removal import ShortcutRemovalService, ShortcutRemovalSer
 from services.startup_healing import StartupHealingService, StartupHealingServiceConfig
 from services.steamgrid import SteamGridService, SteamGridServiceConfig
 from services.version_switch import VersionSwitchService, VersionSwitchServiceConfig
+from services.windows_game import WindowsGameService, WindowsGameServiceConfig
+from services.windows_launch_resolver import WindowsLaunchResolver, WindowsLaunchResolverConfig
 
 if TYPE_CHECKING:
     from typing import Any
@@ -144,6 +146,19 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         ),
     )
 
+    # The single read-path native-Windows resolver: folds the per-game
+    # selected_exe pick over the live .exe enumeration of an installed ROM's
+    # directory, wrapped in the located Proton build's invocation. Built
+    # alongside disc_launch_resolver (no service deps) so every launch-bake
+    # site and the exe-picker callables draw the bake command from the SAME
+    # seam and it never diverges from the picker's selection.
+    windows_launch_resolver = WindowsLaunchResolver(
+        config=WindowsLaunchResolverConfig(
+            list_files=cfg.callbacks.list_rom_dir_files,
+            proton_locator=cfg.adapters.proton_locator,
+        ),
+    )
+
     # The single installed+bound relaunch-items resolver (#1154): snapshots the
     # rows in one short read UoW it closes before resolving core + disc, so the
     # nested resolver UoW never deadlocks. Both the RetroDECK-home migration and
@@ -154,6 +169,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             uow_factory=cfg.callbacks.uow_factory,
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
+            windows_resolver=windows_launch_resolver,
         ),
     )
 
@@ -272,6 +288,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             uow_factory=cfg.callbacks.uow_factory,
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
+            windows_resolver=windows_launch_resolver,
             renderer_rss=cfg.adapters.renderer_rss,
             renderer_gc=cfg.adapters.renderer_gc,
         ),
@@ -286,6 +303,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             system_extensions=cfg.callbacks.system_extensions,
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
+            windows_resolver=windows_launch_resolver,
         ),
     )
 
@@ -450,6 +468,15 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         ),
     )
 
+    windows_game_service = WindowsGameService(
+        config=WindowsGameServiceConfig(
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            uow_factory=cfg.callbacks.uow_factory,
+            windows_resolver=windows_launch_resolver,
+        ),
+    )
+
     connection_service = ConnectionService(
         config=ConnectionServiceConfig(
             settings=cfg.stores.settings,
@@ -575,6 +602,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
         "settings_service": settings_service,
         "core_service": core_service,
         "disc_service": disc_service,
+        "windows_game_service": windows_game_service,
         "version_switch_service": version_switch_service,
         "connection_service": connection_service,
         "startup_healing_service": startup_healing_service,

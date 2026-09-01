@@ -280,6 +280,9 @@ class SyncOrchestrator:
             core_overrides = await self._loop.run_in_executor(
                 None, self._shortcut_launch_resolver.do_build_core_overrides, all_roms
             )
+            windows_launch_options = await self._loop.run_in_executor(
+                None, self._shortcut_launch_resolver.do_scan_windows_launch_options
+            )
             # Stamp each fresh ROM's component sibling-group key before the build so
             # the collapse below groups games, not dumps. The preview union is a
             # complete view of every enabled platform's groups; the DB's persisted
@@ -288,7 +291,9 @@ class SyncOrchestrator:
                 None, self._local_library_reader.do_read_resident_group_keys
             )
             self._stamp_component_group_keys(all_roms, resident_keys)
-            shortcuts_data = build_shortcuts_data(all_roms, self._plugin_dir, installed_paths, core_overrides)
+            shortcuts_data = build_shortcuts_data(
+                all_roms, self._plugin_dir, installed_paths, core_overrides, windows_launch_options
+            )
             platform_name_set = {u.name for u in work_queue if u.type == "platform"}
             slug_to_name = {u.slug: u.name for u in work_queue if u.type == "platform" and u.slug}
             registry, last_synced_platforms, last_synced_collections = await self._loop.run_in_executor(
@@ -1002,6 +1007,9 @@ class SyncOrchestrator:
         core_overrides = await self._loop.run_in_executor(
             None, self._shortcut_launch_resolver.do_build_core_overrides, unit_roms
         )
+        windows_launch_options = await self._loop.run_in_executor(
+            None, self._shortcut_launch_resolver.do_read_windows_launch_options, {rom["id"] for rom in unit_roms}
+        )
 
         # Read the bound-row registry once, before the build: its persisted keys
         # seed the component keying (a fresh member edging into a DB-resident
@@ -1011,7 +1019,9 @@ class SyncOrchestrator:
             int(rom_id): entry["sibling_group_key"] for rom_id, entry in registry.items() if entry["sibling_group_key"]
         }
         self._stamp_component_group_keys(unit_roms, resident_keys)
-        shortcuts_data = build_shortcuts_data(unit_roms, self._plugin_dir, installed_paths, core_overrides)
+        shortcuts_data = build_shortcuts_data(
+            unit_roms, self._plugin_dir, installed_paths, core_overrides, windows_launch_options
+        )
 
         # Collapse to one Steam shortcut per sibling group (ADR-0021): only the
         # representative (plus any grandfathered bound siblings) is emitted; a

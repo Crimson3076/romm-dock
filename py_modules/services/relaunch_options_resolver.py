@@ -17,9 +17,11 @@ For every ROM that is both installed (has a ``rom_installs`` row) and bound
 (its ``Rom.shortcut_app_id`` is set), the resolved item composes the full
 Steam-shortcut launch command from the active core and the selected disc
 through the shared ``active_core`` / ``disc_resolver`` seams every other bake
-site uses. Uninstalled ROMs (no ``rom_installs`` row) and unbound ROMs
-(``shortcut_app_id`` is ``None``) are skipped by construction — they carry no
-installed launch command to reconcile.
+site uses — except a native-Windows ROM (raw ``platform_slug == "win"``),
+which bypasses both entirely and resolves through the shared
+``windows_resolver`` seam instead. Uninstalled ROMs (no ``rom_installs`` row)
+and unbound ROMs (``shortcut_app_id`` is ``None``) are skipped by
+construction — they carry no installed launch command to reconcile.
 
 The install/ROM rows are snapshotted inside one short read UoW which is closed
 *before* the bake resolution runs: ``active_core_for_rom`` opens its own UoW,
@@ -43,6 +45,7 @@ if TYPE_CHECKING:
         ActiveCoreReader,
         DiscResolver,
         UnitOfWorkFactory,
+        WindowsResolver,
     )
 
 
@@ -52,14 +55,18 @@ class RelaunchOptionsResolverConfig:
 
     Carries the SQLite Unit-of-Work factory (to snapshot the installed+bound
     ``(rom, install)`` pairs in one short read UoW), the shared ``active_core``
-    resolver (which ``.so`` each ROM launches with) and the shared
-    ``disc_resolver`` (which file a multi-disc ROM launches given its persisted
-    pick) — the same two seams every other launch-bake site resolves through.
+    resolver (which ``.so`` each ROM launches with), the shared ``disc_resolver``
+    (which file a multi-disc ROM launches given its persisted pick), and the
+    shared ``windows_resolver`` (which native-Windows ROMs — raw
+    ``platform_slug == "win"`` — resolve through instead, bypassing the other
+    two entirely) — the same seams every other launch-bake site resolves
+    through.
     """
 
     uow_factory: UnitOfWorkFactory
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
+    windows_resolver: WindowsResolver
 
 
 class RelaunchOptionsResolver:
@@ -69,28 +76,40 @@ class RelaunchOptionsResolver:
         self._uow_factory = config.uow_factory
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
+        self._windows_resolver = config.windows_resolver
 
     def _resolve_bake_path(self, rom: Rom, install: RomInstall) -> str:
-        """Resolve the launch target *rom* bakes — the path the emulator receives.
+        """Resolve the launch target *rom* bakes — the bare path the run receives.
 
         The one derivation of that path, shared by the launch-options build and
         the bare-path entry point, so a read-path consumer can never compare
-        against a path that differs from the one actually launched. A multi-disc
-        ROM resolves to its selected disc, a single-disc ROM to its own
-        ``file_path``, through the same ``disc_resolver`` seam every other
-        launch-bake site uses.
+        against a path that differs from the one actually launched. A
+        native-Windows ROM resolves to its selected ``.exe`` through
+        ``windows_resolver``; a multi-disc ROM resolves to its selected disc, a
+        single-disc ROM to its own ``file_path``, through ``disc_resolver`` —
+        the same seams every other launch-bake site uses.
         """
+        if rom.platform_slug == "win":
+            return self._windows_resolver.resolve_exe_path(install, rom.selected_exe)
         return self._disc_resolver.resolve_for_install(install, rom.selected_disc)
 
     def _resolve_item(self, rom: Rom, install: RomInstall) -> dict[str, Any]:
         """Compose one ``{app_id, launch_options}`` item for an installed+bound ROM.
 
         The single resolve body shared by the batch and single-ROM entry points.
-        Resolves the ROM's active core and selected disc — through the same
-        ``active_core`` / ``disc_resolver`` seams every other launch-bake site
-        uses — outside any open Unit of Work (``active_core_for_rom`` opens its
-        own, and the per-connection write lock is not re-entrant; #1154).
+        A native-Windows ROM bypasses ``active_core``/``disc_resolver`` entirely
+        and resolves its full Proton-wrapped command through
+        ``windows_resolver``. Every other platform resolves the ROM's active
+        core and selected disc — through the same ``active_core`` /
+        ``disc_resolver`` seams every other launch-bake site uses — outside any
+        open Unit of Work (``active_core_for_rom`` opens its own, and the
+        per-connection write lock is not re-entrant; #1154).
         """
+        if rom.platform_slug == "win":
+            return {
+                "app_id": rom.shortcut_app_id,
+                "launch_options": self._windows_resolver.resolve_launch_options(install, rom.selected_exe),
+            }
         emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
         invocation = resolve_emulator_invocation({"id": rom.rom_id}, emulator)
         return {

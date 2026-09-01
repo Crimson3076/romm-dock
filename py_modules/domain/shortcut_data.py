@@ -8,9 +8,18 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from domain.sibling_group import compute_sibling_group_key
+
+if TYPE_CHECKING:
+    from domain.proton import ProtonInstallation
+
+# Raw RomM platform slug for a native-Windows ROM. Checked BEFORE any
+# resolve_system/platform_map normalization (adapters/romm/http.py,
+# defaults/config.json) — a native-Windows ROM has no emulator/core step at
+# all, so it must never depend on "win" gaining a platform_map entry.
+WINDOWS_PLATFORM_SLUG = "win"
 
 # RetroDECK's flatpak application id — the single source of the string across the
 # plugin. Its plain ``flatpak run <app>`` form is the emulator invocation prefix
@@ -175,6 +184,53 @@ def build_launch_options(invocation: str, path: str) -> str:
     return f'{invocation} "{escaped}"'
 
 
+def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str) -> str:
+    """Render a native-Windows ROM's Proton launch invocation prefix.
+
+    Mirrors :func:`resolve_emulator_invocation`'s role for the RetroDECK/ES-DE
+    launch: the prefix :func:`build_launch_options` appends the picked ``.exe``
+    path to (single-quoted-argument composition, same call). *compat_data_path*
+    is prefixed with a self-healing ``mkdir -p`` — the per-ROM Proton prefix
+    directory (``ProtonLocator.compat_data_path``) is never created ahead of
+    time, so the baked command creates it itself on every launch instead of a
+    service performing raw filesystem I/O (services.md forbids that) or a
+    one-time creation a user could delete out from under a later launch.
+
+    Every path rendered here — the compat-data prefix, Steam's own install
+    root, the Proton binary — is plugin/system-derived, never
+    attacker-controlled, so (like ``RETRODECK_APP_ID`` and the RetroArch cores
+    dir above) none of it is escaped; only the final ``.exe`` argument
+    :func:`build_launch_options` appends is.
+    """
+    return (
+        f'mkdir -p "{compat_data_path}" && env '
+        f'STEAM_COMPAT_DATA_PATH="{compat_data_path}" '
+        f'STEAM_COMPAT_CLIENT_INSTALL_PATH="{proton.steam_install_path}" '
+        f'"{proton.binary_path}" run'
+    )
+
+
+def _resolve_launch_options(
+    rom: dict[str, Any],
+    bake_path: str,
+    core_overrides: dict[int, EmulatorInvocation],
+    windows_launch_options: dict[int, str],
+) -> str:
+    """Return *rom*'s launch command given it IS installed (``bake_path`` resolved).
+
+    A native-Windows ROM (raw ``platform_slug == "win"``, checked before any
+    system normalization) bypasses the emulator/core machinery entirely: its
+    command is whatever the caller's Proton resolution already rendered into
+    *windows_launch_options*, keyed by ``rom_id`` — absent (no Proton found, or
+    no ``.exe`` present) renders as the same empty launch command every other
+    unlaunchable install does. Every other platform keeps the existing
+    RetroDECK/ES-DE emulator-invocation render.
+    """
+    if rom.get("platform_slug") == WINDOWS_PLATFORM_SLUG:
+        return windows_launch_options.get(rom["id"], "")
+    return build_launch_options(resolve_emulator_invocation(rom, core_overrides.get(rom["id"])), bake_path)
+
+
 def extract_version_metadata(rom: dict[str, Any]) -> dict[str, Any]:
     """Extract a raw RomM ROM dict's sibling-group identity + version dimensions.
 
@@ -205,6 +261,7 @@ def build_shortcuts_data(
     plugin_dir: str,
     installed_paths: dict[int, str],
     core_overrides: dict[int, EmulatorInvocation],
+    windows_launch_options: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Transform ROM list into shortcut data dicts for frontend AddShortcut calls.
 
@@ -223,7 +280,18 @@ def build_shortcuts_data(
     caller omits the ``(None, None)`` fallback); a ROM absent from the map follows
     the plain RetroDECK launch, a present ROM bakes its ``-e`` form into
     ``launch_options``. Required so a new bake site can never silently skip the
-    override.
+    override. Ignored entirely for a native-Windows ROM (see
+    *windows_launch_options*).
+
+    *windows_launch_options* maps ``rom_id`` to the **already-rendered** Proton
+    launch command for a native-Windows ROM (raw ``platform_slug == "win"``,
+    checked before any system normalization) — the caller's
+    :func:`resolve_proton_invocation` + :func:`build_launch_options` composition,
+    already folding the ROM's persisted ``selected_exe`` pin and the located
+    Proton build. Only ROMs that resolved to a launchable command appear; a
+    Windows ROM absent from the map (no Proton found, or no ``.exe`` present)
+    bakes the same empty launch command an uninstalled ROM does. Ignored for
+    every other platform.
 
     The sibling-group key (ADR-0021) and RomM's version dimensions (``regions`` /
     ``languages`` / ``revision`` / ``tags`` / ``is_main_sibling``) are derived
@@ -233,6 +301,7 @@ def build_shortcuts_data(
     """
     exe = os.path.join(plugin_dir, "bin", "rom-launcher")
     start_dir = os.path.join(plugin_dir, "bin")
+    windows_launch_options = windows_launch_options or {}
     return [
         {
             "rom_id": rom["id"],
@@ -246,10 +315,7 @@ def build_shortcuts_data(
             "exe": exe,
             "start_dir": start_dir,
             "launch_options": (
-                build_launch_options(
-                    resolve_emulator_invocation(rom, core_overrides.get(rom["id"])),
-                    installed_paths[rom["id"]],
-                )
+                _resolve_launch_options(rom, installed_paths[rom["id"]], core_overrides, windows_launch_options)
                 if rom["id"] in installed_paths
                 else ""
             ),

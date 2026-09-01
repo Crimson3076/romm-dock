@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from domain.rom_install import RomInstall
     from domain.save_layout import InSaveDir, SaveLayout
     from domain.shortcut_data import EmulatorInvocation
+    from domain.windows_launch import WindowsExecutable
 
 
 class RomInstallRecorder(Protocol):
@@ -255,6 +256,31 @@ class DiscResolver(Protocol):
     def resolve_bake_path(self, install: RomInstall, discs: list[Disc], selected_disc: str | None) -> str: ...
 
     def resolve_for_install(self, install: RomInstall, selected_disc: str | None) -> str: ...
+
+
+class WindowsResolver(Protocol):
+    """Per-ROM native-Windows launch resolution consumed by the bake sites and the exe picker.
+
+    The composition root satisfies this with ``WindowsLaunchResolver``. Mirrors
+    :class:`DiscResolver`'s shape: :meth:`enumerate_executables` lists the
+    launchable ``.exe`` files in a ROM's install directory (a single-file
+    install enumerates over its own ``file_path`` alone);
+    :meth:`resolve_exe_path` resolves the persisted ``selected_exe`` pin against
+    that list to the bare path (the stop-game bare-path read draws from this);
+    :meth:`resolve_launch_options` composes the full Proton-wrapped Steam-
+    shortcut launch command — the render every bake site and the exe picker's
+    write path use, so the baked command never diverges from the picker's
+    selection. No Proton found or no ``.exe`` present both resolve to ``""``,
+    which every caller renders as the empty launch command, mirroring
+    ``DiscResolver``'s ``launchable is False`` convention. An install the
+    system cannot launch (``launchable is False``) also resolves to ``""``.
+    """
+
+    def enumerate_executables(self, install: RomInstall) -> list[WindowsExecutable]: ...
+
+    def resolve_exe_path(self, install: RomInstall, selected_exe: str | None) -> str: ...
+
+    def resolve_launch_options(self, install: RomInstall, selected_exe: str | None) -> str: ...
 
 
 class RelaunchOptionsReader(Protocol):

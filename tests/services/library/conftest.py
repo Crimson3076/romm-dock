@@ -23,6 +23,7 @@ from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
 from adapters.cover_art_file_store import CoverArtFileStoreAdapter
@@ -130,6 +131,7 @@ def plugin(tmp_path):
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
+            windows_resolver=FakeWindowsResolver(),
             renderer_rss=p._renderer_rss,
             renderer_gc=p._renderer_gc,
         ),

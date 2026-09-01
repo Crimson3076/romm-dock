@@ -15,6 +15,7 @@ from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_sgdb_artwork_cache import FakeSgdbArtworkCache
 from fakes.fake_unit_of_work import FakeUnitOfWorkFactory
+from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
@@ -147,6 +148,7 @@ def plugin():
             uow_factory=FakeUnitOfWorkFactory(),
             active_core=FakeActiveCoreResolver(default=(None, None)),
             disc_resolver=FakeDiscResolver(),
+            windows_resolver=FakeWindowsResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
         ),
@@ -851,6 +853,8 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     "get_platform_core_info",
     # Read-only disc-picker state query (the pin-write select_disc IS decorated).
     "get_disc_selection",
+    # Read-only exe-picker state query (the pin-write select_executable IS decorated).
+    "get_windows_executables",
     # Read-only version-picker state query (the binding-move switch_version IS decorated).
     "get_version_list",
     "get_platforms",
@@ -1095,6 +1099,7 @@ class TestMainStartupOrdering:
             "settings_service": MagicMock(),
             "core_service": MagicMock(),
             "disc_service": MagicMock(),
+            "windows_game_service": MagicMock(),
             "version_switch_service": MagicMock(),
             "prune_service": MagicMock(shutdown=AsyncMock()),
             "connection_service": connection_service,
@@ -1129,6 +1134,7 @@ class TestMainStartupOrdering:
                 recovery_store=MagicMock(),
                 prune_artifacts=MagicMock(),
                 steam_recovery=MagicMock(),
+                proton_locator=MagicMock(),
             ),
             stores=StateBundle(
                 settings={},
