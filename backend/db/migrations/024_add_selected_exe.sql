@@ -1,0 +1,17 @@
+-- =============================================================================
+-- 024_add_selected_exe.sql — per-game Windows launch-target selection on the
+-- Rom aggregate
+-- =============================================================================
+--
+-- Adds a nullable exe-basename column to roms (the Rom aggregate's anchor
+-- table, so the selection survives uninstall/reinstall per ADR-0007). NULL = no
+-- selection -> the default target (the first enumerated .exe). Only pin/clear
+-- ever write it; the sync UPSERT deliberately excludes it so a re-sync never
+-- wipes a user's pick. Mirrors ``selected_disc`` (migration 004) for a
+-- ``platform_slug == "win"`` install, which has no emulator/core step and so
+-- picks "which .exe" instead of "which disc".
+--
+-- Transaction-safe DDL only — the runner (adapters/sqlite_migrations.py) wraps
+-- BEGIN/COMMIT and stamps PRAGMA user_version = 24.
+-- -----------------------------------------------------------------------------
+ALTER TABLE roms ADD COLUMN selected_exe TEXT;  -- exe basename; NULL = default (pin/clear only)
