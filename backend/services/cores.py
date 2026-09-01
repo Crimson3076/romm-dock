@@ -308,13 +308,9 @@ class CoreService:
             # A native-Windows ROM has no emulator/core step at all (ADR-0038) —
             # refuse before any write rather than depending on "win" resolving to
             # an empty ES-DE options list. See the matching guard in
-            # _platform_core_info_io.
+            # _platform_core_info_io / _clear_game_core_io.
             if rom.platform_slug == "win":
-                return {
-                    "success": False,
-                    "reason": ErrorCode.UNSUPPORTED.value,
-                    "message": f"ROM {rom_id} is a native-Windows ROM — use the executable picker instead",
-                }
+                return self._windows_unsupported(rom_id)
             platform_slug = rom.platform_slug
         # Resolve the label between the two transactions: the emulator-options
         # read re-probes ES-DE's config and each option's install on every call
@@ -404,11 +400,7 @@ class CoreService:
             # (which would discard the Proton-wrapped exe launch for the raw
             # install file_path).
             if rom.platform_slug == "win":
-                return {
-                    "success": False,
-                    "reason": ErrorCode.UNSUPPORTED.value,
-                    "message": f"ROM {rom_id} is a native-Windows ROM — use the executable picker instead",
-                }
+                return self._windows_unsupported(rom_id)
             rom.clear_emulator_override()
             uow.roms.set_emulator_override(rom_id, rom.emulator_override)
             install = uow.rom_installs.get(rom_id)
@@ -461,3 +453,11 @@ class CoreService:
     def _read_rom(self, rom_id: int) -> Rom | None:
         with self._uow_factory() as uow:
             return uow.roms.get(rom_id)
+
+    def _windows_unsupported(self, rom_id: int) -> dict[str, Any]:
+        """Canonical refusal shape for a native-Windows ROM's core pin/clear (ADR-0038)."""
+        return {
+            "success": False,
+            "reason": ErrorCode.UNSUPPORTED.value,
+            "message": f"ROM {rom_id} is a native-Windows ROM — use the executable picker instead",
+        }

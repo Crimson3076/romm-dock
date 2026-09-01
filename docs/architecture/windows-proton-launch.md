@@ -173,12 +173,12 @@ seam that is **not** built on `WindowsLaunchResolver` — a native-Windows ROM h
 happening to have no `es_systems.xml` entry to fall back on. That absence is what keeps the picker/gear-button UI from
 rendering for a Windows platform today (`platform.emulators.length > 1` in `PlatformDetail.tsx` /
 `RomMPlaySection.tsx` stays `0`), but it was never a proof — a future `platform_map` entry, or any other change that
-gives `"win"` ES-DE
-options, would otherwise let a per-game or per-platform core pin resolve through `ActiveCoreResolver` and re-bake the
-shortcut's `launch_options` via the plain RetroDECK path (`disc_resolver.resolve_for_install`, i.e. the install's raw
-`file_path` — for a multi-file native-Windows ROM, whatever `detect_launch_file`'s largest-file heuristic guessed at
-download time, almost never an `.exe`), silently discarding the Proton-wrapped launch the exe picker built. The explicit
-guard makes the refusal the enforced contract instead of an accident of today's data.
+gives `"win"` ES-DE options, would otherwise let a per-game or per-platform core pin resolve through
+`ActiveCoreResolver` and re-bake the shortcut's `launch_options` via the plain RetroDECK path
+(`disc_resolver.resolve_for_install`, i.e. the install's raw `file_path` — for a multi-file native-Windows ROM, whatever
+`detect_launch_file`'s largest-file heuristic guessed at download time, almost never an `.exe`), silently discarding the
+Proton-wrapped launch the exe picker built. The explicit guard makes the refusal the enforced contract instead of an
+accident of today's data.
 
 ## Key Files
 
