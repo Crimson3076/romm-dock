@@ -116,6 +116,24 @@ no-shell-operator property intact (the invocation string still has none) without
 Proton's own behavior — the plugin owns the one filesystem fact its own launch path needs, in the layer that already
 owns I/O (adapters), rather than baking it into a command a shell may or may not interpret.
 
+### 5. The invocation sets the working directory to the exe's own folder
+
+Once decision 4's directory fix let Proton actually start, real-hardware testing hit a second silent failure: Wine's own
+"file not found" dialog for a path relative to the exe's own location (`neoncube\neoncube.ini`, for Pokémon Uranium's
+`Patcher.exe`). Every Steam shortcut this plugin creates shares the same fixed `exe` (`bin/rom-launcher`) and
+`start_dir` (the plugin's own `bin/`) regardless of platform (ADR-0009) — correct for every other platform, since
+RetroDECK/ES-DE takes the ROM path as an argument and never depends on the launcher's own working directory. A
+native-Windows executable is different: many resolve their own data files by a path relative to their own folder,
+exactly like a real Windows game launched from its own install directory would, and nothing in this plugin's launch
+model ever gave one that folder as its working directory.
+
+The fix folds `-C <dir>` (GNU `env`'s `--chdir`) into the SAME single flat command `resolve_proton_invocation` already
+renders — `env -C "<exe_dir>" VAR=… VAR=… "<proton>" run "<exe>"` — rather than a second command, a wrapper script, or
+a shell `cd`. This preserves decision 4's no-shell-operator property (still zero control operators) while giving the
+game the working directory it needs. Unlike every other path this function renders, `exe_dir` is derived from the same
+on-disk directory name a server-controlled download could shape, so it gets the same backslash/quote escaping
+`build_launch_options` already applies to the final `.exe` argument (both now share `_escape_launch_arg`).
+
 ## Consequences
 
 - **Native-Windows support adds no new abstraction layer to the codebase.** It is one raw-slug branch at the launch

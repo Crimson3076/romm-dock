@@ -21,6 +21,7 @@ play" step; there is simply nothing to launch yet.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -92,7 +93,9 @@ class WindowsLaunchResolver:
         proton = self._proton_locator.locate()
         if proton is None:
             return ""
-        invocation = resolve_proton_invocation(proton, self._proton_locator.compat_data_path(install.rom_id))
+        invocation = resolve_proton_invocation(
+            proton, self._proton_locator.compat_data_path(install.rom_id), os.path.dirname(exe_path)
+        )
         return build_launch_options(invocation, exe_path)
 
     def _files_for(self, install: RomInstall) -> list[str]:
