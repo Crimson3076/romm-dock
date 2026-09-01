@@ -611,6 +611,75 @@ class TestResyncPreservesSelectedDisc:
         assert loaded.selected_disc == "FF7 (Disc 3).cue"
 
 
+class TestSelectedExe:
+    def test_round_trips_via_get(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_selected_exe(1, "Game.exe")
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.selected_exe == "Game.exe"
+
+    def test_defaults_to_none_when_never_pinned(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.selected_exe is None
+
+    def test_setting_none_writes_sql_null(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_selected_exe(1, "Game.exe")
+        uow.roms.set_selected_exe(1, None)
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.selected_exe is None
+        # The column is SQL NULL, not an empty string.
+        assert uow._conn is not None
+        stored = uow._conn.execute("SELECT selected_exe FROM roms WHERE rom_id = 1").fetchone()[0]
+        assert stored is None
+
+
+class TestResyncPreservesSelectedExe:
+    """A re-sync builds a fresh ``Rom`` with ``selected_exe=None``; the sync
+    UPSERT must NOT wipe an exe the user pinned via ``set_selected_exe``."""
+
+    def test_pin_survives_resync_and_identity_still_updates(self, uow: SqliteUnitOfWork):
+        rom_id = 1
+        uow.roms.save(_rom(rom_id, app_id=100))
+        uow.roms.set_selected_exe(rom_id, "Game.exe")
+
+        # A normal library re-sync: fresh Rom, no selection, changed identity.
+        resynced = _rom(rom_id, app_id=200)
+        resynced.name = "Renamed Game"
+        assert resynced.selected_exe is None
+        uow.roms.save(resynced)
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        # (a) The pin survives the re-sync.
+        assert loaded.selected_exe == "Game.exe"
+        # (b) Identity columns still update on that save.
+        assert loaded.shortcut_app_id == 200
+        assert loaded.name == "Renamed Game"
+
+    def test_resync_preserves_all_three_deviations_together(self, uow: SqliteUnitOfWork):
+        """All three per-game deviations survive a re-sync independently."""
+        rom_id = 1
+        uow.roms.save(_rom(rom_id, app_id=100))
+        uow.roms.set_emulator_override(rom_id, "Beetle PSX HW")
+        uow.roms.set_selected_disc(rom_id, "FF7 (Disc 3).cue")
+        uow.roms.set_selected_exe(rom_id, "Game.exe")
+
+        uow.roms.save(_rom(rom_id, app_id=200))
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        assert loaded.emulator_override == "Beetle PSX HW"
+        assert loaded.selected_disc == "FF7 (Disc 3).cue"
+        assert loaded.selected_exe == "Game.exe"
+
+
 class TestAppliedLaunchOptions:
     """The recorded applied launch command (#1383) — read-back, SQL-NULL, and the
     sync-UPSERT-preserves contract, mirroring the two pin columns above."""
