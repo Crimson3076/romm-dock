@@ -43,6 +43,7 @@ from adapters.persistence import (
     PlatformCoreReaderAdapter,
     SettingsPersisterAdapter,
 )
+from adapters.proton_locator import ProtonLocatorAdapter
 from adapters.prune_artifacts import PruneArtifactAdapter
 from adapters.recovery_bundle import RecoveryBundleAdapter
 from adapters.renderer_gc import RendererGcAdapter
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
         MigrationFileStore,
         PathExistsReader,
         PlatformCoreReader,
+        ProtonLocator,
         PruneArtifactStore,
         RecoveryBundleStore,
         RendererGcFn,
@@ -155,6 +157,7 @@ class AdapterBundle:
     recovery_store: RecoveryBundleStore
     prune_artifacts: PruneArtifactStore
     steam_recovery: SteamRecoveryStore
+    proton_locator: ProtonLocator
 
 
 @dataclass(frozen=True)
@@ -399,6 +402,10 @@ def bootstrap(
     # nothing sets a level on this logger and `log_level` gates this seam alone.
     debug_logger = SettingsAwareDebugLogger(settings=settings, logger=logger)
     http_adapter = RommHttpAdapter(settings, directories.code_dir, logger, user_agent, log_debug=debug_logger)
+    # Compat-data prefixes are persistent across runs (a Proton prefix is
+    # per-ROM, reused launch to launch) so they live under the data root, not
+    # the cache root that PruneArtifactAdapter/SgdbArtworkCacheAdapter use.
+    proton_locator = ProtonLocatorAdapter(user_home=user_home, runtime_dir=directories.data_dir)
     romm_api = RommApiAdapter(http_adapter)
     steam_config = SteamConfigAdapter(user_home=user_home, logger=logger)
     sgdb_adapter = SteamGridDbAdapter(settings=settings, logger=logger, user_agent=user_agent)
@@ -488,6 +495,7 @@ def bootstrap(
         recovery_store=recovery_store,
         prune_artifacts=prune_artifacts,
         steam_recovery=steam_recovery,
+        proton_locator=proton_locator,
     )
     stores = StateBundle(
         settings=settings,

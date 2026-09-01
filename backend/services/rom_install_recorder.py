@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         DiscResolver,
         SystemSupportedExtensionsFn,
         UnitOfWorkFactory,
+        WindowsResolver,
     )
 
 
@@ -43,8 +44,12 @@ class RomInstallRecorderConfig:
     The shared ``active_core`` resolver answers which emulator the ROM will
     launch with and ``disc_resolver`` which disc of a multi-disc set, so the
     per-game core override and the persisted disc pick survive
-    uninstall → reinstall and are honoured on adoption too. ``system_extensions``
-    is the live per-system ES-DE accept-list the launchable verdict reads.
+    uninstall → reinstall and are honoured on adoption too. ``windows_resolver``
+    answers the same question for a native-Windows ROM (raw ``platform_slug ==
+    "win"``) — its persisted ``selected_exe`` pin resolved into a full
+    Proton-wrapped command, bypassing ``active_core``/``disc_resolver``
+    entirely. ``system_extensions`` is the live per-system ES-DE accept-list
+    the launchable verdict reads.
     """
 
     logger: logging.Logger
@@ -53,6 +58,7 @@ class RomInstallRecorderConfig:
     system_extensions: SystemSupportedExtensionsFn
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
+    windows_resolver: WindowsResolver
 
 
 class RomInstallRecorder:
@@ -65,6 +71,7 @@ class RomInstallRecorder:
         self._system_extensions = config.system_extensions
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
+        self._windows_resolver = config.windows_resolver
 
     def do_record_install(
         self,
@@ -134,14 +141,26 @@ class RomInstallRecorder:
 
         This is the load-bearing site: the per-game core override and the disc
         pin both live on ``roms`` so they survive uninstall → reinstall, and
-        every route back to an installed ROM goes through here.
+        every route back to an installed ROM goes through here. A native-Windows
+        ROM (raw ``platform_slug == "win"``, checked before any system
+        normalization) bypasses ``active_core``/``disc_resolver`` entirely and
+        resolves through ``windows_resolver`` instead.
         """
         with self._uow_factory() as uow:
             rom = uow.roms.get(int(rom_id))
             install = uow.rom_installs.get(int(rom_id))
             selected_disc = rom.selected_disc if rom is not None else None
+            selected_exe = rom.selected_exe if rom is not None else None
+        is_windows = rom_detail.get("platform_slug") == "win"
         if rom is None:
+            if is_windows:
+                return (None, "")
             return (None, build_launch_options(resolve_emulator_invocation(rom_detail, None), file_path))
+        if is_windows:
+            launch_options = (
+                self._windows_resolver.resolve_launch_options(install, selected_exe) if install is not None else ""
+            )
+            return (rom.shortcut_app_id, launch_options)
         emulator = self._active_core.active_emulator_for_rom(int(rom_id))
         # The install record was committed just before this read, so it is
         # present in the normal flow; guard for the rare race where it is not and

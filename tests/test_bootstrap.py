@@ -397,6 +397,7 @@ class TestWireServices:
             "recovery_store": MagicMock(),
             "prune_artifacts": MagicMock(),
             "steam_recovery": MagicMock(),
+            "proton_locator": MagicMock(),
             "settings": settings,
             "loop": asyncio.new_event_loop(),
             "logger": logger,
@@ -464,6 +465,7 @@ class TestWireServices:
                 recovery_store=deps["recovery_store"],
                 prune_artifacts=deps["prune_artifacts"],
                 steam_recovery=deps["steam_recovery"],
+                proton_locator=deps["proton_locator"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],

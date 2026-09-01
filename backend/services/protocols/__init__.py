@@ -62,6 +62,7 @@ from services.protocols.cross_service import (
     SiblingSupersedeFn,
     SiblingSupersedeProvider,
     VersionSwitcherFn,
+    WindowsResolver,
 )
 from services.protocols.determinism import Clock, Sleeper, UuidGen
 from services.protocols.files import (
@@ -113,6 +114,7 @@ from services.protocols.paths import (
     SystemSupportedExtensionsFn,
 )
 from services.protocols.persistence import SettingsPersister
+from services.protocols.proton import ProtonLocator
 from services.protocols.repositories import (
     BiosFileRepository,
     FirmwareCacheRepository,
@@ -192,6 +194,7 @@ __all__ = [
     "PlatformSyncStateRepository",
     "PlaytimeRepository",
     "PlaytimeScopeNoticeClearFn",
+    "ProtonLocator",
     "PruneArtifactStore",
     "PruneSaveCoordinator",
     "ReachabilityProbeFn",
@@ -259,4 +262,5 @@ __all__ = [
     "UnitOfWorkFactory",
     "UuidGen",
     "VersionSwitcherFn",
+    "WindowsResolver",
 ]
