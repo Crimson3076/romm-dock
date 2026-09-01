@@ -293,3 +293,45 @@ class TestClearSelectedDisc:
         assert rom.selected_disc is None
         rom.clear_selected_disc()
         assert rom.selected_disc is None
+
+
+class TestPinSelectedExe:
+    def test_sets_filename(self):
+        rom = _make_rom()
+        rom.pin_selected_exe("Game.exe")
+        assert rom.selected_exe == "Game.exe"
+
+    def test_strips_surrounding_whitespace(self):
+        rom = _make_rom()
+        rom.pin_selected_exe("  Game.exe  ")
+        assert rom.selected_exe == "Game.exe"
+
+    def test_empty_filename_raises(self):
+        rom = _make_rom()
+        with pytest.raises(ValueError, match="selected_exe filename must not be empty"):
+            rom.pin_selected_exe("")
+        assert rom.selected_exe is None
+
+    def test_whitespace_only_filename_raises(self):
+        rom = _make_rom()
+        with pytest.raises(ValueError, match="selected_exe filename must not be empty"):
+            rom.pin_selected_exe("   ")
+        assert rom.selected_exe is None
+
+    def test_defaults_to_none(self):
+        rom = _make_rom()
+        assert rom.selected_exe is None
+
+
+class TestClearSelectedExe:
+    def test_clear_after_pin_sets_none(self):
+        rom = _make_rom()
+        rom.pin_selected_exe("Game.exe")
+        rom.clear_selected_exe()
+        assert rom.selected_exe is None
+
+    def test_clear_when_already_none_stays_none(self):
+        rom = _make_rom()
+        assert rom.selected_exe is None
+        rom.clear_selected_exe()
+        assert rom.selected_exe is None
