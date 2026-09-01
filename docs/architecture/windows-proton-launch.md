@@ -97,10 +97,11 @@ extracted without preserving permissions should still be found; whether it actua
 the locator's.
 
 `locate()` returns `None` — never raises — when neither Steam root exists or neither group yields a build.
-`compat_data_path(rom_id)` computes, but never creates, the per-ROM `STEAM_COMPAT_DATA_PATH` prefix
-(`<runtime_dir>/proton-prefixes/<rom_id>`).
+`compat_data_path(rom_id)` computes **and creates** the per-ROM `STEAM_COMPAT_DATA_PATH` prefix
+(`<runtime_dir>/proton-prefixes/<rom_id>`, idempotently, on every call) — see the next section for why the creation
+lives here rather than in the baked command.
 
-## Why the compat-data prefix is never pre-created, and the shell-operator finding
+## Why the compat-data prefix is created in Python, not in the baked command
 
 The Proton invocation `resolve_proton_invocation` renders is a **single flat command with no shell control operators**:
 
@@ -116,12 +117,22 @@ operator was never verified either way. If it is the former, `&&` becomes a lite
 of a control operator, and the whole launch silently fails — a command that only a shell could interpret correctly is
 not safe to bake without proof the shortcut is actually launched through one.
 
-No pre-creation is needed anyway: Proton's own launcher script creates `STEAM_COMPAT_DATA_PATH` (and initializes the
-wine prefix inside it) on first run when it does not already exist — the same behavior Steam's own compat-tool
-assignment already relies on for every other non-Steam Windows game. Every path rendered into the invocation — the
-compat-data prefix, Steam's own install root, the Proton binary — is plugin/system-derived, never attacker-controlled,
-so none of it is escaped; only the final `.exe` argument `build_launch_options` appends is (backslash and double-quote
-escaped, mirroring the RetroDECK launch's own path escaping — see
+The reasoning that first replaced the `mkdir -p` — "Proton's own launcher script creates `STEAM_COMPAT_DATA_PATH` on
+first run, the same behavior Steam's own compat-tool assignment relies on" — turned out to be unverified and wrong for
+this launch path specifically, and shipped that way until real-hardware testing surfaced a silent "Play does nothing"
+failure. A real Steam-library game gets that directory for free because **Steam itself** creates
+`steamapps/compatdata/<appid>/` before ever invoking Proton; Proton has never needed to create its own prefix root from
+scratch. This plugin's per-ROM prefix lives under its own `runtime_dir` (`<runtime_dir>/proton-prefixes/<rom_id>`), a
+tree nothing else creates — so on a fresh install nothing ever did, and Proton exited before reaching the target `.exe`
+with no surfaced error.
+
+The fix keeps the no-shell-operator property (the baked command still has none) while dropping the unverified
+assumption: `ProtonLocatorAdapter.compat_data_path` calls `os.makedirs(path, exist_ok=True)` itself, in Python, before
+ever returning the path to `resolve_proton_invocation` — a real filesystem side effect performed by the adapter that
+already owns I/O, not a command handed to a shell that may or may not be in the loop. Every path rendered into the
+invocation — the compat-data prefix, Steam's own install root, the Proton binary — is plugin/system-derived, never
+attacker-controlled, so none of it is escaped; only the final `.exe` argument `build_launch_options` appends is
+(backslash and double-quote escaped, mirroring the RetroDECK launch's own path escaping — see
 [Steam Non-Steam Shortcuts](steam-non-steam-shortcuts.md)).
 
 ## Why the plugin locates and invokes Proton itself

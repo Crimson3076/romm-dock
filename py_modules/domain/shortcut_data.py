@@ -196,11 +196,9 @@ def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str)
     options to that as pre-split argv or through a real shell is not
     something this plugin controls or has verified either way — a command
     that only a shell could interpret correctly is not safe to bake. The
-    per-ROM compat-data prefix (``ProtonLocator.compat_data_path``) is
-    therefore never created here: Proton's own launcher script creates
-    ``STEAM_COMPAT_DATA_PATH`` (and initializes the wine prefix inside it) on
-    first run when it does not already exist — the same thing Steam's own
-    compat-tool assignment relies on for any other non-Steam Windows game.
+    per-ROM compat-data prefix is therefore never created HERE (this function
+    stays pure, no I/O) — ``ProtonLocator.compat_data_path`` creates it before
+    this function ever sees the path (ADR-0029 decision 4).
 
     Every path rendered here — the compat-data prefix, Steam's own install
     root, the Proton binary — is plugin/system-derived, never

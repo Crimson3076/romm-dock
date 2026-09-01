@@ -156,13 +156,26 @@ class TestSteamRootResolution:
 
 
 class TestCompatDataPath:
-    def test_computes_path_without_creating_it(self, tmp_path):
+    def test_computes_and_creates_the_directory(self, tmp_path):
+        # Nothing else ever creates this tree (unlike a real Steam-library
+        # game, where Steam itself pre-creates steamapps/compatdata/<appid>/
+        # before invoking Proton) — a fresh runtime_dir proves the seam
+        # creates it rather than relying on it already existing.
         adapter = _adapter(tmp_path)
 
         path = adapter.compat_data_path(42)
 
         assert path == str(tmp_path / "runtime" / "proton-prefixes" / "42")
-        assert not os.path.exists(path)
+        assert os.path.isdir(path)
+
+    def test_idempotent_on_repeat_calls(self, tmp_path):
+        adapter = _adapter(tmp_path)
+
+        first = adapter.compat_data_path(42)
+        second = adapter.compat_data_path(42)
+
+        assert first == second
+        assert os.path.isdir(second)
 
     def test_distinct_rom_ids_get_distinct_paths(self, tmp_path):
         adapter = _adapter(tmp_path)
