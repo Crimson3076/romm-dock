@@ -148,6 +148,17 @@ def _direct_launch_args(command: str) -> str:
     return " ".join(stripped.split())
 
 
+def _escape_launch_arg(path: str) -> str:
+    """Backslash-escape ``\\`` and ``"`` in *path* for embedding in a double-quoted launch token.
+
+    Shared by every launch-command builder that embeds a filesystem path
+    inside a double-quoted argument, so a server-controlled filename or
+    directory name can never break out of the quoting and inject extra argv
+    elements.
+    """
+    return path.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def build_launch_options(invocation: str, path: str) -> str:
     """Compose the Steam shortcut launch command from *invocation* and ROM *path*.
 
@@ -180,19 +191,18 @@ def build_launch_options(invocation: str, path: str) -> str:
     """
     if not path:
         return ""
-    escaped = path.replace("\\", "\\\\").replace('"', '\\"')
-    return f'{invocation} "{escaped}"'
+    return f'{invocation} "{_escape_launch_arg(path)}"'
 
 
-def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str) -> str:
+def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str, exe_dir: str) -> str:
     """Render a native-Windows ROM's Proton launch invocation prefix.
 
     Mirrors :func:`resolve_emulator_invocation`'s role for the RetroDECK/ES-DE
     launch: the prefix :func:`build_launch_options` appends the picked ``.exe``
     path to (single-quoted-argument composition, same call). This is a single
-    flat ``env VAR=... VAR=... <binary> run`` command, deliberately with no
-    shell control operators (no ``&&``, no ``;``): ``bin/rom-launcher`` is a
-    plain ``exec "$@"``, and whether Steam hands a shortcut's exe+launch
+    flat ``env -C <dir> VAR=... VAR=... <binary> run`` command, deliberately
+    with no shell control operators (no ``&&``, no ``;``): ``bin/rom-launcher``
+    is a plain ``exec "$@"``, and whether Steam hands a shortcut's exe+launch
     options to that as pre-split argv or through a real shell is not
     something this plugin controls or has verified either way — a command
     that only a shell could interpret correctly is not safe to bake. The
@@ -200,14 +210,28 @@ def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str)
     stays pure, no I/O) — ``ProtonLocator.compat_data_path`` creates it before
     this function ever sees the path (ADR-0029 decision 4).
 
-    Every path rendered here — the compat-data prefix, Steam's own install
-    root, the Proton binary — is plugin/system-derived, never
+    ``exe_dir`` becomes GNU ``env``'s ``-C`` (``--chdir``) argument, so the
+    launched ``.exe`` runs with its own install directory as the working
+    directory rather than inheriting the launcher's fixed ``bin/`` (every
+    Steam shortcut's ``start_dir``, regardless of platform). A native-Windows
+    executable that resolves its own data files by a path relative to its own
+    location — as many do — silently fails to find them without this: real
+    hardware testing hit exactly that (Pokémon Uranium's ``Patcher.exe``
+    raised Windows' own "file not found" for ``neoncube\\neoncube.ini``, a
+    path relative to the exe's own folder). ``exe_dir`` is escaped the same
+    way :func:`build_launch_options` escapes its path argument — unlike the
+    compat-data prefix and the other paths here, it is derived from the same
+    on-disk directory name a server-controlled download could shape.
+
+    Every OTHER path rendered here — the compat-data prefix, Steam's own
+    install root, the Proton binary — is plugin/system-derived, never
     attacker-controlled, so (like ``RETRODECK_APP_ID`` and the RetroArch cores
-    dir above) none of it is escaped; only the final ``.exe`` argument
-    :func:`build_launch_options` appends is.
+    dir above) none of it is escaped; only ``exe_dir`` and the final ``.exe``
+    argument :func:`build_launch_options` appends are.
     """
     return (
         f"env "
+        f'-C "{_escape_launch_arg(exe_dir)}" '
         f'STEAM_COMPAT_DATA_PATH="{compat_data_path}" '
         f'STEAM_COMPAT_CLIENT_INSTALL_PATH="{proton.steam_install_path}" '
         f'"{proton.binary_path}" run'

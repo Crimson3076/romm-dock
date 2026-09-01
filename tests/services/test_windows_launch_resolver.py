@@ -83,6 +83,14 @@ class TestResolveLaunchOptions:
         assert '"/steam/proton" run' in result
         assert "&&" not in result
 
+    def test_working_directory_is_the_exe_own_folder(self):
+        # A native-Windows exe resolving its own data files via a path
+        # relative to its own location must see that folder as its CWD, not
+        # the plugin's fixed bin/ (every shortcut's start_dir).
+        resolver = _resolver(files=[_EXE1])
+        result = resolver.resolve_launch_options(_install(), None)
+        assert f'-C "{_ROM_DIR}" ' in result
+
     def test_no_proton_found_is_unlaunchable(self):
         resolver = _resolver(files=[_EXE1], proton=None)
         assert resolver.resolve_launch_options(_install(), None) == ""

@@ -106,7 +106,7 @@ lives here rather than in the baked command.
 The Proton invocation `resolve_proton_invocation` renders is a **single flat command with no shell control operators**:
 
 ```text
-env STEAM_COMPAT_DATA_PATH="<prefix>" STEAM_COMPAT_CLIENT_INSTALL_PATH="<steam_root>" "<proton_binary>" run "<exe>"
+env -C "<exe_dir>" STEAM_COMPAT_DATA_PATH="<prefix>" STEAM_COMPAT_CLIENT_INSTALL_PATH="<steam_root>" "<proton_binary>" run "<exe>"
 ```
 
 An earlier version of this code chained `mkdir -p "<prefix>" && env …` to self-heal the per-ROM compat-data directory
@@ -129,11 +129,24 @@ with no surfaced error.
 The fix keeps the no-shell-operator property (the baked command still has none) while dropping the unverified
 assumption: `ProtonLocatorAdapter.compat_data_path` calls `os.makedirs(path, exist_ok=True)` itself, in Python, before
 ever returning the path to `resolve_proton_invocation` — a real filesystem side effect performed by the adapter that
-already owns I/O, not a command handed to a shell that may or may not be in the loop. Every path rendered into the
-invocation — the compat-data prefix, Steam's own install root, the Proton binary — is plugin/system-derived, never
-attacker-controlled, so none of it is escaped; only the final `.exe` argument `build_launch_options` appends is
-(backslash and double-quote escaped, mirroring the RetroDECK launch's own path escaping — see
-[Steam Non-Steam Shortcuts](steam-non-steam-shortcuts.md)).
+already owns I/O, not a command handed to a shell that may or may not be in the loop. Most paths rendered into the
+invocation — the compat-data prefix, Steam's own install root, the Proton binary — are plugin/system-derived, never
+attacker-controlled, so they are not escaped; `exe_dir` and the final `.exe` argument `build_launch_options` appends ARE
+(backslash and double-quote escaped via the shared `_escape_launch_arg` helper, mirroring the RetroDECK launch's own
+path escaping — see [Steam Non-Steam Shortcuts](steam-non-steam-shortcuts.md)) — both are derived from the same on-disk
+directory/file names a server-controlled download could shape.
+
+## Why the invocation sets a working directory
+
+`env -C "<exe_dir>"` is the other half of the real-hardware fix, found right after the directory fix above let Proton
+actually start: Pokémon Uranium's `Patcher.exe` raised Wine's own "file not found" dialog for `neoncube\neoncube.ini` —
+a path relative to the exe's own folder. Every Steam shortcut this plugin creates shares one fixed `exe`
+(`bin/rom-launcher`) and `start_dir` (the plugin's own `bin/`) regardless of platform (ADR-0009) — correct for every
+other platform, since RetroDECK/ES-DE takes the ROM path as an argument and never depends on the launcher's own working
+directory. A native-Windows executable is different: many resolve their own data files relative to their own folder,
+exactly as a real Windows game launched from its own install directory would, and nothing in the launch model gave one
+that folder as its working directory until this fix. `-C` folds into the SAME flat `env` invocation rather than a
+second command or a shell `cd`, so the no-shell-operator property still holds.
 
 ## Why the plugin locates and invokes Proton itself
 

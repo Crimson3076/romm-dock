@@ -507,9 +507,10 @@ class TestResolveProtonInvocation:
         )
 
     def test_renders_env_and_run_with_no_shell_operators(self):
-        result = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/42")
+        result = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/42", "/roms/win/game-1")
         assert result == (
             "env "
+            '-C "/roms/win/game-1" '
             'STEAM_COMPAT_DATA_PATH="/runtime/proton-prefixes/42" '
             'STEAM_COMPAT_CLIENT_INSTALL_PATH="/steam" '
             '"/steam/compatibilitytools.d/GE-Proton9-27/proton" run'
@@ -522,27 +523,36 @@ class TestResolveProtonInvocation:
         assert ";" not in result
 
     def test_composes_with_build_launch_options(self):
-        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1")
+        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1", "/roms/win/game-1")
         launch_options = build_launch_options(invocation, "/roms/win/game-1/Game.exe")
         assert launch_options == (
             "env "
+            '-C "/roms/win/game-1" '
             'STEAM_COMPAT_DATA_PATH="/runtime/proton-prefixes/1" '
             'STEAM_COMPAT_CLIENT_INSTALL_PATH="/steam" '
             '"/steam/compatibilitytools.d/GE-Proton9-27/proton" run "/roms/win/game-1/Game.exe"'
         )
 
     def test_exe_path_with_spaces_is_quoted_and_escaped(self):
-        # The exe path is the only server/user-controlled piece of the command —
-        # build_launch_options escapes it exactly like every other platform.
-        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1")
+        # The exe path is server/user-controlled, so build_launch_options
+        # escapes it exactly like every other platform.
+        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1", "/roms/win/My Game")
         launch_options = build_launch_options(invocation, '/roms/win/My Game/Odd "Name".exe')
         assert launch_options.endswith('"/roms/win/My Game/Odd \\"Name\\".exe"')
 
+    def test_exe_dir_with_spaces_and_quotes_is_escaped(self):
+        # exe_dir is derived from the same on-disk directory name a
+        # server-controlled download could shape, unlike the other paths
+        # rendered here — it gets the same escaping as the final .exe argument.
+        invocation = resolve_proton_invocation(self._proton(), "/runtime/proton-prefixes/1", '/roms/win/My "Odd" Game')
+        assert '-C "/roms/win/My \\"Odd\\" Game"' in invocation
+
     def test_paths_are_not_shell_escaped(self):
-        # Every path rendered here is plugin/system-derived, never attacker-
-        # controlled (mirroring RETRODECK_APP_ID and the RetroArch cores dir).
+        # Every path rendered here EXCEPT exe_dir is plugin/system-derived,
+        # never attacker-controlled (mirroring RETRODECK_APP_ID and the
+        # RetroArch cores dir).
         proton = ProtonInstallation(name="X", binary_path="/steam/Proton/proton", steam_install_path="/steam root")
-        result = resolve_proton_invocation(proton, "/prefixes/1")
+        result = resolve_proton_invocation(proton, "/prefixes/1", "/roms/win/game-1")
         assert '"/steam root"' in result
 
 
