@@ -31,7 +31,7 @@ from domain.windows_launch import WindowsExecutable
 
 _ROM_DIR = "/roms/win/game-1"
 _EXE_PATH = f"{_ROM_DIR}/Game.exe"
-_WIN_LAUNCH_OPTIONS = f'mkdir -p "/prefixes/1" && env ... proton run "{_EXE_PATH}"'
+_WIN_LAUNCH_OPTIONS = f'env ... proton run "{_EXE_PATH}"'
 
 
 def _seed_windows(
