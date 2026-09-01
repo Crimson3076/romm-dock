@@ -27,6 +27,7 @@ from domain.rom_files import (
     needs_m3u,
     resolve_extract_dir_name,
     resolve_local_file_name,
+    should_extract_windows_archive,
     synthetic_rom_name,
 )
 from lib.errors import error_response
@@ -597,6 +598,31 @@ class DownloadService:
             cleanup=lambda: self._download_file_store.remove_tree(extract_dir),
         )
 
+    def _post_download_windows_archive_io(self, rom_id, rom_detail, target_path, file_name, system, extract_dir_name):
+        """Sync helper for _do_download windows-archive — extraction + exe resolution in executor.
+
+        A single-file (per RomM) native-Windows ``.zip`` still needs unpacking
+        to find its ``.exe`` (``should_extract_windows_archive``). Delegates to
+        ``DownloadFileStore.extract_windows_archive`` (skips the multi-file
+        path's RetroDECK/ES-DE-specific steps), then records the install.
+        """
+        extract_dir = os.path.join(os.path.dirname(target_path), extract_dir_name)
+        rom_name = rom_detail.get("name", file_name)
+        platform_name = rom_detail.get("platform_name", rom_detail.get("platform_slug", ""))
+        extract_cb = self._make_extract_callback(rom_id, rom_name, platform_name, file_name)
+        launch_file = self._download_file_store.extract_windows_archive(
+            target_path + _ZIP_TMP_EXT, extract_dir, self._retrodeck_paths.roms_path(), progress_callback=extract_cb
+        )
+
+        return self._install_recorder.do_record_install(
+            rom_id=rom_id,
+            rom_detail=rom_detail,
+            file_path=launch_file,
+            rom_dir=extract_dir,
+            system=system,
+            cleanup=lambda: self._download_file_store.remove_tree(extract_dir),
+        )
+
     def _maybe_es_de_collapse_io(self, extract_dir: str, launch_file: str) -> tuple[str, str]:
         """Rename *extract_dir* after the launch file so ES-DE collapses it to one entry.
 
@@ -915,12 +941,21 @@ class DownloadService:
         rom_name = rom_detail.get("name", file_name)
         platform_name = rom_detail.get("platform_name", rom_detail.get("platform_slug", ""))
         has_multiple = is_multi_file_download(rom_detail)
+        # Distinct gate from ``has_multiple``: RomM served this as a single file,
+        # but a native-Windows ``.zip`` still has to be unpacked to find its
+        # ``.exe`` (see ``should_extract_windows_archive``). Never consulted when
+        # RomM already reports multiple files — that ROM is extracted by the
+        # generic multi-file branch above regardless of platform.
+        platform_slug = rom_detail.get("platform_slug", "")
+        is_windows_archive = not has_multiple and should_extract_windows_archive(platform_slug, file_name)
         # Name the extract dir from the ROM's identity, not files[0] (which may be
         # an arbitrary inner asset for a nested-single folder game). Computed once
         # here and threaded to both the extraction and the cleanup so the dir a
-        # failure tears down matches the dir extraction created. Only multi-file
-        # ROMs own a dedicated dir, so single-file skips the derivation.
-        extract_dir_name = self._resolve_safe_extract_dir_name(rom_detail) if has_multiple else ""
+        # failure tears down matches the dir extraction created. Only a ROM that
+        # gets extracted (RomM-multi-file OR a single-file Windows archive) owns
+        # a dedicated dir; a plain single-file download skips the derivation.
+        owns_extract_dir = has_multiple or is_windows_archive
+        extract_dir_name = self._resolve_safe_extract_dir_name(rom_detail) if owns_extract_dir else ""
         progress_callback = self._make_progress_callback(rom_id, rom_name, platform_name, file_name, control)
         on_meta = self._make_on_meta(rom_id, rom_name, platform_name, file_name)
         # Tracks the resolved launch path once extraction returns it, so a
@@ -959,59 +994,41 @@ class DownloadService:
             async with self._download_semaphore:
                 self._download_queue[rom_id]["status"] = "downloading"
 
-                if has_multiple:
-                    # Multi-file ROM: API returns ZIP, download to temp then extract
-                    tmp_zip = target_path + _ZIP_TMP_EXT
-                    await self._loop.run_in_executor(
-                        None,
-                        partial(
-                            self._romm_api.download_rom_content,
-                            rom_id,
-                            file_name,
-                            tmp_zip,
-                            progress_callback,
-                            resume=resume,
-                            on_meta=on_meta,
-                        ),
-                    )
-                    post_io_future = self._loop.run_in_executor(
-                        None,
-                        self._post_download_multi_io,
-                        rom_id,
-                        rom_detail,
-                        target_path,
-                        file_name,
-                        system,
-                        extract_dir_name,
-                    )
-                    # Shield the commit await: a cancel here must propagate to this
-                    # coroutine WITHOUT cancelling the underlying future, so
-                    # ``_reconcile_post_io`` can re-await it for the real result. A
-                    # bare ``await`` cancels the asyncio future (the executor thread
-                    # still commits), so the re-await would raise CancelledError and
-                    # the committed install would be mis-reported as not committed
-                    # → torn down (#1049).
-                    final_path, post_io_error = await asyncio.shield(post_io_future)
+                # Both extracted paths (RomM-multi-file and a single-file
+                # native-Windows archive) transfer to a ``.zip.tmp`` and post-IO
+                # through their own extraction method; only the plain
+                # single-file path transfers straight to ``.tmp``.
+                if has_multiple or is_windows_archive:
+                    tmp_path = target_path + _ZIP_TMP_EXT
+                    post_io_fn = self._post_download_multi_io
+                    if is_windows_archive:
+                        post_io_fn = self._post_download_windows_archive_io
+                    post_io = partial(post_io_fn, rom_id, rom_detail, target_path, file_name, system, extract_dir_name)
                 else:
                     tmp_path = target_path + _TMP_EXT
-                    await self._loop.run_in_executor(
-                        None,
-                        partial(
-                            self._romm_api.download_rom_content,
-                            rom_id,
-                            file_name,
-                            tmp_path,
-                            progress_callback,
-                            resume=resume,
-                            on_meta=on_meta,
-                        ),
-                    )
-                    post_io_future = self._loop.run_in_executor(
-                        None, self._post_download_single_io, rom_id, rom_detail, target_path, system
-                    )
-                    # Shielded so a racing cancel leaves the future intact for
-                    # ``_reconcile_post_io`` to re-await (see the multi-file branch).
-                    final_path, post_io_error = await asyncio.shield(post_io_future)
+                    post_io = partial(self._post_download_single_io, rom_id, rom_detail, target_path, system)
+
+                await self._loop.run_in_executor(
+                    None,
+                    partial(
+                        self._romm_api.download_rom_content,
+                        rom_id,
+                        file_name,
+                        tmp_path,
+                        progress_callback,
+                        resume=resume,
+                        on_meta=on_meta,
+                    ),
+                )
+                post_io_future = self._loop.run_in_executor(None, post_io)
+                # Shield the commit await: a cancel here must propagate to this
+                # coroutine WITHOUT cancelling the underlying future, so
+                # ``_reconcile_post_io`` can re-await it for the real result. A
+                # bare ``await`` cancels the asyncio future (the executor thread
+                # still commits), so the re-await would raise CancelledError and
+                # the committed install would be mis-reported as not committed
+                # → torn down (#1049).
+                final_path, post_io_error = await asyncio.shield(post_io_future)
 
                 if post_io_error is not None or final_path is None:
                     # The download succeeded but the install record failed its
@@ -1061,7 +1078,7 @@ class DownloadService:
             else:
                 entry = self._download_queue[rom_id]
                 entry["status"] = "cancelled"
-                self._cleanup_partial_download(target_path, has_multiple, extract_dir_name, final_path)
+                self._cleanup_partial_download(target_path, owns_extract_dir, extract_dir_name, final_path)
                 # #1017: emit a terminal frame so the frontend resets the button
                 # out of its downloading state (the global cancel path was silent).
                 await self._emit(
@@ -1090,7 +1107,7 @@ class DownloadService:
         except Exception as e:
             self._download_queue[rom_id]["status"] = "failed"
             self._download_queue[rom_id]["error"] = str(e)
-            self._cleanup_partial_download(target_path, has_multiple, extract_dir_name, final_path)
+            self._cleanup_partial_download(target_path, owns_extract_dir, extract_dir_name, final_path)
             self._logger.error(f"Download failed for {rom_name}: {e}")
             await self._emit("download_failed", failed_frame(rom_id, rom_name, platform_name, str(e)))
 
@@ -1180,35 +1197,29 @@ class DownloadService:
         result = detect_launch_file(all_files, m3u_supported)
         return result if result is not None else extract_dir
 
-    def _cleanup_partial_download(self, target_path, has_multiple, extract_dir_name, final_path=None):
+    def _cleanup_partial_download(self, target_path, owns_extract_dir, extract_dir_name, final_path=None):
         """Clean up partial download files. Each step is independent so one failure doesn't block others.
 
-        Only ever called for a download that did NOT commit an install (the
-        failure path and the cancel-without-commit path); a cancel that loses the
-        race to a committed install routes to ``_finalize_download_complete``
-        instead and never reaches here.
+        Only ever called for a download that did NOT commit an install; a cancel
+        that loses the race routes to ``_finalize_download_complete`` instead.
 
         Removes ONLY the transient transfer artifacts (``.zip.tmp`` / ``.tmp``)
-        and, for a multi-file ROM, the extract dir(s) this download created. The
+        and, for a ROM that owns an extract dir (RomM-multi-file, or a
+        single-file native-Windows ``.zip``), the extract dir(s) created. The
         bare ``target_path`` is NEVER removed: a single-file transfer writes to
-        ``target_path + .tmp`` and only renames to ``target_path`` on success, so
-        deleting the bare path would destroy a PRE-EXISTING install (a re-download
-        that fails mid-stream) or a just-committed one (a cancel race) — the #1049
-        data-loss bug.
+        ``target_path + .tmp`` and only renames to ``target_path`` on success,
+        so deleting the bare path would destroy a PRE-EXISTING install (a
+        re-download that fails mid-stream) or a just-committed one (a cancel
+        race) — the #1049 data-loss bug.
 
-        For a multi-file ROM the extract dir may have been renamed for ES-DE
-        collapse after extraction. *final_path* (the resolved launch file,
-        ``None`` until extraction returns it) lets cleanup tear down whichever
-        of the two dir names exists — the staging name *and* the renamed dir
-        (``os.path.dirname(final_path)``) — so no failure path orphans a dir.
-
+        A RomM-multi-file extract dir may have been renamed for ES-DE collapse
+        (a windows archive never renames); *final_path* lets cleanup tear down
+        whichever of the two dir names exists (``os.path.dirname(final_path)``).
         *extract_dir_name* is the same ROM-identity-derived base name extraction
-        created the staging dir under (``_resolve_safe_extract_dir_name``), so
-        cleanup targets exactly that dir rather than re-deriving it from a stale
-        source (unused for single-file ROMs, which own no dir).
+        created the staging dir under (unused when *owns_extract_dir* is ``False``).
         """
         self._remove_partial_tmp_files(target_path)
-        if has_multiple:
+        if owns_extract_dir:
             staging_dir = os.path.join(os.path.dirname(target_path), extract_dir_name)
             dirs_to_remove = {staging_dir}
             if final_path:
