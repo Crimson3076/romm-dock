@@ -1,12 +1,15 @@
 """Resolve each ROM's launch facts — which file is launched, and what runs it.
 
-Answers the two questions :func:`domain.shortcut_data.build_shortcuts_data`
-asks about every ROM it bakes into a Steam shortcut: the disc-resolved path of
-the installed file (``{rom_id: bake_path}``) and the emulator that should run it
-(``{rom_id: EmulatorInvocation}``). Both preview and the per-unit apply resolve
-their maps here and hand them straight to the bake. Anything that is not a
-launch fact of a single ROM belongs elsewhere: the shortcut's *shape* is the
-domain builder's, and what the run does with the built shortcuts is
+Answers the questions :func:`domain.shortcut_data.build_shortcuts_data` asks
+about every ROM it bakes into a Steam shortcut: the disc-resolved path of the
+installed file (``{rom_id: bake_path}``) and the emulator that should run it
+(``{rom_id: EmulatorInvocation}``) — plus, for a native-Windows ROM (raw
+``platform_slug == "win"``, which bypasses both of those entirely), the
+already-rendered Proton launch command (``{rom_id: launch_options}``). Both
+preview and the per-unit apply resolve their maps here and hand them straight
+to the bake. Anything that is not a launch fact of a single ROM belongs
+elsewhere: the shortcut's *shape* is the domain builder's, and what the run
+does with the built shortcuts is
 :class:`~services.library.sync_orchestrator.SyncOrchestrator`'s.
 
 The install-path readers own their own read Unit of Work; the core resolution
@@ -38,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from domain.shortcut_data import EmulatorInvocation
-    from services.protocols import ActiveCoreReader, DiscResolver, UnitOfWorkFactory
+    from services.protocols import ActiveCoreReader, DiscResolver, UnitOfWorkFactory, WindowsResolver
 
 
 @dataclass(frozen=True)
@@ -46,16 +49,21 @@ class ShortcutLaunchResolverConfig:
     """Frozen wiring bundle handed to ``ShortcutLaunchResolver.__init__``.
 
     Holds the SQLite Unit-of-Work factory the install lookups read through and
-    the two per-ROM resolvers the bake's inputs are drawn from: ``active_core``
+    the three per-ROM resolvers the bake's inputs are drawn from: ``active_core``
     folds the per-game ``emulator_override`` and the per-platform
-    ``settings.json`` core over the standalone-aware es_systems default, and
+    ``settings.json`` core over the standalone-aware es_systems default,
     ``disc_resolver`` resolves a multi-disc ROM's persisted ``selected_disc``
-    pin against its install directory.
+    pin against its install directory, and ``windows_resolver`` resolves a
+    native-Windows ROM's persisted ``selected_exe`` pin into a full launch
+    command — Proton-wrapped for a ``.exe`` target, a direct ``bash``
+    invocation for a bundled ``.sh`` target (bypassing
+    ``active_core``/``disc_resolver`` entirely for that platform).
     """
 
     uow_factory: UnitOfWorkFactory
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
+    windows_resolver: WindowsResolver
 
 
 class ShortcutLaunchResolver:
@@ -65,6 +73,7 @@ class ShortcutLaunchResolver:
         self._uow_factory = config.uow_factory
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
+        self._windows_resolver = config.windows_resolver
 
     def do_build_core_overrides(self, roms: list[dict[str, Any]]) -> dict[int, EmulatorInvocation]:
         """Resolve each ROM's FULL active emulator for the bake.
@@ -127,3 +136,46 @@ class ShortcutLaunchResolver:
                     selected_disc = rom.selected_disc if rom is not None else None
                     paths[rom_id] = self._disc_resolver.resolve_for_install(install, selected_disc)
             return paths
+
+    def do_scan_windows_launch_options(self) -> dict[int, str]:
+        """Read ``{rom_id: launch_options}`` for every installed native-Windows ROM.
+
+        Preview-path counterpart to :meth:`do_scan_installed_paths`: a full
+        ``iter_all()`` scan, restricted to installs whose raw ``platform_slug``
+        is ``"win"`` (checked before any system normalization). Only ROMs that
+        resolve to a launchable command appear — no launch target, or (for a
+        ``.exe`` target) no Proton build located, leaves the ROM absent, and
+        :func:`build_shortcuts_data` renders that as the same empty launch
+        command every other unlaunchable install gets.
+        """
+        with self._uow_factory() as uow:
+            options: dict[int, str] = {}
+            for install in uow.rom_installs.iter_all():
+                if install.platform_slug != "win":
+                    continue
+                rom = uow.roms.get(install.rom_id)
+                selected_exe = rom.selected_exe if rom is not None else None
+                resolved = self._windows_resolver.resolve_launch_options(install, selected_exe)
+                if resolved:
+                    options[install.rom_id] = resolved
+            return options
+
+    def do_read_windows_launch_options(self, rom_ids: set[int]) -> dict[int, str]:
+        """Read ``{rom_id: launch_options}`` for *rom_ids*' native-Windows ROMs via point-lookups.
+
+        Per-unit apply counterpart to :meth:`do_read_installed_paths`, same
+        targeted-lookup rationale (#797) and the same "absent means no
+        launchable command" contract as :meth:`do_scan_windows_launch_options`.
+        """
+        with self._uow_factory() as uow:
+            options: dict[int, str] = {}
+            for rom_id in rom_ids:
+                install = uow.rom_installs.get(rom_id)
+                if install is None or install.platform_slug != "win":
+                    continue
+                rom = uow.roms.get(rom_id)
+                selected_exe = rom.selected_exe if rom is not None else None
+                resolved = self._windows_resolver.resolve_launch_options(install, selected_exe)
+                if resolved:
+                    options[rom_id] = resolved
+            return options

@@ -18,10 +18,12 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.fake_windows_resolver import FakeWindowsResolver
 
 from domain.disc_selection import Disc
 from domain.rom import Rom
 from domain.rom_install import RomInstall
+from domain.windows_launch import WindowsExecutable
 from lib.late_binding import LateBinding
 from services.relaunch_options_resolver import RelaunchOptionsResolver, RelaunchOptionsResolverConfig
 
@@ -70,6 +72,7 @@ def _make_resolver(
     uow: FakeUnitOfWork,
     active_core: FakeActiveCoreResolver | None = None,
     disc_resolver: FakeDiscResolver | None = None,
+    windows_resolver: FakeWindowsResolver | None = None,
     launch_renderer: FakeLaunchCommandRenderer | None = None,
 ) -> RelaunchOptionsResolver:
     renderer = launch_renderer if launch_renderer is not None else FakeLaunchCommandRenderer()
@@ -80,6 +83,7 @@ def _make_resolver(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
             active_core=active_core if active_core is not None else FakeActiveCoreResolver(),
             disc_resolver=disc_resolver if disc_resolver is not None else FakeDiscResolver(),
+            windows_resolver=windows_resolver if windows_resolver is not None else FakeWindowsResolver(),
             launch_renderer=launch_renderer_binding,
         ),
     )
@@ -389,3 +393,82 @@ def test_launch_path_never_resolves_the_active_core():
     resolver.launch_path_for_rom(1)
 
     assert active_core.emulator_calls == []
+
+
+# ── native-Windows ROMs bypass active_core/disc_resolver entirely ──────────
+
+_WIN_EXE = "/roms/win/game-1/Game.exe"
+
+
+def _seed_windows_install(uow: FakeUnitOfWork, *, rom_id: int, app_id: int, selected_exe: str | None = None) -> None:
+    with uow:
+        uow.roms.save(
+            Rom(
+                rom_id=rom_id,
+                platform_slug="win",
+                name=f"rom-{rom_id}",
+                fs_name=f"rom-{rom_id}",
+                shortcut_app_id=app_id,
+                last_synced_at="2026-01-01T00:00:00+00:00",
+                selected_exe=selected_exe,
+            )
+        )
+        uow.rom_installs.save(
+            RomInstall(
+                rom_id=rom_id,
+                file_path=_WIN_EXE,
+                rom_dir="/roms/win/game-1",
+                platform_slug="win",
+                system="win",
+                installed_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+
+
+def _windows_resolver_seeded(rom_id: int, launch_options: str, exe_path: str = _WIN_EXE) -> FakeWindowsResolver:
+    resolver = FakeWindowsResolver()
+    resolver.set_executables("/roms/win/game-1", [WindowsExecutable(filename="Game.exe", path=exe_path, kind="exe")])
+    resolver.set_launch_options(rom_id, launch_options)
+    return resolver
+
+
+def test_windows_rom_bakes_through_windows_resolver_not_active_core():
+    uow = FakeUnitOfWork()
+    _seed_windows_install(uow, rom_id=1, app_id=99)
+    windows_resolver = _windows_resolver_seeded(1, f'proton run "{_WIN_EXE}"')
+    active_core = FakeActiveCoreResolver(per_rom={1: ("should_never_resolve", "x")})
+    resolver = _make_resolver(uow=uow, active_core=active_core, windows_resolver=windows_resolver)
+
+    items = resolver.installed_relaunch_items()
+
+    assert items == [{"app_id": 99, "launch_options": f'proton run "{_WIN_EXE}"'}]
+    assert active_core.emulator_calls == []
+    assert windows_resolver.calls == [(1, None)]
+
+
+def test_windows_rom_single_entry_point_matches_batch():
+    uow = FakeUnitOfWork()
+    _seed_windows_install(uow, rom_id=1, app_id=99, selected_exe="Game.exe")
+    windows_resolver = _windows_resolver_seeded(1, f'proton run "{_WIN_EXE}"')
+    resolver = _make_resolver(uow=uow, windows_resolver=windows_resolver)
+    assert resolver.relaunch_item_for_rom(1) == {"app_id": 99, "launch_options": f'proton run "{_WIN_EXE}"'}
+
+
+def test_windows_rom_launch_path_is_the_bare_exe_path():
+    uow = FakeUnitOfWork()
+    _seed_windows_install(uow, rom_id=1, app_id=99)
+    windows_resolver = _windows_resolver_seeded(1, f'proton run "{_WIN_EXE}"')
+    resolver = _make_resolver(uow=uow, windows_resolver=windows_resolver)
+    assert resolver.launch_path_for_rom(1) == _WIN_EXE
+
+
+def test_windows_rom_no_proton_bakes_empty_command():
+    uow = FakeUnitOfWork()
+    _seed_windows_install(uow, rom_id=1, app_id=99)
+    # No launch_options seeded for rom_id=1 → resolves "" (mirrors "no Proton found").
+    windows_resolver = FakeWindowsResolver()
+    windows_resolver.set_executables(
+        "/roms/win/game-1", [WindowsExecutable(filename="Game.exe", path=_WIN_EXE, kind="exe")]
+    )
+    resolver = _make_resolver(uow=uow, windows_resolver=windows_resolver)
+    assert resolver.installed_relaunch_items() == [{"app_id": 99, "launch_options": ""}]

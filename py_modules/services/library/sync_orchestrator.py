@@ -285,6 +285,9 @@ class SyncOrchestrator:
             core_overrides = await self._loop.run_in_executor(
                 None, self._shortcut_launch_resolver.do_build_core_overrides, all_roms
             )
+            windows_launch_options = await self._loop.run_in_executor(
+                None, self._shortcut_launch_resolver.do_scan_windows_launch_options
+            )
             # Stamp each fresh ROM's component sibling-group key before the build so
             # the collapse below groups games, not dumps. The preview union is a
             # complete view of every enabled platform's groups; the DB's persisted
@@ -298,6 +301,7 @@ class SyncOrchestrator:
                 self._plugin_dir,
                 installed_paths,
                 core_overrides,
+                windows_launch_options,
                 resolve_invocation=self._launch_renderer.resolve_invocation,
                 render_launch_options=self._launch_renderer.build_launch_options,
             )
@@ -1014,6 +1018,9 @@ class SyncOrchestrator:
         core_overrides = await self._loop.run_in_executor(
             None, self._shortcut_launch_resolver.do_build_core_overrides, unit_roms
         )
+        windows_launch_options = await self._loop.run_in_executor(
+            None, self._shortcut_launch_resolver.do_read_windows_launch_options, {rom["id"] for rom in unit_roms}
+        )
 
         # Read the bound-row registry once, before the build: its persisted keys
         # seed the component keying (a fresh member edging into a DB-resident
@@ -1028,6 +1035,7 @@ class SyncOrchestrator:
             self._plugin_dir,
             installed_paths,
             core_overrides,
+            windows_launch_options,
             resolve_invocation=self._launch_renderer.resolve_invocation,
             render_launch_options=self._launch_renderer.build_launch_options,
         )

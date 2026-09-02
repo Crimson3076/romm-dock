@@ -28,6 +28,7 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.system_time import FakeClock
 
 from domain.disc_selection import Disc
@@ -108,6 +109,7 @@ class TestLibrarySyncBakeSite:
                 uow_factory=uow_factory,
                 active_core=FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=disc_resolver,
+                windows_resolver=FakeWindowsResolver(),
             )
         )
 
@@ -163,6 +165,7 @@ class TestInstallRecorderBakeSite:
                 system_extensions=lambda system_name: frozenset(),
                 active_core=FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=disc_resolver,
+                windows_resolver=FakeWindowsResolver(),
                 launch_renderer=FakeLaunchCommandRenderer(),
             )
         )

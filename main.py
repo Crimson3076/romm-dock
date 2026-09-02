@@ -172,6 +172,7 @@ class Plugin:
         self._settings_service = services["settings_service"]
         self._core_service = services["core_service"]
         self._disc_service = services["disc_service"]
+        self._windows_game_service = services["windows_game_service"]
         self._version_switch_service = services["version_switch_service"]
         self._prune_service = services["prune_service"]
         self._connection_service = services["connection_service"]
@@ -377,6 +378,19 @@ class Plugin:
         result = await self._disc_service.select_disc(rom_id, filename)
         if result.get("success") and result.get("launch_options") is not None:
             result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "disc_selection")
+        return result
+
+    # ── Windows exe picker delegation to WindowsGameService ──────────────
+
+    async def get_windows_executables(self, rom_id):
+        return await self._windows_game_service.get_windows_executables(rom_id)
+
+    @migration_blocked
+    @prune_active_blocked
+    async def select_executable(self, rom_id, filename):
+        result = await self._windows_game_service.select_executable(rom_id, filename)
+        if result.get("success") and result.get("launch_options") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "executable_selection")
         return result
 
     # ── Version picker delegation to VersionSwitchService ──────────────

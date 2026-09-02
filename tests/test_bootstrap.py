@@ -261,6 +261,7 @@ class TestWireServices:
             "recovery_store": MagicMock(),
             "prune_artifacts": MagicMock(),
             "steam_recovery": MagicMock(),
+            "proton_locator": MagicMock(),
             "retrodeck_launcher_backend_factory": FakeLauncherBackendFactory("retrodeck"),
             "emudeck_launcher_backend_factory": FakeLauncherBackendFactory("emudeck", installations=[]),
             "settings": settings,
@@ -321,6 +322,7 @@ class TestWireServices:
                 recovery_store=deps["recovery_store"],
                 prune_artifacts=deps["prune_artifacts"],
                 steam_recovery=deps["steam_recovery"],
+                proton_locator=deps["proton_locator"],
                 retrodeck_launcher_backend_factory=deps["retrodeck_launcher_backend_factory"],
                 emudeck_launcher_backend_factory=deps["emudeck_launcher_backend_factory"],
             ),
@@ -408,8 +410,9 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(result) == 26
+        assert len(result) == 27
         assert "migration_service" in result
+        assert "windows_game_service" in result
         assert "game_detail_service" in result
         assert "rom_removal_service" in result
         assert "settings_service" in result

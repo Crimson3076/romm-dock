@@ -102,6 +102,14 @@ class RomRepository(Protocol):
         """
         ...
 
+    def set_selected_exe(self, rom_id: int, filename: str | None) -> None:
+        """Pin (or clear with ``None``) the per-game native-Windows exe selection for *rom_id*.
+
+        The only write path for ``selected_exe``; the sync upsert in
+        :meth:`save` never touches it, so a re-sync preserves the pick.
+        """
+        ...
+
     def set_applied_launch_options(self, rom_id: int, launch_options: str | None) -> None:
         """Record the ``launch_options`` last written to *rom_id*'s shortcut (#1383).
 

@@ -670,6 +670,54 @@ export interface SelectDiscResult {
 export const getDiscSelection = callable<[number], DiscSelection>("get_disc_selection");
 export const selectDisc = callable<[number, string | null], SelectDiscResult>("select_disc");
 
+/** One launchable `.exe` within a native-Windows ROM's install directory. */
+export interface WindowsExecutable {
+  filename: string;
+}
+
+/**
+ * Exe-picker state for a ROM. `has_executables` is `false` when the ROM is
+ * unknown, not installed, is not a native-Windows ROM, or its install
+ * enumerates no `.exe` at all — the frontend renders no picker in any of
+ * those cases. When `true` the remaining fields are present: `executables` in
+ * enumeration order and `selected` the currently effective pick (down-
+ * validated: a stale pin whose file is no longer enumerated reports as
+ * `null`, matching what the bake actually launches).
+ */
+export interface WindowsExecutablesAnswer {
+  has_executables: boolean;
+  executables?: WindowsExecutable[];
+  selected?: string | null;
+}
+
+/**
+ * Result of pinning / clearing a native-Windows `.exe` selection. On success
+ * the backend persists the pick (or NULL when clearing back to the default —
+ * the first enumerated `.exe`) and re-bakes the Proton-wrapped
+ * `launch_options` for the now-selected executable — the frontend
+ * confirm-sets it via `setLaunchOptionsConfirmed`. `selected` echoes the
+ * now-effective pin (null when cleared). A failure carries the canonical
+ * `{success: false, reason, message}` shape (`not_found` for an unknown
+ * filename, `not_installed` / `unsupported` when the ROM is not an installed
+ * native-Windows ROM).
+ */
+export interface SelectExecutableResult {
+  success: boolean;
+  launch_options?: string;
+  selected?: string | null;
+  reason?: string;
+  message?: string;
+  prune_lease_token?: string;
+}
+
+// Per-game exe pick — the native-Windows/Proton launch target, structural twin
+// of the disc pick above. Keyed by rom_id — the DB pin survives
+// uninstall/reinstall (roms.selected_exe). select_executable(rom_id, filename)
+// pins an exe by basename; select_executable(rom_id, null) clears the pin
+// (follow the default — the first enumerated `.exe`).
+export const getWindowsExecutables = callable<[number], WindowsExecutablesAnswer>("get_windows_executables");
+export const selectExecutable = callable<[number, string | null], SelectExecutableResult>("select_executable");
+
 /**
  * One version (RomM sibling) of a game in the version picker (#1297, ADR-0021).
  * `label` is the fs_name_no_ext-derived display text; the dimensions are the

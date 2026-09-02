@@ -219,6 +219,22 @@ class TestGetPlatformCoreInfo:
             "has_game_override": False,
         }
 
+    def test_windows_rom_returns_no_emulators(self, event_loop, service, uow, core_info):
+        # A native-Windows ROM (ADR-0030) has no emulator/core step at all — the
+        # guard fires BEFORE the ES-DE enumeration, not merely because "win" has
+        # no es_systems.xml entry.
+        _seed_rom(uow, rom_id=42, platform_slug="win")
+        result = event_loop.run_until_complete(service.get_platform_core_info(42))
+        assert result == {
+            "emulators": [],
+            "emulator_data_available": True,
+            "active_core": None,
+            "active_core_label": None,
+            "platform_core_label": None,
+            "has_game_override": False,
+        }
+        assert core_info.emulator_options_calls == []
+
     def test_unknown_rom_returns_empty(self, event_loop, service, core_info):
         # No ROM seeded for rom_id=7 → empty emulators + no active core, and the
         # platform-wide enumeration is never reached.
@@ -406,6 +422,19 @@ class TestSetGameCore:
         assert result["reason"] == "not_found"
         assert "7" in result["message"]
 
+    def test_windows_rom_refused_before_any_write(self, event_loop, service, uow, core_info):
+        # A native-Windows ROM has no emulator/core step (ADR-0030) — refused
+        # BEFORE any write, and before the ES-DE options are even read, so a pin
+        # here can never re-bake the shortcut through the RetroDECK path and
+        # discard the Proton-wrapped exe launch.
+        _seed_rom(uow, rom_id=42, platform_slug="win", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/win/Uranium/Uranium.rgssad", platform_slug="win")
+        result = event_loop.run_until_complete(service.set_game_core(42, "bsnes"))
+        assert result["success"] is False
+        assert result["reason"] == "unsupported"
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
+        assert core_info.emulator_options_calls == []
+
     def test_resolves_system_before_label_lookup(self, event_loop, service, uow, core_info, resolve_system):
         # The slug→system normalization runs before the emulator-options read so
         # label resolution keys off the RetroDECK system, not the raw slug.
@@ -478,6 +507,17 @@ class TestClearGameCore:
         assert result["success"] is False
         assert result["reason"] == "not_found"
 
+    def test_clear_windows_rom_refused(self, event_loop, service, uow, active_core):
+        # A native-Windows ROM has no emulator-override concept to clear
+        # (ADR-0030) — refused before the active-core resolver (which knows
+        # nothing about Proton/exe selection) is ever consulted.
+        _seed_rom(uow, rom_id=42, platform_slug="win", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/win/Uranium/Uranium.rgssad", platform_slug="win")
+        result = event_loop.run_until_complete(service.clear_game_core(42))
+        assert result["success"] is False
+        assert result["reason"] == "unsupported"
+        assert active_core.emulator_calls == []
+
 
 # ── set_system_core (per-platform settings write) ──────────────────────
 
@@ -496,6 +536,18 @@ class TestSetSystemCore:
         # Clearing removes the platform from the map (revert to es_systems default).
         assert "snes" not in settings["platform_cores"]["retrodeck"]
         assert settings_persister.save_count == 1
+
+    def test_windows_platform_is_a_no_op(self, event_loop, service, settings, settings_persister, uow):
+        # The native-Windows pseudo-platform has no emulator/core concept
+        # (ADR-0030) — nothing is written to settings.json and no installed ROM
+        # is rebaked, but the call still reports success (nothing to fail).
+        _seed_rom(uow, rom_id=42, platform_slug="win", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/win/Uranium/Uranium.rgssad", platform_slug="win")
+        result = event_loop.run_until_complete(service.set_system_core("win", "bsnes"))
+        assert result["success"] is True
+        assert result["rebake_items"] == []
+        assert "win" not in settings["platform_cores"]
+        assert settings_persister.save_count == 0
 
     def test_writes_under_the_active_backend_leaving_others_untouched(self, event_loop, service, settings):
         """A pick made while RetroDECK is active never lands under a different

@@ -18,6 +18,7 @@ from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.late_binding import bound
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
@@ -174,6 +175,7 @@ def plugin():
             uow_factory=FakeUnitOfWorkFactory(),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
+            windows_resolver=FakeWindowsResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
             launch_renderer=FakeLaunchCommandRenderer(),
@@ -195,6 +197,7 @@ def plugin():
             system_extensions=lambda system_name: p._system_extensions.get(system_name, frozenset()),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
+            windows_resolver=FakeWindowsResolver(),
             launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
@@ -2292,6 +2295,350 @@ class TestDoDownloadMultiFile:
         complete = [c for c in decky.emit.call_args_list if c[0][0] == "download_complete"]
         assert len(complete) == 1
         assert plugin._download_service._download_queue[55]["status"] == "completed"
+
+
+class TestDoDownloadWindowsArchive:
+    """A single-file (per RomM) native-Windows ``.zip`` must be extracted so its
+    ``.exe`` can be found — the AM2R bug: RomM reports one file for an
+    already-zipped PC backup, so the old single-file path wrote the raw ZIP
+    bytes verbatim and no ``.exe`` was ever found.
+    """
+
+    @pytest.mark.asyncio
+    async def test_windows_zip_extracts_and_resolves_exe(self, plugin, tmp_path):
+        """Happy path: extracts, records rom_dir + a file_path pointing at the
+        .exe, and integrates cleanly with WindowsLaunchResolver's own
+        enumeration (the already-shipped exe-picker seam) over the same dir.
+        """
+        import zipfile as zf
+        from unittest.mock import patch
+
+        import decky
+        from fakes.fake_proton_locator import FakeProtonLocator
+
+        from services.windows_launch_resolver import WindowsLaunchResolver, WindowsLaunchResolverConfig
+
+        decky.DECKY_USER_HOME = str(tmp_path)
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+            bios=str(tmp_path / "retrodeck" / "bios"),
+        )
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+        )
+        decky.emit.reset_mock()
+
+        roms_dir = tmp_path / "retrodeck" / "roms" / "win"
+        roms_dir.mkdir(parents=True)
+        target_path = str(roms_dir / "AM2R.zip")
+
+        zip_content_path = tmp_path / "source.zip"
+        with zf.ZipFile(str(zip_content_path), "w") as z:
+            z.writestr("AM2R.exe", b"\x00" * 100)
+            z.writestr("data.win", b"\x00" * 200)
+            z.writestr("readme.txt", b"hello")
+        zip_bytes = zip_content_path.read_bytes()
+
+        rom_detail = {
+            "id": 501,
+            "name": "AM2R",
+            "fs_name": "AM2R.zip",
+            "fs_name_no_ext": "AM2R",
+            "platform_slug": "win",
+            "platform_name": "Windows",
+            "has_multiple_files": False,
+        }
+
+        def fake_download(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(zip_bytes)
+
+        _seed_rom(plugin._uow, 501, platform_slug="win")
+        plugin._download_service._loop = asyncio.get_event_loop()
+        plugin._download_service._download_queue[501] = {"rom_id": 501, "status": "downloading", "progress": 0}
+
+        with patch.object(plugin._romm_api, "download_rom_content", side_effect=fake_download):
+            await plugin._download_service._do_download(501, rom_detail, target_path, "win", "AM2R.zip")
+
+        extract_dir = roms_dir / "AM2R"
+        assert extract_dir.is_dir()
+        assert (extract_dir / "AM2R.exe").exists()
+        assert (extract_dir / "data.win").exists()
+        # The raw .zip must never be written verbatim — it was extracted.
+        assert not os.path.isfile(target_path)
+        assert not os.path.exists(target_path + ".zip.tmp")
+
+        installed = plugin._uow.rom_installs.get(501)
+        assert installed is not None
+        assert installed.rom_dir == str(extract_dir)
+        assert installed.file_path == str(extract_dir / "AM2R.exe")
+        assert installed.launchable is True
+
+        # Integrates with the already-shipped exe-picker seam: the same
+        # directory listing WindowsLaunchResolver.enumerate_executables uses
+        # finds exactly the one .exe this download extracted.
+        resolver = WindowsLaunchResolver(
+            config=WindowsLaunchResolverConfig(
+                list_files=plugin._download_service._download_file_store.list_files,
+                proton_locator=FakeProtonLocator(installation=None),
+            )
+        )
+        executables = resolver.enumerate_executables(installed)
+        assert [exe.filename for exe in executables] == ["AM2R.exe"]
+        assert executables[0].path == installed.file_path
+
+        assert plugin._download_service._download_queue[501]["status"] == "completed"
+        complete = [c for c in decky.emit.call_args_list if c[0][0] == "download_complete"]
+        assert len(complete) == 1
+        assert complete[0][0][1]["file_path"] == installed.file_path
+
+    @pytest.mark.asyncio
+    async def test_windows_zip_with_multiple_exes_picks_first_alphabetically(self, plugin, tmp_path):
+        """Multiple .exe candidates: the default is the same "first enumerated"
+        rule domain.windows_launch.resolve_launch_path already applies —
+        alphabetical by basename, matching the exe picker's default.
+        """
+        import zipfile as zf
+        from unittest.mock import patch
+
+        import decky
+
+        decky.DECKY_USER_HOME = str(tmp_path)
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+            bios=str(tmp_path / "retrodeck" / "bios"),
+        )
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+        )
+        decky.emit.reset_mock()
+
+        roms_dir = tmp_path / "retrodeck" / "roms" / "win"
+        roms_dir.mkdir(parents=True)
+        target_path = str(roms_dir / "Game.zip")
+
+        zip_content_path = tmp_path / "source.zip"
+        with zf.ZipFile(str(zip_content_path), "w") as z:
+            z.writestr("Setup.exe", b"\x00" * 10)
+            z.writestr("Game.exe", b"\x00" * 10)
+        zip_bytes = zip_content_path.read_bytes()
+
+        rom_detail = {
+            "id": 502,
+            "name": "Some Game",
+            "fs_name": "Game.zip",
+            "fs_name_no_ext": "Game",
+            "platform_slug": "win",
+            "platform_name": "Windows",
+            "has_multiple_files": False,
+        }
+
+        def fake_download(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(zip_bytes)
+
+        _seed_rom(plugin._uow, 502, platform_slug="win")
+        plugin._download_service._loop = asyncio.get_event_loop()
+        plugin._download_service._download_queue[502] = {"rom_id": 502, "status": "downloading", "progress": 0}
+
+        with patch.object(plugin._romm_api, "download_rom_content", side_effect=fake_download):
+            await plugin._download_service._do_download(502, rom_detail, target_path, "win", "Game.zip")
+
+        installed = plugin._uow.rom_installs.get(502)
+        assert installed is not None
+        # "Game.exe" sorts before "Setup.exe" case-insensitively.
+        assert installed.file_path == str(roms_dir / "Game" / "Game.exe")
+
+    @pytest.mark.asyncio
+    async def test_windows_zip_with_no_exe_degrades_to_extract_dir(self, plugin, tmp_path):
+        """No .exe inside the archive at all: degrades to the extract dir as
+        file_path (the same "nothing launchable yet" fallback
+        _collect_and_detect_launch_file uses on the multi-file path when no
+        launch file is found) without raising or corrupting state.
+        """
+        import zipfile as zf
+        from unittest.mock import patch
+
+        import decky
+
+        decky.DECKY_USER_HOME = str(tmp_path)
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+            bios=str(tmp_path / "retrodeck" / "bios"),
+        )
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+        )
+        decky.emit.reset_mock()
+
+        roms_dir = tmp_path / "retrodeck" / "roms" / "win"
+        roms_dir.mkdir(parents=True)
+        target_path = str(roms_dir / "DataOnly.zip")
+
+        zip_content_path = tmp_path / "source.zip"
+        with zf.ZipFile(str(zip_content_path), "w") as z:
+            z.writestr("readme.txt", b"no game here")
+            z.writestr("data/assets.pak", b"\x00" * 10)
+        zip_bytes = zip_content_path.read_bytes()
+
+        rom_detail = {
+            "id": 503,
+            "name": "Data Only",
+            "fs_name": "DataOnly.zip",
+            "fs_name_no_ext": "DataOnly",
+            "platform_slug": "win",
+            "platform_name": "Windows",
+            "has_multiple_files": False,
+        }
+
+        def fake_download(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(zip_bytes)
+
+        _seed_rom(plugin._uow, 503, platform_slug="win")
+        plugin._download_service._loop = asyncio.get_event_loop()
+        plugin._download_service._download_queue[503] = {"rom_id": 503, "status": "downloading", "progress": 0}
+
+        with patch.object(plugin._romm_api, "download_rom_content", side_effect=fake_download):
+            await plugin._download_service._do_download(503, rom_detail, target_path, "win", "DataOnly.zip")
+
+        extract_dir = roms_dir / "DataOnly"
+        assert extract_dir.is_dir()
+        installed = plugin._uow.rom_installs.get(503)
+        assert installed is not None
+        assert installed.rom_dir == str(extract_dir)
+        # No .exe found: file_path degrades to the extract dir itself.
+        assert installed.file_path == str(extract_dir)
+        # Nothing downstream reads this file_path for exe enumeration (that
+        # always scans rom_dir), and the "win" system's empty ES-DE accept-list
+        # default-accepts regardless — so this must not raise or corrupt state.
+        assert installed.launchable is True
+        assert plugin._download_service._download_queue[503]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_windows_zip_slip_protection_still_applies(self, plugin, tmp_path):
+        """#968's decoded-traversal guard covers this new path too — reuses the
+        exact zip-slip fixture pattern TestDoDownloadPostDecodeTraversal uses.
+        """
+        import zipfile as zf
+        from unittest.mock import patch
+
+        import decky
+
+        decky.DECKY_USER_HOME = str(tmp_path)
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+            bios=str(tmp_path / "retrodeck" / "bios"),
+        )
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+        )
+        decky.emit.reset_mock()
+
+        roms_dir = tmp_path / "retrodeck" / "roms" / "win"
+        roms_dir.mkdir(parents=True)
+        target_path = str(roms_dir / "Evil.zip")
+
+        zip_content_path = tmp_path / "source.zip"
+        with zf.ZipFile(str(zip_content_path), "w") as z:
+            z.writestr("legit.exe", b"\x00" * 50)
+            z.writestr("%2e%2e%2fevil.sh", b"payload")
+        zip_bytes = zip_content_path.read_bytes()
+
+        def fake_download(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(zip_bytes)
+
+        rom_detail = {
+            "id": 504,
+            "name": "Evil Windows Game",
+            "fs_name": "Evil.zip",
+            "fs_name_no_ext": "Evil",
+            "platform_slug": "win",
+            "platform_name": "Windows",
+            "has_multiple_files": False,
+        }
+
+        _seed_rom(plugin._uow, 504, platform_slug="win")
+        plugin._download_service._loop = asyncio.get_event_loop()
+        plugin._download_service._download_queue[504] = {"rom_id": 504, "status": "downloading", "progress": 0}
+
+        with patch.object(plugin._romm_api, "download_rom_content", side_effect=fake_download):
+            await plugin._download_service._do_download(504, rom_detail, target_path, "win", "Evil.zip")
+
+        # The traversal target must NOT exist anywhere outside the extraction dir.
+        assert not (roms_dir / "evil.sh").exists()
+        assert not (tmp_path / "retrodeck" / "roms" / "evil.sh").exists()
+        assert not (tmp_path / "evil.sh").exists()
+        # Already-extracted members are cleaned up — no half-installed ROM dir.
+        assert not (roms_dir / "Evil").exists()
+        assert not os.path.exists(target_path + ".zip.tmp")
+        assert plugin._uow.rom_installs.get(504) is None
+        assert plugin._download_service._download_queue[504]["status"] == "failed"
+        failed = [c for c in decky.emit.call_args_list if c[0][0] == "download_failed"]
+        assert len(failed) == 1
+        assert "evil.sh" in failed[0][0][1]["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_non_windows_platform_zip_is_a_regression_guard_not_extracted(self, plugin, tmp_path):
+        """The test that would fail if the platform-slug check were ever loosened.
+
+        A single-file .zip download for a real console platform (psx) must
+        take the OLD raw-file path unchanged: no extraction, rom_dir=None, the
+        file saved verbatim at target_path. This is the exact shape RetroArch
+        needs — a zipped console ROM must never be unpacked.
+        """
+        from unittest.mock import patch
+
+        import decky
+
+        decky.DECKY_USER_HOME = str(tmp_path)
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+            bios=str(tmp_path / "retrodeck" / "bios"),
+        )
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
+            roms=str(tmp_path / "retrodeck" / "roms"),
+        )
+        decky.emit.reset_mock()
+
+        roms_dir = tmp_path / "retrodeck" / "roms" / "psx"
+        roms_dir.mkdir(parents=True)
+        target_path = str(roms_dir / "game.zip")
+
+        rom_detail = {
+            "id": 505,
+            "name": "Some PSX Game",
+            "fs_name": "game.zip",
+            "platform_slug": "psx",
+            "platform_name": "PlayStation",
+            "has_multiple_files": False,
+        }
+        zip_bytes = b"PK\x03\x04this is not really parsed as a zip on this path"
+
+        def fake_download(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(zip_bytes)
+
+        _seed_rom(plugin._uow, 505, platform_slug="psx")
+        plugin._download_service._loop = asyncio.get_event_loop()
+        plugin._download_service._download_queue[505] = {"rom_id": 505, "status": "downloading", "progress": 0}
+
+        with patch.object(plugin._romm_api, "download_rom_content", side_effect=fake_download):
+            await plugin._download_service._do_download(505, rom_detail, target_path, "psx", "game.zip")
+
+        # The raw ZIP bytes are saved verbatim — never extracted.
+        assert os.path.exists(target_path)
+        assert os.path.getsize(target_path) == len(zip_bytes)
+        assert not os.path.isdir(roms_dir / "game")
+        assert not os.path.exists(target_path + ".tmp")
+        assert not os.path.exists(target_path + ".zip.tmp")
+
+        installed = plugin._uow.rom_installs.get(505)
+        assert installed is not None
+        assert installed.rom_dir is None
+        assert installed.file_path == target_path
+        assert plugin._download_service._download_queue[505]["status"] == "completed"
 
 
 class TestDoDownloadBundledM3uPlatformGate:

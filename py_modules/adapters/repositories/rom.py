@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 
 # The sync-owned columns: written by the library re-sync UPSERT. Driving
 # SELECT/INSERT/VALUES/SET from this ONE tuple keeps them in lockstep so a
-# subset omission is impossible (R10). emulator_override and selected_disc are
-# deliberately NOT here — they are per-game deviations, not synced identity:
-# each is read in SELECT but written only via its own set_*() method, never by
-# save(), so a re-sync (which builds a fresh Rom with both = None) cannot wipe a
-# user's pin. The version-metadata columns (sibling_group_key + the version
-# dimensions) ARE here — they are server-derived facts that must refresh on
+# subset omission is impossible (R10). emulator_override, selected_disc, and
+# selected_exe are deliberately NOT here — they are per-game deviations, not
+# synced identity: each is read in SELECT but written only via its own set_*()
+# method, never by save(), so a re-sync (which builds a fresh Rom with all three
+# = None) cannot wipe a user's pin. The version-metadata columns (sibling_group_key
+# + the version dimensions) ARE here — they are server-derived facts that must refresh on
 # every sync (ADR-0021), the opposite of the user pins. cover_source (the
 # cover-cache fingerprint, #1386) rides the UPSERT like cover_path: the commit
 # writes the value the artwork layer confirmed this run, else the preserved
@@ -55,10 +55,12 @@ _SYNC_COLUMNS = (
 )
 
 # Read set: the synced columns plus the pin-only emulator_override, selected_disc,
-# and applied_launch_options (the recorded applied launch command, #1383). Like the
-# two pins, applied_launch_options is read here but written only by its own set_*()
-# method, never by save(), so a re-sync never wipes the recorded value.
-_SELECT_COLUMNS = ", ".join((*_SYNC_COLUMNS, "emulator_override", "selected_disc", "applied_launch_options"))
+# selected_exe, and applied_launch_options (the recorded applied launch command,
+# #1383). Like the other pins, selected_exe is read here but written only by its
+# own set_*() method, never by save(), so a re-sync never wipes the pin.
+_SELECT_COLUMNS = ", ".join(
+    (*_SYNC_COLUMNS, "emulator_override", "selected_disc", "selected_exe", "applied_launch_options")
+)
 _INSERT_COLUMNS = ", ".join(_SYNC_COLUMNS)
 _INSERT_PLACEHOLDERS = ", ".join("?" for _ in _SYNC_COLUMNS)
 # Every sync column except the rom_id primary key is overwritten on conflict.
@@ -84,6 +86,7 @@ def _row_to_rom(row: sqlite3.Row) -> Rom:
         ra_id=row["ra_id"],
         emulator_overrides=json.loads(row["emulator_override"]) if row["emulator_override"] is not None else {},
         selected_disc=row["selected_disc"],
+        selected_exe=row["selected_exe"],
         applied_launch_options=row["applied_launch_options"],
         sibling_group_key=row["sibling_group_key"],
         regions=tuple(json.loads(row["regions"])),
@@ -200,6 +203,19 @@ class SqliteRomRepository(BaseRepository):
         """
         self._conn.execute(
             "UPDATE roms SET selected_disc = ? WHERE rom_id = ?",
+            (filename, rom_id),
+        )
+
+    def set_selected_exe(self, rom_id: int, filename: str | None) -> None:
+        """Write (or clear) the per-game native-Windows exe selection for ``rom_id``.
+
+        ``filename`` is the launch-target basename to pin, or ``None`` to store
+        SQL NULL (follow the default — the first enumerated target). This is the only
+        write path for the column — the sync UPSERT in :meth:`save` never
+        touches it, mirroring :meth:`set_selected_disc`.
+        """
+        self._conn.execute(
+            "UPDATE roms SET selected_exe = ? WHERE rom_id = ?",
             (filename, rom_id),
         )
 

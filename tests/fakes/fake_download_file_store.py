@@ -11,6 +11,7 @@ import zlib
 from typing import TYPE_CHECKING
 
 from domain.rom_candidates import DIR, FILE, LINK, Kind
+from domain.windows_launch import resolve_launch_path
 from lib.path_safety import safe_path_component
 
 if TYPE_CHECKING:
@@ -345,6 +346,20 @@ class FakeDownloadFileStore:
             extracted += len(data)
             if progress_callback is not None:
                 progress_callback(extracted, total)
+
+    def extract_windows_archive(
+        self,
+        archive_path: str,
+        extract_dir: str,
+        safe_root: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> str:
+        """Mirrors the real adapter's chained extract + decode + resolve-launch shape."""
+        self.extract_zip(archive_path, extract_dir, safe_root, progress_callback=progress_callback)
+        self.remove_file(archive_path)
+        self.decode_url_encoded_names(extract_dir)
+        files = [path for path, _size in self.scan_files_with_sizes(extract_dir)]
+        return resolve_launch_path(files, selected_exe=None) or extract_dir
 
     def set_zip_members(self, archive_path: str, members: dict[str, bytes]) -> None:
         if not hasattr(self, "_zip_members"):

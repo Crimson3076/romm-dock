@@ -50,6 +50,7 @@ class Rom:
     # active backend never carries one backend's pin over to another's.
     emulator_overrides: dict[str, str] = field(default_factory=dict)
     selected_disc: str | None = None
+    selected_exe: str | None = None
     applied_launch_options: str | None = None
     last_fetch_id: str | None = None
     sibling_group_key: str | None = None
@@ -222,6 +223,25 @@ class Rom:
     def clear_selected_disc(self) -> None:
         """Drop the disc pin so the ROM follows the default (m3u or disc 1)."""
         self.selected_disc = None
+
+    def pin_selected_exe(self, filename: str) -> None:
+        """Pin the native-Windows launch target to the executable named *filename*.
+
+        Stores the executable's basename (the stable selection key), not a
+        resolved path — the absolute path is re-derived live at launch-bake
+        time, so the pin survives uninstall/reinstall and RetroDECK-home
+        migration, mirroring :meth:`pin_selected_disc`. A blank or
+        whitespace-only *filename* is meaningless and raises ``ValueError``;
+        clear the selection with :meth:`clear_selected_exe` instead.
+        """
+        stripped = filename.strip()
+        if not stripped:
+            raise ValueError("selected_exe filename must not be empty")
+        self.selected_exe = stripped
+
+    def clear_selected_exe(self) -> None:
+        """Drop the exe pin so the ROM follows the default (first enumerated exe)."""
+        self.selected_exe = None
 
     def record_applied_launch_options(self, launch_options: str) -> None:
         """Record the ``launch_options`` last written to this ROM's Steam shortcut.

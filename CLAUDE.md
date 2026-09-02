@@ -380,6 +380,16 @@ Format: **invariant** — tier — enforced by.
   (`src/components/RomMGameInfoPanel.test.tsx`); the store side and every new write site on either are prompt-only,
   because a checker scoped to the store's own function bodies would be green on the case this rule was written for. The
   reasons behind the two writer mechanisms live at `writerForRom` and `RomBinding` — do not restate them here
+- **The native-Windows Proton launch invocation (`domain.shortcut_data.resolve_proton_invocation`) never contains a
+  shell control operator (`&&`, `;`, `|`, …)** — prompt-only — no mechanical check exists. The rule spans two files a
+  diff to either alone would not reveal: `domain/shortcut_data.py` renders the invocation, and `bin/rom-launcher` (a
+  plain `exec "$@"`) is what runs it — whether Steam hands a shortcut's launch options to that wrapper as pre-split argv
+  or through a shell that would interpret a control operator has never been verified in either direction, so a command
+  whose correctness depends on shell interpretation is not provably safe to bake. This is not a hypothetical: an earlier
+  `mkdir -p "<prefix>" && env …` form was written, then reverted before merge once the gap was noticed — the only
+  enforcement this rule has had so far is that one review catching it once. See
+  [ADR-0030](docs/adr/0030-plugin-owns-proton-invocation.md) and
+  [windows-proton-launch.md](docs/architecture/windows-proton-launch.md#why-the-compat-data-prefix-is-created-in-python-not-in-the-baked-command)
 
 When a change applies a guard / sanitize / backup / grouping pattern, sweep for sibling sites of the same pattern — the
 register is what that sweep checks against.
