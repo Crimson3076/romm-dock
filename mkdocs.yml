@@ -1,6 +1,6 @@
-site_name: Tender
-site_description: A Decky Loader plugin that syncs your self-hosted RomM library into Steam
-site_url: https://danielcopper.github.io/romm-tender/
+site_name: RomM-Dock
+site_description: A Decky Loader plugin that syncs your self-hosted RomM library into Steam, launching via RetroDECK or EmuDeck
+site_url: https://crimson3076.github.io/romm-dock/
 
 # Architectural Decision Records (`docs/adr/`) are kept in the repo for
 # contributors and AI agents — they're internal design history, not user
@@ -9,8 +9,8 @@ site_url: https://danielcopper.github.io/romm-tender/
 exclude_docs: |
   adr/
 
-repo_url: https://github.com/danielcopper/romm-tender
-repo_name: danielcopper/romm-tender
+repo_url: https://github.com/Crimson3076/romm-dock
+repo_name: Crimson3076/romm-dock
 edit_uri: edit/main/docs/
 
 theme:
@@ -79,6 +79,7 @@ nav:
       - Removed-Game Cleanup: architecture/removed-game-cleanup.md
       - Config Source Parsers: architecture/config-source-parsers.md
       - Core &amp; Emulator Selection: architecture/core-emulator-selection.md
+      - Launcher Backends: architecture/launcher-backends.md
       - Steam Non-Steam Shortcuts: architecture/steam-non-steam-shortcuts.md
       - Steam Remote Play & Cross-Device: architecture/steam-remote-play.md
   - Contributing:

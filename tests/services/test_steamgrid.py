@@ -8,6 +8,7 @@ import pytest
 from _factories import _make_testable_plugin
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_settings_persister import FakeSettingsPersister
@@ -84,6 +85,7 @@ def plugin(sgdb_artwork_cache, fake_romm_api, fake_steamgrid_db_api, uow):
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 
@@ -973,6 +975,7 @@ class TestDebugLoggerProtocolSeam:
                 disc_resolver=FakeDiscResolver(),
                 renderer_rss=FakeRendererRss(),
                 renderer_gc=FakeRendererGc(),
+                launch_renderer=FakeLaunchCommandRenderer(),
             ),
         )
 

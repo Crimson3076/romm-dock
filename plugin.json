@@ -1,7 +1,7 @@
 {
-  "name": "Tender",
+  "name": "RomM-Dock",
   "version": "0.31.0",
-  "author": "danielcopper",
+  "author": "Crimson3076 (fork of Tender by danielcopper)",
   "flags": [],
   "api_version": 1,
   "publish": {
@@ -9,9 +9,10 @@
       "romm",
       "rom-manager",
       "retrodeck",
+      "emudeck",
       "emulation"
     ],
-    "description": "Sync your self-hosted RomM library to Steam. Games appear as native shortcuts with cover art, metadata, and launch via RetroDECK. Includes ROM downloads, BIOS management, save file sync, and SteamGridDB artwork.",
-    "image": "https://raw.githubusercontent.com/danielcopper/romm-tender/main/assets/store_image.png"
+    "description": "Sync your self-hosted RomM library to Steam. Games appear as native shortcuts with cover art, metadata, and launch via RetroDECK or EmuDeck. Includes ROM downloads, BIOS management, save file sync, and SteamGridDB artwork. AI-generated application.",
+    "image": "https://raw.githubusercontent.com/Crimson3076/romm-dock/main/assets/store_image.png"
   }
 }

@@ -1,11 +1,12 @@
 # Managing Games
 
-After syncing, each game in your Steam Library that came from RomM has an injected **Tender** panel on its detail page.
-This panel handles downloads, artwork, BIOS status, save sync, and more.
+After syncing, each game in your Steam Library that came from RomM has an injected **RomM-Dock** panel on its detail
+page. This panel handles downloads, artwork, BIOS status, save sync, and more.
 
 ## The Game Detail Panel
 
-When you open a RomM game in the Steam Library, you'll see the Tender panel below the standard Steam content. It shows:
+When you open a RomM game in the Steam Library, you'll see the RomM-Dock panel below the standard Steam content. It
+shows:
 
 - **Status badge** — "Installed", "Downloading", or "Not Installed"
 - **Platform name** — which system the game belongs to (e.g. "Game Boy Advance")
@@ -19,7 +20,7 @@ When you open a RomM game in the Steam Library, you'll see the Tender panel belo
   installed games); it's also omitted when RomM doesn't report the size.
 - **Action buttons** — Download, Pause/Resume, Uninstall, Cancel, or Refresh Metadata depending on state
 
-![Game detail page showing the Tender panel for an installed game](../assets/screenshot-game-detail.jpg)
+![Game detail page showing the RomM-Dock panel for an installed game](../assets/screenshot-game-detail.jpg)
 
 ## Versions
 
@@ -131,8 +132,8 @@ The confirmation options apply to this run only:
   a game RomM no longer has is what this dialog is for, and because the default-on recovery bundle keeps the shortcut's
   Steam details so it can be rebuilt by hand. Switch it off to limit the run to individual versions of games that still
   exist — the list then hides the retained siblings, since nothing else can reach them.
-- **Create recovery bundle** is on. Bundles are sealed under `~/decky-romm-sync-recovery/bundles/` before mutation.
-  Leaving it on is what makes whole-game removal reversible by hand; turning it off asks you to confirm separately.
+- **Create recovery bundle** is on. Bundles are sealed under `~/romm-dock-recovery/bundles/` before mutation. Leaving it
+  on is what makes whole-game removal reversible by hand; turning it off asks you to confirm separately.
 - **Include installed ROM content** is off for every disclosed installed row. Its exact recursive size is shown;
   selecting more than the currently free recovery space blocks confirmation. Turning recovery off clears and disables
   these selections, and so does switching off whole-game removal for a row that is only listed because of it. Large
@@ -198,7 +199,7 @@ Games appear as shortcuts in your library even before the ROM file is downloaded
 **Space Required** cell next to the Play button so you know how much disk space the ROM needs. To download:
 
 1. Open the game's detail page in the Steam Library
-2. In the Tender panel, tap **Download**
+2. In the RomM-Dock panel, tap **Download**
 3. A progress bar shows download status with bytes transferred
 4. When complete, the status changes to "Installed" and the game is ready to play
 
@@ -288,19 +289,19 @@ list shows, it says so.
 same answer.
 
 The first is the **wrong shape**: your server sends each game either as a single file or as a folder of several files,
-and Tender can only take over what matches. A _folder_ with this game's name where the server sends a single file — or a
-loose file where it sends a folder — is not something it can use.
+and RomM-Dock can only take over what matches. A _folder_ with this game's name where the server sends a single file —
+or a loose file where it sends a folder — is not something it can use.
 
-The second is a **shortcut** (a symlink). Tender never adopts one, even when it points at exactly the right game file.
-Once a game counts as installed, Uninstall has to be able to remove it, and it will not remove a shortcut — so adopting
-one would leave you with a game you could never uninstall from here.
+The second is a **shortcut** (a symlink). RomM-Dock never adopts one, even when it points at exactly the right game
+file. Once a game counts as installed, Uninstall has to be able to remove it, and it will not remove a shortcut — so
+adopting one would leave you with a game you could never uninstall from here.
 
 Either way you are told instead of the download simply starting: **something with this name is here, it cannot be used
 as this game, so downloading leaves you with two copies.** You can go ahead and download anyway, which lands the
 server's copy beside what is already there under the server's own name, or cancel and sort it out yourself. Neither
 choice renames, moves or deletes anything you have.
 
-Things that are neither files, folders nor shortcuts are ignored entirely — Tender will not offer you something that
+Things that are neither files, folders nor shortcuts are ignored entirely — RomM-Dock will not offer you something that
 only looks like a game because it happens to have the right name. The one place it does mention such a thing is when it
 sits at the exact spot the download would write to: there it says something is in the way without claiming to know what,
 because downloading over it would destroy it and you should be the one to decide that.
@@ -364,8 +365,8 @@ removes an already-installed copy.
 If you chose **Download Instead** on the [already-on-your-device dialog](#when-the-game-is-already-on-your-device) and
 then paused, resuming picks up where it left off as usual: your existing file is still there until the download
 finishes, and the answer you gave covers it. Resume is only refused if something _new_ has turned up at the game's
-location in the meantime — Tender says so rather than deleting it, since you were never shown that content. Cancel the
-download and start again to see the dialog for what is there now.
+location in the meantime — RomM-Dock says so rather than deleting it, since you were never shown that content. Cancel
+the download and start again to see the dialog for what is there now.
 
 ### Multi-Disc and Multi-File Games
 
@@ -474,7 +475,7 @@ the plugin doesn't manage.
 To remove a downloaded ROM file:
 
 1. Open the game's detail page
-2. Tap **Uninstall** in the Tender panel
+2. Tap **Uninstall** in the RomM-Dock panel
 3. The ROM file is deleted from disk
 4. The shortcut remains in your library so you can re-download later
 

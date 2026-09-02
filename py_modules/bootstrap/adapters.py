@@ -23,6 +23,7 @@ from adapters.asyncio_sleeper import AsyncioSleeper
 from adapters.cover_art_file_store import CoverArtFileStoreAdapter
 from adapters.debug_logger import SettingsAwareDebugLogger
 from adapters.download_file import DownloadFileAdapter
+from adapters.emudeck_launcher_backend import EmuDeckLauncherBackendFactory
 from adapters.es_de_config import CoreResolver
 from adapters.firmware_file import FirmwareFileAdapter
 from adapters.game_process import GameProcessAdapter
@@ -44,6 +45,7 @@ from adapters.renderer_rss import RendererRssAdapter
 from adapters.repositories.unit_of_work import SqliteUnitOfWork
 from adapters.retroarch_config import RetroArchConfigAdapter
 from adapters.retroarch_core_info import RetroArchCoreInfoAdapter
+from adapters.retrodeck_launcher_backend import RetroDeckLauncherBackendFactory
 from adapters.retrodeck_paths import RetroDeckPathsAdapter
 from adapters.rom_files import RomFileAdapter
 from adapters.romm.http import RommHttpAdapter
@@ -67,7 +69,6 @@ if TYPE_CHECKING:
         AdoptionMoveStore,
         Clock,
         ComputeSyncActionFn,
-        CoreInfoProvider,
         CoreNameProviderFn,
         CoverArtFileStore,
         DebugLogger,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
         FirmwareFileStore,
         GameProcessControl,
         HostnameReader,
+        LauncherBackendFactory,
         MachineIdReader,
         MigrationFileStore,
         PathExistsReader,
@@ -127,7 +129,6 @@ class AdapterBundle:
     rom_file_store: RomFileStore
     save_file_store: SaveFileStore
     path_probe: PathExistsReader
-    core_info_provider: CoreInfoProvider
     renderer_rss: RendererRssFn
     renderer_gc: RendererGcFn
     game_process: GameProcessControl
@@ -136,6 +137,8 @@ class AdapterBundle:
     recovery_store: RecoveryBundleStore
     prune_artifacts: PruneArtifactStore
     steam_recovery: SteamRecoveryStore
+    retrodeck_launcher_backend_factory: LauncherBackendFactory
+    emudeck_launcher_backend_factory: LauncherBackendFactory
 
 
 @dataclass(frozen=True)
@@ -327,7 +330,7 @@ def bootstrap(
     # adapter. Bot Fight Mode on Cloudflare blocks the default
     # ``Python-urllib`` UA before requests reach self-hosted RomM (#249).
     package_name, plugin_version = plugin_metadata.read_metadata(plugin_dir)
-    user_agent = f"decky-romm-sync/{plugin_version}"
+    user_agent = f"romm-dock/{plugin_version}"
     recovery_store = RecoveryBundleAdapter(
         user_home=user_home,
         package_name=package_name,
@@ -338,6 +341,16 @@ def bootstrap(
     http_adapter = RommHttpAdapter(settings, plugin_dir, logger, user_agent)
     romm_api = RommApiAdapter(http_adapter)
     steam_config = SteamConfigAdapter(user_home=user_home, logger=logger)
+    # The two launcher-backend factories (issue #918) — RetroDECK (behavior-
+    # preserving wrapper over retrodeck_paths) and EmuDeck (emu-atlas-backed).
+    # Both share http_adapter.resolve_system, the same platform->system seam
+    # CoreService's own bake resolves through.
+    retrodeck_launcher_backend_factory = RetroDeckLauncherBackendFactory(paths=retrodeck_paths, core_info=core_resolver)
+    emudeck_launcher_backend_factory = EmuDeckLauncherBackendFactory(
+        user_home=user_home,
+        resolve_system=http_adapter.resolve_system,
+        logger=logger,
+    )
     sgdb_adapter = SteamGridDbAdapter(settings=settings, logger=logger, user_agent=user_agent)
     cover_art_file_store = CoverArtFileStoreAdapter()
     sgdb_artwork_cache = SgdbArtworkCacheAdapter(runtime_dir=runtime_dir)
@@ -377,7 +390,6 @@ def bootstrap(
         rom_file_store=rom_file_store,
         save_file_store=save_file_store,
         path_probe=path_probe,
-        core_info_provider=core_resolver,
         renderer_rss=renderer_rss,
         renderer_gc=renderer_gc,
         game_process=game_process,
@@ -386,6 +398,8 @@ def bootstrap(
         recovery_store=recovery_store,
         prune_artifacts=prune_artifacts,
         steam_recovery=steam_recovery,
+        retrodeck_launcher_backend_factory=retrodeck_launcher_backend_factory,
+        emudeck_launcher_backend_factory=emudeck_launcher_backend_factory,
     )
     stores = StateBundle(
         settings=settings,

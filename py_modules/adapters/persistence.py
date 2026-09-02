@@ -72,6 +72,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "autocleanup_limit": 10,
     "device_name": None,
     "platform_cores": {},
+    # The active launcher backend (issue #918) and which detected
+    # installation of it RomM-Dock manages. "retrodeck" is the plugin's
+    # original and only backend before this seam existed, so it stays the
+    # default — a fresh install and a pre-#918 settings.json both launch
+    # through RetroDECK unchanged.
+    "launcher_backend": "retrodeck",
+    "launcher_backend_installation": "retrodeck",
 }
 
 
@@ -321,14 +328,16 @@ class PlatformCoreReaderAdapter:
     """Adapter view exposing the ``PlatformCoreReader`` Protocol over settings.
 
     Binds the live ``settings`` dict so the per-platform core selection is
-    always read from ``settings["platform_cores"]`` as it stands at call time.
-    The bound reference is the same dict every writer mutates, so a fan-out
-    that resolves a freshly-written platform core sees the new value rather
-    than a stale snapshot.
+    always read from ``settings["platform_cores"][backend_id]`` as it stands
+    at call time. The bound reference is the same dict every writer mutates,
+    so a fan-out that resolves a freshly-written platform core sees the new
+    value rather than a stale snapshot. Each backend keeps its own nested map
+    (migration to this per-backend shape is ``domain.state_migrations``'
+    responsibility, not this adapter's).
     """
 
     def __init__(self, settings: dict[str, Any]) -> None:
         self._settings = settings
 
-    def get_platform_core(self, platform_slug: str) -> str | None:
-        return self._settings.get("platform_cores", {}).get(platform_slug)
+    def get_platform_core(self, backend_id: str, platform_slug: str) -> str | None:
+        return self._settings.get("platform_cores", {}).get(backend_id, {}).get(platform_slug)

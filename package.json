@@ -1,7 +1,7 @@
 {
-  "name": "decky-romm-sync",
+  "name": "romm-dock",
   "version": "0.31.0",
-  "description": "Decky Loader plugin to sync your RomM library to Steam as non-steam shortcuts",
+  "description": "Decky Loader plugin to sync your RomM library to Steam as non-steam shortcuts, launching via RetroDECK or EmuDeck",
   "type": "module",
   "scripts": {
     "build": "rollup -c",

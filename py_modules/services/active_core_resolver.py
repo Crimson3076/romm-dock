@@ -1,20 +1,24 @@
 """ActiveCoreResolver — the single read-path core-resolution seam per ROM.
 
-The one place that answers "which RetroArch core will this ROM actually launch
-with?", combining the per-game ``emulator_override`` and per-platform core
-selection (the two deviations the plugin owns) with the system-layer
-ES-DE/RetroDECK resolution. Every per-game core read consumer and every
-launch-bake site draws from this seam so the read-path core never diverges from
-the launched core.
+The one place that answers "which emulator will this ROM actually launch
+with?", combining the per-game ``emulator_overrides`` and per-platform core
+selection (the two deviations the plugin owns) with the ACTIVE launcher
+backend's own system-layer resolution. Every per-game core read consumer and
+every launch-bake site draws from this seam so the read-path core never
+diverges from the launched core.
 
-Precedence (three layers, then the plain launch): DB ``emulator_override`` (top)
-→ ``settings.json`` per-platform core → the live es_systems default → ``None``.
-The retired ES-DE gamelist ``<alternativeEmulator>`` is never consulted, and
-there is no offline snapshot below the live default. A pinned per-game or
-per-platform label that no longer resolves to a bakeable emulator degrades to
-the next layer rather than raising — so a stale label never blocks a read or
-bakes a bogus ``-e`` override. The per-game/per-platform label may name a
-**standalone** emulator (not just a libretro core); it resolves the same way.
+Precedence (three layers, then the plain launch): DB per-game override for the
+active backend (top) → ``settings.json`` per-platform core for the active
+backend → that backend's own live default → ``None``. Both pin layers are
+scoped to whichever backend is CURRENTLY active — switching backends reads a
+different (independent) pin, never reinterprets the same one (issue #918's
+per-backend picker follow-up). The retired ES-DE gamelist
+``<alternativeEmulator>`` is never consulted, and there is no offline snapshot
+below the live default. A pinned per-game or per-platform label that no longer
+resolves to a bakeable emulator degrades to the next layer rather than raising
+— so a stale label never blocks a read or bakes a bogus ``-e`` override. The
+per-game/per-platform label may name a **standalone** emulator (not just a
+libretro core); it resolves the same way.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ if TYPE_CHECKING:
     from domain.emulator_commands import EmulatorOption
     from domain.rom import Rom
     from domain.rom_install import RomInstall
+    from lib.late_binding import LateBinding
     from services.protocols import (
         CoreInfoProvider,
         PlatformCoreReader,
@@ -45,15 +50,25 @@ class ActiveCoreResolverConfig:
     """Frozen wiring bundle handed to ``ActiveCoreResolver.__init__``.
 
     Carries the SQLite Unit-of-Work factory (to read the ROM's
-    ``platform_slug`` + ``emulator_override``), the ES-DE core-info read seam
-    (the classified emulator options + the system-layer default), the
-    per-platform core reader (the ``settings.json`` ``platform_cores`` map), the
-    platform-slug-to-system resolver, and the logger used to warn on a stale
-    label.
+    ``platform_slug`` + ``emulator_overrides``), the ACTIVE launcher backend's
+    core-info read seam (the classified emulator options + the system-layer
+    default — issue #918's per-backend picker follow-up) and its
+    ``backend_id``, the per-platform core reader (the ``settings.json``
+    ``platform_cores`` map, itself nested per backend), the platform-slug-to-
+    system resolver, and the logger used to warn on a stale label.
+
+    ``core_info``/``active_backend_id`` are ``LateBinding``, not the seam
+    directly: this resolver is constructed before ``LauncherBackendService``
+    (which needs THIS resolver as ``RelaunchOptionsResolver``'s
+    ``active_core`` seam) — the same producer/consumer construction cycle
+    every other cross-reference in ``bootstrap/services.py`` breaks the same
+    way. Each read re-invokes the binding, so a backend switch is visible on
+    this resolver's very next call.
     """
 
     uow_factory: UnitOfWorkFactory
-    core_info: CoreInfoProvider
+    core_info: LateBinding[CoreInfoProvider]
+    active_backend_id: LateBinding[str]
     platform_core_reader: PlatformCoreReader
     resolve_system: SystemResolver
     logger: logging.Logger
@@ -65,6 +80,7 @@ class ActiveCoreResolver:
     def __init__(self, *, config: ActiveCoreResolverConfig) -> None:
         self._uow_factory = config.uow_factory
         self._core_info = config.core_info
+        self._active_backend_id = config.active_backend_id
         self._platform_core_reader = config.platform_core_reader
         self._resolve_system = config.resolve_system
         self._logger = config.logger
@@ -73,22 +89,24 @@ class ActiveCoreResolver:
         """Return the :class:`EmulatorInvocation` the ROM ``rom_id`` will launch with.
 
         The launch-bake seam. Reads the ROM's ``platform_slug`` +
-        ``emulator_override`` once, then applies the three-layer precedence:
+        ``emulator_overrides`` once, then resolves the ACTIVE backend's own
+        ``backend_id`` and applies the three-layer precedence, each layer
+        scoped to that backend:
 
-        1. Per-game DB ``emulator_override`` (an emulator LABEL from the picker,
-           libretro OR standalone) → its invocation when the label resolves to a
-           bakeable command.
-        2. Per-platform ``settings.json`` core (also a LABEL, libretro OR
-           standalone) → its invocation when it resolves.
-        3. The live es_systems default via ``get_default_emulator`` — the first
-           safely-bakeable command, which may itself be standalone (PCSX2, RPCS3,
-           Dolphin, …) or libretro.
+        1. Per-game DB override for the active backend (an emulator LABEL from
+           the picker, libretro OR standalone) → its invocation when the label
+           resolves to a bakeable command.
+        2. Per-platform ``settings.json`` core for the active backend (also a
+           LABEL, libretro OR standalone) → its invocation when it resolves.
+        3. The active backend's own live default via ``get_default_emulator``
+           — the first safely-bakeable command, which may itself be standalone
+           (PCSX2, RPCS3, Dolphin, …) or libretro.
 
-        Returns ``None`` when the platform has no resolvable emulator at all —
-        including when ``es_systems.xml`` cannot be read — so the caller bakes
-        the plain launch and lets RetroDECK resolve the emulator. A stale
-        per-game/per-platform label is never fatal — it degrades to the next
-        layer with a WARNING.
+        Returns ``None`` when the active backend has no resolvable emulator at
+        all for this platform — including when its catalogue cannot be read —
+        so the caller bakes the plain launch and lets that backend resolve the
+        emulator itself. A stale per-game/per-platform label is never fatal —
+        it degrades to the next layer with a WARNING.
 
         Final step: a resolved **standalone** emulator whose install is a
         folder-boot layout (PS3 — ``…/PS3_GAME/USRDIR/EBOOT.BIN``) is rewritten
@@ -107,50 +125,66 @@ class ActiveCoreResolver:
             self._logger.warning("active_core_resolver: no ROM for rom_id=%s; resolving to plain launch", rom_id)
             return None
 
+        core_info = self._core_info.get()
+        backend_id = self._active_backend_id.get()
         system = self._resolve_system(rom.platform_slug)
-        options = self._core_info.get_emulator_options(system)["options"]
-        emulator = self._resolve_by_precedence(rom, rom_id, system, options)
-        return self._maybe_folder_boot_direct(emulator, install, rom_id)
+        options = core_info.get_emulator_options(system)["options"]
+        emulator = self._resolve_by_precedence(rom, rom_id, system, options, core_info, backend_id)
+        return self._maybe_folder_boot_direct(emulator, install, rom_id, core_info)
 
     def _resolve_by_precedence(
-        self, rom: Rom, rom_id: int, system: str, options: list[EmulatorOption]
+        self,
+        rom: Rom,
+        rom_id: int,
+        system: str,
+        options: list[EmulatorOption],
+        core_info: CoreInfoProvider,
+        backend_id: str,
     ) -> EmulatorInvocation | None:
         """Apply the per-game → per-platform → system-default precedence chain.
 
-        Returns the resolved :class:`EmulatorInvocation` before the folder-boot
-        rewrite. A stale per-game/per-platform label warns and degrades to the
-        next layer; the bottom is the live es_systems default (or ``None``).
+        Every layer is scoped to *backend_id* — the ACTIVE backend's own pin,
+        never a pin set under a different backend. Returns the resolved
+        :class:`EmulatorInvocation` before the folder-boot rewrite. A stale
+        per-game/per-platform label warns and degrades to the next layer; the
+        bottom is *backend_id*'s own live default (or ``None``).
         """
-        override = rom.emulator_override
+        override = rom.emulator_override_for(backend_id)
         if override is not None:
             invocation = label_to_invocation(options, override)
             if invocation is not None:
                 return invocation
             self._logger.warning(
-                "active_core_resolver: per-game override '%s' for rom_id=%s no longer resolves on %s; "
+                "active_core_resolver: per-game override '%s' for rom_id=%s no longer resolves on %s/%s; "
                 "degrading to the per-platform/system default",
                 override,
                 rom_id,
+                backend_id,
                 system,
             )
 
-        platform_label = self._platform_core_reader.get_platform_core(rom.platform_slug)
+        platform_label = self._platform_core_reader.get_platform_core(backend_id, rom.platform_slug)
         if platform_label is not None:
             invocation = label_to_invocation(options, platform_label)
             if invocation is not None:
                 return invocation
             self._logger.warning(
-                "active_core_resolver: per-platform core '%s' for %s (rom_id=%s) no longer resolves; "
+                "active_core_resolver: per-platform core '%s' for %s/%s (rom_id=%s) no longer resolves; "
                 "degrading to the system default",
                 platform_label,
+                backend_id,
                 rom.platform_slug,
                 rom_id,
             )
 
-        return self._core_info.get_default_emulator(system)
+        return core_info.get_default_emulator(system)
 
     def _maybe_folder_boot_direct(
-        self, emulator: EmulatorInvocation | None, install: RomInstall | None, rom_id: int
+        self,
+        emulator: EmulatorInvocation | None,
+        install: RomInstall | None,
+        rom_id: int,
+        core_info: CoreInfoProvider,
     ) -> EmulatorInvocation | None:
         """Rewrite a standalone *emulator* to the folder-boot ``direct`` form when warranted.
 
@@ -166,7 +200,7 @@ class ActiveCoreResolver:
             return emulator
         if install is None or folder_boot_root(install.file_path, install.rom_dir) is None:
             return emulator
-        launcher = self._core_info.resolve_sandbox_launcher(emulator.command)
+        launcher = core_info.resolve_sandbox_launcher(emulator.command)
         if launcher is None:
             self._logger.warning(
                 "active_core_resolver: folder-boot rom_id=%s resolves to standalone '%s' but its sandbox "

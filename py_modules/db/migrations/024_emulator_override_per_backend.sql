@@ -1,0 +1,23 @@
+-- =============================================================================
+-- 024_emulator_override_per_backend.sql — per-launcher-backend emulator override
+-- Issue #918 follow-up: independent core pins for RetroDECK vs EmuDeck
+-- =============================================================================
+--
+-- Before this migration, roms.emulator_override held a bare core LABEL (or
+-- NULL) — a single pin shared across every launcher backend. Switching the
+-- active backend re-interpreted that same label against a different backend's
+-- catalogue, which could resolve to a different core or to nothing at all.
+-- From this version on, the column holds a JSON object mapping backend_id ->
+-- label (e.g. '{"retrodeck":"PCSX ReARMed","emudeck":"DuckStation"}'), written
+-- and read by adapters/repositories/rom.py. A backend with no key has no pin.
+--
+-- Every existing pin was set before per-backend pins existed, i.e. while
+-- RetroDECK was the only backend — so it is folded into the 'retrodeck' key,
+-- exactly what it already meant. json_object() is SQLite's JSON1 builtin,
+-- present in every SQLite build this plugin's Python 3.11 targets ship
+-- (bundled since 3.9.0; default-compiled-in since 3.38.0, 2022).
+--
+-- Transaction-safe DML only — the runner (adapters/sqlite_migrations.py) wraps
+-- BEGIN/COMMIT and stamps PRAGMA user_version = 24.
+-- -----------------------------------------------------------------------------
+UPDATE roms SET emulator_override = json_object('retrodeck', emulator_override) WHERE emulator_override IS NOT NULL;

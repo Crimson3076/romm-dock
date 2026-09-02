@@ -8,6 +8,7 @@ import pytest
 from _factories import _make_testable_plugin
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_path_exists_reader import FakePathExistsReader
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
@@ -96,6 +97,7 @@ def plugin(clock):
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     p._achievements_service = AchievementsService(
@@ -121,7 +123,7 @@ def plugin(clock):
             achievements=p._achievements_service,
             active_core=FakeActiveCoreResolver(default=(None, None)),
             path_exists=FakePathExistsReader(),
-            retrodeck_paths=FakeRetroDeckPaths(),
+            launcher_paths=FakeRetroDeckPaths(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_fs_slug or platform_slug,
             candidate_probe=lambda platform_slug, fs_name: False,
         ),

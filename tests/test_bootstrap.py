@@ -15,12 +15,12 @@ from bootstrap import (
     bootstrap,
     wire_services,
 )
-from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_cover_art_file_store import FakeCoverArtFileStore
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
 from fakes.fake_game_process_control import FakeGameProcessControlAdapter
 from fakes.fake_hostname_reader import FakeHostnameReader
+from fakes.fake_launcher_backend_factory import FakeLauncherBackendFactory
 from fakes.fake_machine_id_reader import FakeMachineIdReader
 from fakes.fake_migration_file_store import FakeMigrationFileStore
 from fakes.fake_path_exists_reader import FakePathExistsReader
@@ -98,17 +98,20 @@ class TestBootstrap:
         result = _bootstrap_for(tmp_path)
         assert isinstance(result.callbacks.retrodeck_paths, RetroDeckPathsAdapter)
 
-    def test_returns_core_info_provider_on_adapters(self, tmp_path):
-        """``core_info_provider`` (CoreResolver) is bundled with adapters, not callbacks.
+    def test_retrodeck_backend_factory_carries_the_core_resolver(self, tmp_path):
+        """The RetroDECK backend factory holds the stateful CoreResolver (issue #918 follow-up).
 
-        The stateful adapter sits in :class:`AdapterBundle`;
-        :class:`CallbackBundle` carries only provider callables and persisters.
+        Before the per-backend picker follow-up, the CoreResolver sat directly
+        on :class:`AdapterBundle` as ``core_info_provider``. It is now injected
+        into ``retrodeck_launcher_backend_factory`` instead — the RetroDECK
+        backend's own emulator-selection catalogue, exactly as
+        ``EmuDeckLauncherBackend`` sources its options from atlas rather than
+        from a bundle field.
         """
         result = _bootstrap_for(tmp_path)
-        # AdapterBundle exposes the stateful CoreResolver.
-        assert result.adapters.core_info_provider is not None
-        # CallbackBundle no longer carries it.
-        assert not hasattr(result.callbacks, "core_info_provider")
+        backend = result.adapters.retrodeck_launcher_backend_factory.bind("retrodeck")
+        assert backend is not None
+        assert backend.get_emulator_options("n64") == {"available": False, "options": []}
 
     def test_platform_core_reader_binds_live_settings(self, tmp_path):
         """``CallbackBundle.platform_core_reader`` reads the live settings dict.
@@ -119,9 +122,9 @@ class TestBootstrap:
         """
         result = _bootstrap_for(tmp_path)
         reader = result.callbacks.platform_core_reader
-        assert reader.get_platform_core("snes") is None
-        result.stores.settings["platform_cores"]["snes"] = "bsnes"
-        assert reader.get_platform_core("snes") == "bsnes"
+        assert reader.get_platform_core("retrodeck", "snes") is None
+        result.stores.settings["platform_cores"]["retrodeck"] = {"snes": "bsnes"}
+        assert reader.get_platform_core("retrodeck", "snes") == "bsnes"
 
     def test_state_bundle_carries_only_settings(self, tmp_path):
         """Post-cutover (#784) ``StateBundle`` holds only the live settings dict.
@@ -150,7 +153,7 @@ class TestBootstrap:
 
     def test_user_agent_threaded_to_romm_http_adapter(self, tmp_path):
         """Bootstrap reads ``package.json`` once and threads the resulting
-        ``decky-romm-sync/<version>`` string to ``RommHttpAdapter`` (#249, #719).
+        ``romm-dock/<version>`` string to ``RommHttpAdapter`` (#249, #719).
 
         Without a User-Agent, Cloudflare Bot Fight Mode 403s the default
         ``Python-urllib`` UA before the request reaches self-hosted RomM
@@ -168,10 +171,10 @@ class TestBootstrap:
             user_home=str(tmp_path / "home"),
             logger=logging.getLogger("test"),
         )
-        assert result.adapters.http_adapter._user_agent == "decky-romm-sync/1.2.3"
+        assert result.adapters.http_adapter._user_agent == "romm-dock/1.2.3"
 
     def test_user_agent_threaded_to_steamgriddb_adapter(self, tmp_path):
-        """Bootstrap threads the same ``decky-romm-sync/<version>`` UA into
+        """Bootstrap threads the same ``romm-dock/<version>`` UA into
         ``SteamGridDbAdapter`` so SGDB sees a non-default UA on every site
         (#719). SGDB rejects ``Python-urllib`` with 403.
         """
@@ -187,14 +190,14 @@ class TestBootstrap:
             user_home=str(tmp_path / "home"),
             logger=logging.getLogger("test"),
         )
-        assert result.adapters.sgdb_adapter._user_agent == "decky-romm-sync/1.2.3"
+        assert result.adapters.sgdb_adapter._user_agent == "romm-dock/1.2.3"
 
     def test_user_agent_falls_back_when_package_json_missing(self, tmp_path):
         """When ``package.json`` is absent, the adapter's documented
         fallback (``0.0.0``) feeds into the UA string."""
         result = _bootstrap_for(tmp_path)
-        assert result.adapters.http_adapter._user_agent == "decky-romm-sync/0.0.0"
-        assert result.adapters.sgdb_adapter._user_agent == "decky-romm-sync/0.0.0"
+        assert result.adapters.http_adapter._user_agent == "romm-dock/0.0.0"
+        assert result.adapters.sgdb_adapter._user_agent == "romm-dock/0.0.0"
 
 
 class TestBootstrapSettingsResetMarker:
@@ -258,6 +261,8 @@ class TestWireServices:
             "recovery_store": MagicMock(),
             "prune_artifacts": MagicMock(),
             "steam_recovery": MagicMock(),
+            "retrodeck_launcher_backend_factory": FakeLauncherBackendFactory("retrodeck"),
+            "emudeck_launcher_backend_factory": FakeLauncherBackendFactory("emudeck", installations=[]),
             "settings": settings,
             "loop": asyncio.new_event_loop(),
             "logger": logger,
@@ -285,7 +290,6 @@ class TestWireServices:
             "system_known": MagicMock(return_value=None),
             "list_rom_dir_files": MagicMock(return_value=[]),
             "settings_persister": MagicMock(),
-            "core_info_provider": FakeCoreInfoProvider(),
             "log_debug": MagicMock(),
             "plugin_metadata": FakePluginMetadataReader(version="0.14.0"),
             "uow_factory": FakeUnitOfWorkFactory(),
@@ -309,7 +313,6 @@ class TestWireServices:
                 rom_file_store=deps["rom_file_store"],
                 save_file_store=deps["save_file_store"],
                 path_probe=deps["path_probe"],
-                core_info_provider=deps["core_info_provider"],
                 renderer_rss=deps["renderer_rss"],
                 renderer_gc=deps["renderer_gc"],
                 game_process=deps["game_process"],
@@ -318,6 +321,8 @@ class TestWireServices:
                 recovery_store=deps["recovery_store"],
                 prune_artifacts=deps["prune_artifacts"],
                 steam_recovery=deps["steam_recovery"],
+                retrodeck_launcher_backend_factory=deps["retrodeck_launcher_backend_factory"],
+                emudeck_launcher_backend_factory=deps["emudeck_launcher_backend_factory"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -403,7 +408,7 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(result) == 25
+        assert len(result) == 26
         assert "migration_service" in result
         assert "game_detail_service" in result
         assert "rom_removal_service" in result
@@ -422,6 +427,7 @@ class TestWireServices:
         assert "game_process_service" in result
         assert isinstance(result["game_process_service"], GameProcessService)
         assert "relaunch_options_resolver" in result
+        assert "launcher_backend_service" in result
         deps["loop"].close()
 
     def test_pending_sync_binding_observes_library_rebinds(self, tmp_path):

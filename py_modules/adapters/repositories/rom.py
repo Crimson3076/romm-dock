@@ -68,6 +68,8 @@ _UPDATE_ASSIGNMENTS = ", ".join(f"{col} = excluded.{col}" for col in _SYNC_COLUM
 def _row_to_rom(row: sqlite3.Row) -> Rom:
     # The JSON-array columns are NOT NULL DEFAULT '[]', so json.loads is always
     # safe; is_main_sibling is a STRICT 0/1 INTEGER mapped back to bool.
+    # emulator_override is NULL (no pin on any backend) or a JSON object of
+    # backend_id -> label (migration 024).
     return Rom(
         rom_id=row["rom_id"],
         platform_slug=row["platform_slug"],
@@ -80,7 +82,7 @@ def _row_to_rom(row: sqlite3.Row) -> Rom:
         igdb_id=row["igdb_id"],
         sgdb_id=row["sgdb_id"],
         ra_id=row["ra_id"],
-        emulator_override=row["emulator_override"],
+        emulator_overrides=json.loads(row["emulator_override"]) if row["emulator_override"] is not None else {},
         selected_disc=row["selected_disc"],
         applied_launch_options=row["applied_launch_options"],
         sibling_group_key=row["sibling_group_key"],
@@ -166,26 +168,27 @@ class SqliteRomRepository(BaseRepository):
             ),
         )
 
-    def set_emulator_override(self, rom_id: int, label: str | None) -> None:
-        """Write (or clear) the per-game emulator override for ``rom_id``.
+    def set_emulator_override(self, rom_id: int, backend_id: str, label: str | None) -> None:
+        """Write (or clear) ``backend_id``'s per-game emulator override for ``rom_id``.
 
-        ``label`` is the core label to pin, or ``None`` to store SQL NULL
-        (follow the system default). This is the only write path for the column
-        — the sync UPSERT in :meth:`save` never touches it.
+        ``label`` is the core label to pin for *backend_id*, or ``None`` to
+        drop that backend's entry (follow its own system default). Every other
+        backend's pin in the stored JSON object is preserved untouched — a
+        RetroDECK pin and an EmuDeck pin for the same ROM are independent. This
+        is the only write path for the column — the sync UPSERT in
+        :meth:`save` never touches it. Read-modify-write: the row must exist
+        (a caller writes only after confirming the ROM via :meth:`get`).
         """
+        row = self._conn.execute("SELECT emulator_override FROM roms WHERE rom_id = ?", (rom_id,)).fetchone()
+        overrides = json.loads(row["emulator_override"]) if row["emulator_override"] is not None else {}
+        if label is None:
+            overrides.pop(backend_id, None)
+        else:
+            overrides[backend_id] = label
         self._conn.execute(
             "UPDATE roms SET emulator_override = ? WHERE rom_id = ?",
-            (label, rom_id),
+            (json.dumps(overrides) if overrides else None, rom_id),
         )
-
-    def get_all_emulator_overrides(self) -> dict[int, str]:
-        """Return ``rom_id`` -> pinned core label for every ROM with an override.
-
-        Rows whose ``emulator_override`` is NULL (no override) are omitted, so
-        the map holds only the ROMs that deviate from the system default.
-        """
-        cursor = self._conn.execute("SELECT rom_id, emulator_override FROM roms WHERE emulator_override IS NOT NULL")
-        return {row["rom_id"]: row["emulator_override"] for row in cursor}
 
     def set_selected_disc(self, rom_id: int, filename: str | None) -> None:
         """Write (or clear) the per-game disc selection for ``rom_id``.

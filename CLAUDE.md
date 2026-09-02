@@ -1,9 +1,9 @@
-# decky-romm-sync — Decky Loader Plugin
+# RomM-Dock — Decky Loader Plugin
 
 ## What This Is
 
 A Decky Loader plugin that syncs a self-hosted RomM library into Steam as Non-Steam shortcuts. Games launch via
-RetroDECK. The QAM panel handles settings, sync, downloads, and BIOS management.
+RetroDECK or EmuDeck. The QAM panel handles settings, sync, downloads, and BIOS management.
 
 ## What belongs in this file
 
@@ -109,8 +109,8 @@ locally with `mise run docs`.
 - **RomM minimum version**: Requires RomM >= 4.9.0, hard-rejected in `test_connection()` (`_MIN_REQUIRED_VERSION` in
   `main.py`) — the plugin is inert until the server is updated.
 - **User-Agent on outgoing HTTP**: SteamGridDB **and** RomM behind Cloudflare Tunnel reject the default `Python-urllib`
-  UA with 403. Every HTTP-talking adapter takes a `user_agent: str` ctor param; bootstrap threads
-  `decky-romm-sync/<version>` from `package.json` — no hardcoded version strings.
+  UA with 403. Every HTTP-talking adapter takes a `user_agent: str` ctor param; bootstrap threads `romm-dock/<version>`
+  from `package.json` — no hardcoded version strings.
 - **Large payloads**: Never send bulk base64 through `decky.emit()` — the WebSocket bridge has size limits. Use per-item
   callables, and chunk bulk lists (the library apply emits shortcuts in batches; the metadata cache loads page-by-page).
 - **No `BIsModOrShortcut` bypass**: the bypass counter was removed deliberately. Shortcuts return `true` (natural

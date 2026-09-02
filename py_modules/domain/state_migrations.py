@@ -41,6 +41,10 @@ def migrate_settings(data: dict[str, Any]) -> dict[str, Any]:
         new_data = _migrate_v11_to_v12(new_data)
     if version < 13:
         new_data = _migrate_v12_to_v13(new_data)
+    if version < 14:
+        new_data = _migrate_v13_to_v14(new_data)
+    if version < 15:
+        new_data = _migrate_v14_to_v15(new_data)
     return new_data
 
 
@@ -340,4 +344,38 @@ def _migrate_v12_to_v13(data: dict[str, Any]) -> dict[str, Any]:
         rebuilt["standard"] = merged
         data["enabled_collections"] = rebuilt
     data["version"] = 13
+    return data
+
+
+def _migrate_v13_to_v14(data: dict[str, Any]) -> dict[str, Any]:
+    """v<14 → v14: seed the launcher-backend selection (issue #918).
+
+    ``launcher_backend`` and ``launcher_backend_installation`` are new
+    bucket-1 intent toggles (ADR-0003) — a flat, user-set, relationship-free
+    pair with no aggregate of their own, exactly like ``platform_cores`` at
+    v7. Seeded to RetroDECK (the plugin's only backend before this seam
+    existed), so every pre-existing install keeps launching through RetroDECK
+    with no behavior change until the user explicitly switches.
+    """
+    data.setdefault("launcher_backend", "retrodeck")
+    data.setdefault("launcher_backend_installation", "retrodeck")
+    data["version"] = 14
+    return data
+
+
+def _migrate_v14_to_v15(data: dict[str, Any]) -> dict[str, Any]:
+    """v<15 → v15: nest ``platform_cores`` per launcher backend (issue #918 follow-up).
+
+    Before this migration ``platform_cores`` was a flat RomM platform slug →
+    core label map, implicitly RetroDECK's (the only backend v14 and earlier
+    ever had). Nests it under the ``"retrodeck"`` key so it keeps meaning
+    exactly what it already meant, and a fresh independent map can start empty
+    under ``"emudeck"`` (populated lazily, like every per-backend map). A
+    settings.json already on the nested shape (fresh install, or migrated
+    already) is left untouched — detected by every value being a dict.
+    """
+    platform_cores = data.get("platform_cores", {})
+    if platform_cores and not all(isinstance(v, dict) for v in platform_cores.values()):
+        data["platform_cores"] = {"retrodeck": platform_cores}
+    data["version"] = 15
     return data

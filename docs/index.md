@@ -1,14 +1,15 @@
-# Tender { .hero-title }
+# RomM-Dock { .hero-title }
 
 A [Decky Loader](https://decky.xyz/) plugin that syncs your self-hosted [RomM](https://github.com/rommapp/romm) ROM
-library into Steam as Non-Steam shortcuts. Games launch through [RetroDECK](https://retrodeck.net/).
+library into Steam as Non-Steam shortcuts. Games launch through [RetroDECK](https://retrodeck.net/) or
+[EmuDeck](https://www.emudeck.com/).
 
 - Browse your entire RomM library directly from Steam's Gaming Mode
 - Download ROMs on-demand with cover art, hero banners, logos, and metadata
 - Manage BIOS files for systems that require them
 - Sync save files between devices through your RomM server
 
-![A RomM game's detail page in Steam showing the injected Tender panel](assets/screenshot-game-detail.jpg)
+![A RomM game's detail page in Steam showing the injected RomM-Dock panel](assets/screenshot-game-detail.jpg)
 
 !!! note "Pre-1.0 (v0.x)"
 

@@ -10,6 +10,7 @@ from _factories import _make_retry, _make_testable_plugin
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_hostname_reader import FakeHostnameReader
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_machine_id_reader import FakeMachineIdReader
 from fakes.fake_plugin_metadata_reader import FakePluginMetadataReader
 from fakes.fake_relaunch_options_resolver import FakeRelaunchOptionsResolver
@@ -50,7 +51,7 @@ def plugin(tmp_path):
         "log_level": "warn",
     }
     p._http_adapter = RommHttpAdapter(
-        p.settings, __import__("decky").DECKY_PLUGIN_DIR, logging.getLogger("test"), "decky-romm-sync/9.9.9"
+        p.settings, __import__("decky").DECKY_PLUGIN_DIR, logging.getLogger("test"), "romm-dock/9.9.9"
     )
     p._romm_api = MagicMock()
 
@@ -79,6 +80,7 @@ def plugin(tmp_path):
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     decky.DECKY_USER_HOME = str(tmp_path)
@@ -106,7 +108,7 @@ def plugin(tmp_path):
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
             settings_persister=MagicMock(),
             save_file_store=save_file_adapter,
-            retrodeck_paths=FakeRetroDeckPaths(
+            launcher_paths=FakeRetroDeckPaths(
                 saves=saves_path,
                 roms=str(tmp_path / "retrodeck" / "roms"),
             ),

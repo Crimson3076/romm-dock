@@ -28,13 +28,14 @@ from lib.path_safety import PathTraversalError, safe_join
 if TYPE_CHECKING:
     import asyncio
     import logging
+    from collections.abc import Callable
 
     from services.protocols import (
         Clock,
         CoreInfoProvider,
         FirmwareFileStore,
+        LauncherPaths,
         PlatformCoreReader,
-        RetroDeckPaths,
         RommFirmwareApi,
         SystemResolver,
         UnitOfWorkFactory,
@@ -49,8 +50,12 @@ class FirmwareServiceConfig:
 
     Holds the API adapter, runtime infrastructure, Protocol-typed file
     adapters, the SQLite Unit-of-Work factory, and the provider callables
-    FirmwareService needs at construction time. Decomposes the ctor
-    so a new dependency does not push past the S107 parameter-count
+    FirmwareService needs at construction time. ``core_info``/
+    ``active_backend_id`` are the ACTIVE launcher backend's emulator-selection
+    catalogue and its id (issue #918's per-backend picker follow-up) — the
+    System page's active-core display and BIOS filter follow whichever
+    backend is currently selected, the same as the picker menus. Decomposes
+    the ctor so a new dependency does not push past the S107 parameter-count
     limit.
     """
 
@@ -60,8 +65,9 @@ class FirmwareServiceConfig:
     plugin_dir: str
     clock: Clock
     firmware_file_store: FirmwareFileStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     core_info: CoreInfoProvider
+    active_backend_id: Callable[[], str]
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
     uow_factory: UnitOfWorkFactory
@@ -81,8 +87,9 @@ class FirmwareService:
         self._plugin_dir = config.plugin_dir
         self._clock = config.clock
         self._firmware_file_store = config.firmware_file_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._core_info = config.core_info
+        self._active_backend_id = config.active_backend_id
         self._resolve_system = config.resolve_system
         self._platform_core_reader = config.platform_core_reader
         self._uow_factory = config.uow_factory
@@ -168,7 +175,7 @@ class FirmwareService:
         (``download_firmware``) turns that into a canonical failure; the
         read paths skip the poisoned entry.
         """
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         file_name = firmware.get("file_name", "")
         reg_entry = self.bios_files_index.get(file_name)
         if reg_entry and reg_entry.get("firmware_path"):
@@ -202,7 +209,7 @@ class FirmwareService:
         path is logged and skipped — the panel stays up minus the poisoned
         entry, mirroring ``_safe_firmware_dest_path``.
         """
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         try:
             return safe_join(bios_base, firmware_path)
         except PathTraversalError as e:
@@ -460,28 +467,34 @@ class FirmwareService:
     def _enrich_platform_map(self, platforms_map, synced_slugs):
         """Add core info and game-installed flags to each platform entry.
 
-        The core read seams key by the resolved RetroDECK ``system`` (ADR-0010
-        §2), so each entry's raw RomM/BIOS-folder slug is normalized before the
+        The core read seams key by the resolved ``system`` (ADR-0010 §2), so
+        each entry's raw RomM/BIOS-folder slug is normalized before the
         ``get_active_core`` / ``get_emulator_options`` calls; ``has_games`` and
         the BIOS-folder file lookups stay on the raw slug (their own vocabulary).
-        ``active_core`` stays the libretro system default *core_so* (the BIOS
-        filter keys on it — the standalone-default BIOS accuracy work is deferred
-        by ADR-0020). ``active_core_label`` is the resolved **display** label the
-        System-page control shows — the per-platform override (``platform_cores``)
-        when set and still resolvable, else the es_systems default emulator label,
-        so it reflects a just-applied per-platform pick (libretro OR standalone)
-        the same way the game-detail menu does, instead of always showing the
-        libretro system default. The ``emulators`` list is the full classified
-        picker payload and ``emulator_data_available`` flags whether
-        ``es_systems.xml`` was readable.
+        Both calls go through ``core_info`` — the ACTIVE launcher backend's own
+        catalogue (issue #918's per-backend picker follow-up) — so the System
+        page shows whichever backend is currently selected, exactly like the
+        game-detail picker menu. ``active_core`` stays the libretro system
+        default *core_so* (the BIOS filter keys on it — the standalone-default
+        BIOS accuracy work is deferred by ADR-0020). ``active_core_label`` is
+        the resolved **display** label the System-page control shows — the
+        per-platform override (``platform_cores``, scoped to the active
+        backend) when set and still resolvable, else the active backend's own
+        default emulator label, so it reflects a just-applied per-platform pick
+        (libretro OR standalone) the same way the game-detail menu does,
+        instead of always showing the libretro system default. The
+        ``emulators`` list is the full classified picker payload and
+        ``emulator_data_available`` flags whether the active backend's
+        catalogue was readable.
         """
+        backend_id = self._active_backend_id()
         for plat in platforms_map.values():
             slug = plat["platform_slug"]
             system = self._resolve_system(slug)
             core_so, _core_label = self._core_info.get_active_core(system)
             options = self._core_info.get_emulator_options(system)
             plat["active_core"] = core_so
-            plat["active_core_label"] = self._resolve_platform_emulator_label(slug, options["options"])
+            plat["active_core_label"] = self._resolve_platform_emulator_label(backend_id, slug, options["options"])
             plat["emulators"] = options_to_payload(options["options"])
             plat["emulator_data_available"] = options["available"]
             plat["files"] = [self._enrich_firmware_file(f, core_so=core_so) for f in plat["files"]]
@@ -489,20 +502,21 @@ class FirmwareService:
             plat["all_downloaded"] = all(f["downloaded"] for f in plat["files"])
             self._set_platform_bios_aggregates(plat, slug)
 
-    def _resolve_platform_emulator_label(self, platform_slug: str, options: list[Any]) -> str | None:
+    def _resolve_platform_emulator_label(self, backend_id: str, platform_slug: str, options: list[Any]) -> str | None:
         """Resolve the System-page active-emulator display label for a platform.
 
         The platform-level projection of the read-path precedence
-        (``ActiveCoreResolver`` without the per-game layer): the per-platform
-        override label (``settings.json`` ``platform_cores``) when it is set and
-        still resolves to a bakeable emulator, else the es_systems default
-        emulator label (the first bakeable command). A stale/no-longer-installed
-        override degrades to the default — never fatal — mirroring the launch-bake
-        resolver so the button and the actual launch agree. ``None`` when the
-        platform has no bakeable emulator at all (empty menu / es_systems
-        unreadable), which the frontend renders as "Default".
+        (``ActiveCoreResolver`` without the per-game layer): *backend_id*'s
+        own per-platform override label (``settings.json`` ``platform_cores``)
+        when it is set and still resolves to a bakeable emulator, else that
+        backend's own default emulator label (the first bakeable command). A
+        stale/no-longer-installed override degrades to the default — never
+        fatal — mirroring the launch-bake resolver so the button and the
+        actual launch agree. ``None`` when the platform has no bakeable
+        emulator at all (empty menu / catalogue unreadable), which the
+        frontend renders as "Default".
         """
-        override = self._platform_core_reader.get_platform_core(platform_slug)
+        override = self._platform_core_reader.get_platform_core(backend_id, platform_slug)
         if override is not None and label_to_invocation(options, override) is not None:
             return override
         default = select_default_option(options)

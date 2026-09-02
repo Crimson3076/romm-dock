@@ -12,11 +12,13 @@ import pytest
 from _factories import _make_testable_plugin
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
+from fakes.late_binding import bound
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
@@ -146,7 +148,8 @@ def plugin():
     p._active_core = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(p._uow),
-            core_info=p._core_info,
+            core_info=bound(p._core_info),
+            active_backend_id=bound("retrodeck"),
             platform_core_reader=FakePlatformCoreReader(),
             resolve_system=p._resolve_system,
             logger=decky.logger,
@@ -173,9 +176,10 @@ def plugin():
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
-    retrodeck_paths = FakeRetroDeckPaths(
+    launcher_paths = FakeRetroDeckPaths(
         roms=os.path.join(os.path.expanduser("~"), "retrodeck", "roms"),
         bios=os.path.join(os.path.expanduser("~"), "retrodeck", "bios"),
     )
@@ -191,6 +195,7 @@ def plugin():
             system_extensions=lambda system_name: p._system_extensions.get(system_name, frozenset()),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     p._rom_adoption_service = RomAdoptionService(
@@ -198,7 +203,7 @@ def plugin():
             romm_api=p._romm_api,
             download_file_store=download_file_store,
             resolve_system=p._resolve_system,
-            retrodeck_paths=retrodeck_paths,
+            launcher_paths=launcher_paths,
             install_recorder=p._install_recorder,
             adoption_move=AdoptionMoveAdapter(),
             quarantine_save=lambda saves_dir, filename: False,
@@ -232,7 +237,7 @@ def plugin():
             emit=decky.emit,
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
             sleeper=FakeSleeper(),
-            retrodeck_paths=retrodeck_paths,
+            launcher_paths=launcher_paths,
             install_recorder=p._install_recorder,
             target_gate=p._rom_adoption_service.check_download_target,
             # Default-True so the existing M3U/launch-file tests are unaffected;
@@ -251,7 +256,7 @@ def plugin():
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
             emit=decky.emit,
             rom_file_store=RomFileAdapter(),
-            retrodeck_paths=FakeRetroDeckPaths(
+            launcher_paths=FakeRetroDeckPaths(
                 roms=os.path.join(os.path.expanduser("~"), "retrodeck", "roms"),
             ),
             download_queue_cleanup=p._download_service,
@@ -283,11 +288,11 @@ class TestStartDownload:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -349,11 +354,11 @@ class TestStartDownload:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -675,7 +680,7 @@ class TestOccupiedTargetPreFlight:
         return store
 
     def _roms_path(self, plugin, system):
-        return os.path.join(plugin._download_service._retrodeck_paths.roms_path(), system)
+        return os.path.join(plugin._download_service._launcher_paths.roms_path(), system)
 
     @pytest.mark.asyncio
     async def test_single_file_refuses_with_the_comparison(self, plugin):
@@ -778,9 +783,9 @@ class TestOccupiedTargetPreFlight:
 
         roms = tmp_path / "retrodeck" / "roms"
         paths = FakeRetroDeckPaths(roms=str(roms), bios=str(tmp_path / "retrodeck" / "bios"))
-        plugin._download_service._retrodeck_paths = paths
-        plugin._rom_adoption_service._retrodeck_paths = paths
-        plugin._rom_removal_service._retrodeck_paths = paths
+        plugin._download_service._launcher_paths = paths
+        plugin._rom_adoption_service._launcher_paths = paths
+        plugin._rom_removal_service._launcher_paths = paths
 
         (roms / "n64").mkdir(parents=True)
         sibling_file = roms / "n64" / "game_2.z64"
@@ -848,7 +853,7 @@ class TestResumingAReplaceDownload:
         return store
 
     def _roms(self, plugin, system):
-        return os.path.join(plugin._download_service._retrodeck_paths.roms_path(), system)
+        return os.path.join(plugin._download_service._launcher_paths.roms_path(), system)
 
     @pytest.mark.asyncio
     async def test_a_paused_single_file_replace_resumes(self, plugin):
@@ -912,11 +917,11 @@ class TestRemoveRom:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -951,11 +956,11 @@ class TestUninstallAllRoms:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -980,11 +985,11 @@ class TestUninstallAllRoms:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1003,11 +1008,11 @@ class TestUninstallAllRoms:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1146,11 +1151,11 @@ class TestDiskSpaceMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1182,11 +1187,11 @@ class TestDiskSpaceMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1227,11 +1232,11 @@ class TestDiskSpaceMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1271,11 +1276,11 @@ class TestMultiFileRomDeletion:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1305,11 +1310,11 @@ class TestMultiFileRomDeletion:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -1526,11 +1531,11 @@ class TestDoDownloadSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -1599,7 +1604,7 @@ class TestDoDownloadSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -1654,7 +1659,7 @@ class TestDoDownloadSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -1692,7 +1697,7 @@ class TestDoDownloadSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -1750,7 +1755,7 @@ class TestDoDownloadOverrideRebake:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -1775,7 +1780,7 @@ class TestDoDownloadOverrideRebake:
         _seed_rom(plugin._uow, rom_id, platform_slug="psx")
         if override is not None:
             with plugin._uow:
-                plugin._uow.roms.set_emulator_override(rom_id, override)
+                plugin._uow.roms.set_emulator_override(rom_id, "retrodeck", override)
         plugin._download_service._loop = asyncio.get_event_loop()
         plugin._download_service._download_queue[rom_id] = {"rom_id": rom_id, "status": "downloading", "progress": 0}
 
@@ -1837,11 +1842,11 @@ class TestDoDownloadMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -1922,11 +1927,11 @@ class TestDoDownloadMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2008,11 +2013,11 @@ class TestDoDownloadMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2071,11 +2076,11 @@ class TestDoDownloadMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2152,11 +2157,11 @@ class TestDoDownloadMultiFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2217,7 +2222,7 @@ class TestDoDownloadMultiFile:
         from fakes.fake_download_file_store import FakeDownloadFileStore
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -2309,11 +2314,11 @@ class TestDoDownloadBundledM3uPlatformGate:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2375,11 +2380,11 @@ class TestDoDownloadBundledM3uPlatformGate:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2435,11 +2440,11 @@ class TestEsDeCollapseRename:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2727,11 +2732,11 @@ class TestDoDownloadNestedSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -2776,11 +2781,11 @@ class TestDoDownloadNestedSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -2830,11 +2835,11 @@ class TestDoDownloadNestedSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -2873,11 +2878,11 @@ class TestDoDownloadNestedSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -2918,11 +2923,11 @@ class TestDoDownloadNestedSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -2963,11 +2968,11 @@ class TestDoDownloadNestedSingleFile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3009,11 +3014,11 @@ class TestPathTraversalDeleteRomFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3043,11 +3048,11 @@ class TestPathTraversalDeleteRomFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3078,11 +3083,11 @@ class TestPathTraversalFsName:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3124,11 +3129,11 @@ class TestPathTraversalFsName:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3167,7 +3172,7 @@ class TestPathTraversalPlatformSlug:
 
         decky.DECKY_USER_HOME = str(tmp_path)
         roms_root = tmp_path / "retrodeck" / "roms"
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(roms_root),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -3314,11 +3319,11 @@ class TestDoDownloadCancelled:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3364,11 +3369,11 @@ class TestDoDownloadZipFailure:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3412,11 +3417,11 @@ class TestDoDownloadPostDecodeTraversal:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -3486,11 +3491,11 @@ class TestDoDownloadPostDecodeTraversal:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -3549,11 +3554,11 @@ class TestDoDownloadFailureEmit:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -3610,7 +3615,7 @@ class TestDoDownloadInvariantFailure:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -3660,7 +3665,7 @@ class TestDoDownloadInvariantFailure:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -3719,11 +3724,11 @@ class TestStartDownloadReDownload:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3809,11 +3814,11 @@ class TestUninstallAllRomsMixedResults:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3852,11 +3857,11 @@ class TestRemoveRomFileAlreadyGone:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -3884,11 +3889,11 @@ class TestUrlEncodedFilenameRename:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -3942,11 +3947,11 @@ class TestUrlEncodedFilenameRename:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -3998,11 +4003,11 @@ class TestCleanupLeftoverTmpFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -4018,11 +4023,11 @@ class TestCleanupLeftoverTmpFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -4038,11 +4043,11 @@ class TestCleanupLeftoverTmpFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -4064,11 +4069,11 @@ class TestCleanupLeftoverTmpFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -4084,11 +4089,11 @@ class TestCleanupLeftoverTmpFiles:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         # No retrodeck/roms directory exists — should not crash
@@ -4100,11 +4105,11 @@ class TestCleanupLeftoverTmpFiles:
         from fakes.fake_download_file_store import FakeDownloadFileStore
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -4214,11 +4219,11 @@ class TestStartDownloadCreateTaskFailure:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
 
@@ -4288,9 +4293,9 @@ class TestCleanupLeftoverTmpFilesNoRetrodeckPaths:
 
         fake = FakeDownloadFileStore()
         plugin._download_service._download_file_store = fake
-        # retrodeck_paths present but both helpers return empty (no
+        # launcher_paths present but both helpers return empty (no
         # retrodeck.json) — service must early-return on each branch.
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(roms="", bios="")
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(roms="", bios="")
 
         plugin._download_service.cleanup_leftover_tmp_files()
 
@@ -4523,7 +4528,7 @@ class TestStartDownloadInProgressLeak:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -4597,7 +4602,7 @@ class TestStartDownloadInProgressLeak:
         # a TypeError that must be caught and the flag released.
         paths = FakeRetroDeckPaths(roms="", bios="")
         paths.roms_path = lambda: None  # type: ignore[method-assign,return-value]
-        plugin._download_service._retrodeck_paths = paths
+        plugin._download_service._launcher_paths = paths
         rom_detail = {
             "id": 44,
             "name": "DK",
@@ -4698,7 +4703,7 @@ class TestDoDownloadRedownloadPreservesExisting:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -4756,7 +4761,7 @@ class TestDoDownloadCancelReconcile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -4835,7 +4840,7 @@ class TestDoDownloadCancelReconcile:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -4932,7 +4937,7 @@ class TestDoDownloadCancelEmitsEvent:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -4993,7 +4998,7 @@ class TestConcurrencyReservation:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -5051,7 +5056,7 @@ class TestConcurrencyReservation:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -5093,7 +5098,7 @@ class TestConcurrencyReservation:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -5214,7 +5219,7 @@ class TestCooperativeCancel:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
@@ -5343,7 +5348,7 @@ class TestPauseResume:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )

@@ -117,7 +117,7 @@ function stubNothingRunning(): void {
 // actually happens. `readSessions` is the shape assertion most tests want (the
 // attested list, or null for "no row"); `readCrumb` exposes the raw row for the
 // version itself.
-const BREADCRUMB_KEY = "decky-romm-sync:active-session";
+const BREADCRUMB_KEY = "romm-dock:active-session";
 
 function seedSessions(sessions: { appId: number; romId: number; startMs: number }[]): void {
   localStorage.setItem(BREADCRUMB_KEY, JSON.stringify({ v: 2, sessions }));
@@ -435,7 +435,7 @@ describe("sessionManager post-exit save-sync toast (#1481)", () => {
     finalizeWithSync({ success: true, uploaded: 2, downloaded: 0 });
     await runStop();
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Tender", body: "Saves uploaded to RomM" }),
+      expect.objectContaining({ title: "RomM-Dock", body: "Saves uploaded to RomM" }),
     );
   });
 
@@ -451,7 +451,7 @@ describe("sessionManager post-exit save-sync toast (#1481)", () => {
     finalizeWithSync({ success: false, uploaded: 0, downloaded: 0, failure_toast: "Failed to sync saves after exit" });
     await runStop();
     expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Tender", body: "Failed to sync saves after exit" }),
+      expect.objectContaining({ title: "RomM-Dock", body: "Failed to sync saves after exit" }),
     );
   });
 

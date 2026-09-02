@@ -9,6 +9,8 @@ resolved live from RomM, not carried here.
 
 from __future__ import annotations
 
+from dataclasses import field
+
 from domain._aggregate import cosmic_aggregate
 from domain.version_metadata import VersionMetadata
 
@@ -27,7 +29,7 @@ class Rom:
     ROM — the sibling group this dump belongs to, how it differs from its
     siblings (region/language/revision variants), and how large it is. They are
     set at construction from the fetch and refreshed on every sync (they ride the
-    sync UPSERT, unlike the user-pin ``emulator_override`` / ``selected_disc``);
+    sync UPSERT, unlike the user-pin ``emulator_overrides`` / ``selected_disc``);
     no mutation verbs, as no local flow changes them independently of a sync.
     """
 
@@ -42,7 +44,11 @@ class Rom:
     igdb_id: int | None = None
     sgdb_id: int | None = None
     ra_id: int | None = None
-    emulator_override: str | None = None
+    # Per-launcher-backend emulator/core pin (``backend_id -> label``), e.g.
+    # ``{"retrodeck": "PCSX ReARMed", "emudeck": "DuckStation"}``. A backend
+    # with no key here has no pin and follows its own default — switching the
+    # active backend never carries one backend's pin over to another's.
+    emulator_overrides: dict[str, str] = field(default_factory=dict)
     selected_disc: str | None = None
     applied_launch_options: str | None = None
     last_fetch_id: str | None = None
@@ -168,23 +174,36 @@ class Rom:
         """Stamp the resolved RetroAchievements id."""
         self.ra_id = ra_id
 
-    def pin_emulator_override(self, label: str) -> None:
-        """Pin a per-game emulator/core override to the core *label*.
+    def emulator_override_for(self, backend_id: str) -> str | None:
+        """Return the pinned core LABEL for *backend_id*, or ``None`` when unpinned.
+
+        Each launcher backend keeps its own independent pin — switching the
+        active backend never reads or clears another backend's entry.
+        """
+        return self.emulator_overrides.get(backend_id)
+
+    def pin_emulator_override(self, backend_id: str, label: str) -> None:
+        """Pin *backend_id*'s per-game emulator/core override to the core *label*.
 
         Stores the LABEL the user chose (e.g. ``"PCSX ReARMed"``), not a
         resolved ``.so`` — the ``.so`` is resolved live at launch-bake time, so
-        the override survives RetroDECK/ES-DE default changes. A blank or
-        whitespace-only *label* is meaningless and raises ``ValueError``; clear
-        the override with :meth:`clear_emulator_override` instead.
+        the override survives an ES-DE default change on *backend_id*. Only
+        *backend_id*'s entry is touched; every other backend's pin (if any) is
+        left exactly as it was. A blank or whitespace-only *label* is
+        meaningless and raises ``ValueError``; clear the override with
+        :meth:`clear_emulator_override` instead.
         """
         stripped = label.strip()
         if not stripped:
             raise ValueError("emulator_override label must not be empty")
-        self.emulator_override = stripped
+        self.emulator_overrides[backend_id] = stripped
 
-    def clear_emulator_override(self) -> None:
-        """Drop the per-game override so the ROM follows the system default."""
-        self.emulator_override = None
+    def clear_emulator_override(self, backend_id: str) -> None:
+        """Drop *backend_id*'s per-game override so it follows its own system default.
+
+        Every other backend's pin (if any) is left exactly as it was.
+        """
+        self.emulator_overrides.pop(backend_id, None)
 
     def pin_selected_disc(self, filename: str) -> None:
         """Pin the multi-disc launch target to the disc named *filename*.

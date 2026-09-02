@@ -26,7 +26,7 @@ if TYPE_CHECKING:
         Clock,
         DownloadQueueCleanup,
         EventEmitter,
-        RetroDeckPaths,
+        LauncherPaths,
         RomFileStore,
         UnitOfWorkFactory,
     )
@@ -41,7 +41,7 @@ class RomRemovalServiceConfig:
     """Frozen wiring bundle handed to ``RomRemovalService.__init__``.
 
     Holds the runtime infrastructure, the Protocol-typed filesystem
-    adapter, the RetroDECK paths bundle, the ``DownloadQueueCleanup``
+    adapter, the active launcher backend's paths bundle, the ``DownloadQueueCleanup``
     eviction seam (``None`` when no download cleanup is wired), and the
     SQLite Unit-of-Work factory (the transactional seam over the
     ``rom_installs`` repository). Decomposes the ctor so a new dependency
@@ -53,7 +53,7 @@ class RomRemovalServiceConfig:
     clock: Clock
     emit: EventEmitter
     rom_file_store: RomFileStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     download_queue_cleanup: DownloadQueueCleanup | None
     uow_factory: UnitOfWorkFactory
 
@@ -71,7 +71,7 @@ class RomRemovalService:
         self._clock = config.clock
         self._emit = config.emit
         self._rom_file_store = config.rom_file_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._download_queue_cleanup = config.download_queue_cleanup
         self._uow_factory = config.uow_factory
         # Read and written only on the loop thread — every mutation brackets a
@@ -103,7 +103,7 @@ class RomRemovalService:
         rom_dir = install.rom_dir
         file_path = install.file_path
 
-        roms_base = self._retrodeck_paths.roms_path()
+        roms_base = self._launcher_paths.roms_path()
         if rom_dir:
             if not is_safe_rom_path(rom_dir, roms_base):
                 raise ValueError(f"Refusing to delete path outside roms directory: {rom_dir}")

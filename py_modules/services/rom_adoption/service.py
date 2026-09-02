@@ -70,9 +70,9 @@ if TYPE_CHECKING:
         DebugLogger,
         DownloadFileStore,
         EventEmitter,
+        LauncherPaths,
         RetroArchSaveLayoutProvider,
         RetroArchSavestateLayoutProvider,
-        RetroDeckPaths,
         RomInstallRecorder,
         RommRomReader,
         SaveQuarantineFn,
@@ -130,7 +130,7 @@ def _add_carried_note(refusal: dict[str, Any], carried: tuple[RenamePair, ...]) 
 
 
 def _unsafe_replace_refusal() -> dict[str, Any]:
-    """The refusal a replace returns for a path outside the RetroDECK ROMs tree."""
+    """The refusal a replace returns for a path outside the active backend's ROMs tree."""
     return {
         "success": False,
         "reason": "unsafe_replace_target",
@@ -158,7 +158,7 @@ class RomAdoptionServiceConfig:
     adoption_move: AdoptionMoveStore
     quarantine_save: SaveQuarantineFn
     resolve_system: SystemResolver
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     install_recorder: RomInstallRecorder
     m3u_support: SystemM3uSupportFn
     system_extensions: SystemSupportedExtensionsFn
@@ -186,7 +186,7 @@ class RomAdoptionService:
         self._romm_api = config.romm_api
         self._download_file_store = config.download_file_store
         self._resolve_system = config.resolve_system
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._install_recorder = config.install_recorder
         self._m3u_support = config.m3u_support
         self._system_extensions = config.system_extensions
@@ -195,7 +195,7 @@ class RomAdoptionService:
                 adoption_move=config.adoption_move,
                 quarantine_save=config.quarantine_save,
                 download_file_store=config.download_file_store,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 m3u_support=config.m3u_support,
                 save_layout=config.save_layout,
                 save_sorting=config.save_sorting,
@@ -211,7 +211,7 @@ class RomAdoptionService:
                 resolve_system=config.resolve_system,
                 system_extensions=config.system_extensions,
                 system_known=config.system_known,
-                retrodeck_paths=config.retrodeck_paths,
+                launcher_paths=config.launcher_paths,
                 uow_factory=config.uow_factory,
                 logger=config.logger,
                 log_debug=config.log_debug,
@@ -384,7 +384,7 @@ class RomAdoptionService:
         never the thing ``os.replace`` swaps, so leaving it would leave it.
         """
         if not is_dir and not is_multi_file_download(rom_detail):
-            roms_base = self._retrodeck_paths.roms_path()
+            roms_base = self._launcher_paths.roms_path()
             return None if roms_base and is_safe_rom_path(checked_path, roms_base) else _unsafe_replace_refusal()
         return self._remove_under_roms(checked_path, is_dir=is_dir)
 
@@ -396,7 +396,7 @@ class RomAdoptionService:
         removal instead of letting the download proceed onto ground it could not
         clear.
         """
-        roms_base = self._retrodeck_paths.roms_path()
+        roms_base = self._launcher_paths.roms_path()
         if not roms_base or not is_safe_rom_path(path, roms_base):
             self._logger.error(f"Refusing to replace content outside the ROMs directory: {path}")
             return _unsafe_replace_refusal()
@@ -550,7 +550,7 @@ class RomAdoptionService:
         if not candidate_path:
             return target.path
         path = os.path.normpath(str(candidate_path))
-        roms_base = self._retrodeck_paths.roms_path()
+        roms_base = self._launcher_paths.roms_path()
         if os.path.dirname(path) != os.path.dirname(target.path) or not is_safe_rom_path(path, roms_base):
             self._logger.error(f"Rejected adoption candidate outside this game's platform directory: {path}")
             return None
@@ -942,7 +942,7 @@ class RomAdoptionService:
         platform_slug = rom_detail.get("platform_slug", "")
         system = self._resolve_system(platform_slug, rom_detail.get("platform_fs_slug"))
         try:
-            roms_dir = safe_join(self._retrodeck_paths.roms_path(), system)
+            roms_dir = safe_join(self._launcher_paths.roms_path(), system)
         except (PathTraversalError, TypeError) as e:
             self._logger.error(f"Rejected adoption target: unsafe platform slug {system!r}: {e}")
             return None

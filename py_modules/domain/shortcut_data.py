@@ -8,9 +8,12 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from domain.sibling_group import compute_sibling_group_key
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # RetroDECK's flatpak application id — the single source of the string across the
 # plugin. Its plain ``flatpak run <app>`` form is the emulator invocation prefix
@@ -205,8 +208,18 @@ def build_shortcuts_data(
     plugin_dir: str,
     installed_paths: dict[int, str],
     core_overrides: dict[int, EmulatorInvocation],
+    *,
+    resolve_invocation: Callable[[dict[str, Any], EmulatorInvocation | None], str] = resolve_emulator_invocation,
+    render_launch_options: Callable[[str, str], str] = build_launch_options,
 ) -> list[dict[str, Any]]:
     """Transform ROM list into shortcut data dicts for frontend AddShortcut calls.
+
+    *resolve_invocation*/*render_launch_options* default to this module's own
+    RetroDECK rendering, so every existing caller is unaffected. The sync
+    orchestrator passes the active launcher backend's bound methods instead
+    (issue #918) — the seam that lets a launcher-backend switch bake a
+    different command without this function's callers ever branching on which
+    backend is active.
 
     *installed_paths* maps ``rom_id`` to the resolved on-disk launch path. An
     installed ROM gets a full launch command in ``launch_options``; a ROM absent
@@ -246,8 +259,8 @@ def build_shortcuts_data(
             "exe": exe,
             "start_dir": start_dir,
             "launch_options": (
-                build_launch_options(
-                    resolve_emulator_invocation(rom, core_overrides.get(rom["id"])),
+                render_launch_options(
+                    resolve_invocation(rom, core_overrides.get(rom["id"])),
                     installed_paths[rom["id"]],
                 )
                 if rom["id"] in installed_paths

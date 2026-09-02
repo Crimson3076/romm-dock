@@ -135,7 +135,7 @@ Again, standalone emulator formats that don't apply to RetroDECK's RetroArch-bas
 
 ## Implementation Decision
 
-For Tender (RetroDECK-only):
+For RomM-Dock (RetroDECK-only):
 
 | Extension                      | Include?                          | Reason                                                       |
 | ------------------------------ | --------------------------------- | ------------------------------------------------------------ |

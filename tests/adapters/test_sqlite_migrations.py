@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import get_args
@@ -80,8 +81,8 @@ def _set_user_version(db_path: str, version: int) -> None:
 # + 017_add_last_sync_server_hash + 018_rename_rom_save_states
 # + 019_add_collection_sync_state + 020_add_fetch_generation
 # + 021_add_rom_fs_size + 022_rename_collection_kind_user_to_standard
-# + 023_add_rom_install_launchable).
-_SHIPPED_VERSION = 23
+# + 023_add_rom_install_launchable + 024_emulator_override_per_backend).
+_SHIPPED_VERSION = 24
 
 # Tables after every shipped migration: the v1 set plus 006's play-session outbox,
 # 012's per-platform completion stamp, and 019's per-collection completion stamp,
@@ -1547,6 +1548,56 @@ class Test023AddRomInstallLaunchable:
         finally:
             conn.close()
         assert count == 0
+
+
+class Test024EmulatorOverridePerBackend:
+    """024 — folds the pre-existing bare-label emulator_override into a per-backend
+    JSON object keyed 'retrodeck' (issue #918's per-backend picker follow-up)."""
+
+    def _seed_rom_with_override(self, db_path: str, rom_id: int, override) -> None:
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            conn.execute(
+                "INSERT INTO roms (rom_id, platform_slug, name, fs_name, last_synced_at, emulator_override) "
+                "VALUES (?, 'gba', 'Game', 'game', '2026-07-20T10:00:00', ?)",
+                (rom_id, override),
+            )
+        finally:
+            conn.close()
+
+    def test_existing_pin_is_folded_into_retrodeck_key(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 23)))
+        assert _user_version(db_path) == 23
+        self._seed_rom_with_override(db_path, 1, "mGBA")
+
+        assert apply_migrations(db_path) == _SHIPPED_VERSION
+
+        conn = sqlite3.connect(db_path)
+        try:
+            stored = conn.execute("SELECT emulator_override FROM roms WHERE rom_id = 1").fetchone()[0]
+        finally:
+            conn.close()
+        assert json.loads(stored) == {"retrodeck": "mGBA"}
+
+    def test_null_pin_stays_null(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 23)))
+        self._seed_rom_with_override(db_path, 2, None)
+
+        assert apply_migrations(db_path) == _SHIPPED_VERSION
+
+        conn = sqlite3.connect(db_path)
+        try:
+            stored = conn.execute("SELECT emulator_override FROM roms WHERE rom_id = 2").fetchone()[0]
+        finally:
+            conn.close()
+        assert stored is None
+
+    def test_empty_table_is_noop(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path)
+        assert _user_version(db_path) == _SHIPPED_VERSION
 
 
 def test_shipped_migrations_dir_resolves_to_real_schema():

@@ -1,4 +1,4 @@
-# CONTEXT.md — decky-romm-sync domain glossary
+# CONTEXT.md — RomM-Dock domain glossary
 
 This file is a glossary. It defines the canonical meaning of project-specific terms so that conversations, issues, PRs,
 and code stay aligned. It is _not_ a spec or design doc — implementation docs live in `docs/architecture/`, and
@@ -280,6 +280,20 @@ plain-launches, letting RetroDECK resolve its own command
 ([ADR-0020](docs/adr/0020-live-es-systems-emulator-resolution.md)). The foil to **emulator override** (a user deviation
 from this default).
 
+### Launcher backend
+
+Which app a ROM's launch command actually runs through — **RetroDECK** (the default) or **EmuDeck**. Orthogonal to
+**default emulator** / **emulator override** / **active core**: those decide WHICH emulator a ROM resolves to, on any
+backend; the launcher backend decides HOW that resolved emulator is rendered into an OS-executable command
+(`LauncherBackend.resolve_invocation`, `services/protocols/launcher_backend.py`) AND WHERE downloads, BIOS files, and
+saves live on disk (`LauncherBackend.roms_path`/`bios_path`/`saves_path`/`states_path`, consumed as `LauncherPaths` by
+every file-placement service) — an EmuDeck-only machine with no RetroDECK installed works end-to-end once EmuDeck is the
+active backend. Stored as the plugin's own deviation-free intent (`settings.json`'s `launcher_backend` /
+`launcher_backend_installation`, bucket-1 per the persistence boundary) — there is no "no backend" state, RetroDECK is
+the seeded default. Switching backends re-bakes every installed+bound shortcut's `launch_options` through the existing
+per-platform-core-change fan-out mechanism (ADR-0009's confirmed `SetAppLaunchOptions`), never a shortcut
+delete/recreate. See [Launcher Backends](docs/architecture/launcher-backends.md).
+
 ### Disc
 
 The launchable unit of a multi-disc ROM: a single-disc **container** file the emulator opens directly — a `.cue`, a
@@ -348,8 +362,8 @@ One play session the frontend is currently tracking: `{appId, romId, startMs}` i
 Steam app that opened it. There is one entry **per running app**, not one overall — two RomM games at once are two
 active sessions, each finalizing on its own app's exit. An active session is opened by a game-start notification or by
 reload-adoption, and its durable counterpart is the `last_session_start` marker on the ROM's `rom_playtime` row plus the
-`decky-romm-sync:active-session` breadcrumb that lets a reload adopt it. "Active" is about the frontend's tracking, not
-about foreground/focus — a backgrounded game's session is still active.
+`romm-dock:active-session` breadcrumb that lets a reload adopt it. "Active" is about the frontend's tracking, not about
+foreground/focus — a backgrounded game's session is still active.
 
 ### Unbind / stale / prune
 

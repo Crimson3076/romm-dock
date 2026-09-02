@@ -7,6 +7,8 @@ import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_game_process_control import FakeGameProcessControlAdapter
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
+from fakes.fake_launcher_backend_factory import FakeLauncherBackendFactory
 from fakes.fake_path_exists_reader import FakePathExistsReader
 from fakes.fake_relaunch_options_resolver import FakeRelaunchOptionsResolver
 from fakes.fake_renderer_gc import FakeRendererGc
@@ -149,6 +151,7 @@ def plugin():
             disc_resolver=FakeDiscResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 
@@ -849,6 +852,9 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     # Read-only library / sync state queries.
     "get_cached_game_detail",
     "get_platform_core_info",
+    # Read-only launcher-backend listing (the switch set_launcher_backend IS
+    # decorated).
+    "get_launcher_backends",
     # Read-only disc-picker state query (the pin-write select_disc IS decorated).
     "get_disc_selection",
     # Read-only version-picker state query (the binding-move switch_version IS decorated).
@@ -1103,6 +1109,7 @@ class TestMainStartupOrdering:
             "session_lifecycle_service": MagicMock(),
             "game_process_service": MagicMock(),
             "relaunch_options_resolver": MagicMock(),
+            "launcher_backend_service": MagicMock(),
         }
 
         bootstrap_result = BootstrapResult(
@@ -1120,7 +1127,6 @@ class TestMainStartupOrdering:
                 rom_file_store=MagicMock(),
                 save_file_store=MagicMock(),
                 path_probe=MagicMock(),
-                core_info_provider=MagicMock(),
                 renderer_rss=FakeRendererRss(),
                 renderer_gc=FakeRendererGc(),
                 game_process=FakeGameProcessControlAdapter(),
@@ -1129,6 +1135,8 @@ class TestMainStartupOrdering:
                 recovery_store=MagicMock(),
                 prune_artifacts=MagicMock(),
                 steam_recovery=MagicMock(),
+                retrodeck_launcher_backend_factory=FakeLauncherBackendFactory("retrodeck"),
+                emudeck_launcher_backend_factory=FakeLauncherBackendFactory("emudeck", installations=[]),
             ),
             stores=StateBundle(
                 settings={},

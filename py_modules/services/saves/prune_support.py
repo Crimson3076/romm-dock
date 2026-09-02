@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from models.prune import MutationOutcome, SourceClaim
 
     from domain.rom_install import RomInstall
-    from services.protocols import Clock, RetroDeckPaths, SaveFileStore, UnitOfWorkFactory
+    from services.protocols import Clock, LauncherPaths, SaveFileStore, UnitOfWorkFactory
     from services.saves.rom_info import RomInfoService
     from services.saves.sync_engine import SyncEngine
 
@@ -59,7 +59,7 @@ class PruneSaveSupportConfig:
 
     uow_factory: UnitOfWorkFactory
     save_file_store: SaveFileStore
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     clock: Clock
     rom_info: RomInfoService
     sync_engine: SyncEngine
@@ -71,7 +71,7 @@ class PruneSaveSupport:
     def __init__(self, *, config: PruneSaveSupportConfig) -> None:
         self._uow_factory = config.uow_factory
         self._save_file_store = config.save_file_store
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._clock = config.clock
         self._rom_info = config.rom_info
         self._sync_engine = config.sync_engine
@@ -163,7 +163,7 @@ class PruneSaveSupport:
         expected_by_id: dict[int, list[dict[str, str]]],
     ) -> dict[str, Any]:
         """Classify every purge-set save path into the recovery/quarantine buckets."""
-        saves_root = self._retrodeck_paths.saves_path()
+        saves_root = self._launcher_paths.saves_path()
         artifacts: list[dict[str, object]] = []
         exclusive: list[dict[str, str]] = []
         shared: list[str] = []
@@ -218,7 +218,7 @@ class PruneSaveSupport:
     ) -> dict[str, Any]:
         """Move exclusive current saves through the sanctioned backup funnel."""
         moved: list[str] = []
-        saves_root = self._retrodeck_paths.saves_path()
+        saves_root = self._launcher_paths.saves_path()
         try:
             for item in files:
                 backup_dir = os.path.join(item["saves_dir"], BACKUP_DIR_NAME)
@@ -256,7 +256,7 @@ class PruneSaveSupport:
 
     def validate_prune_absences(self, claims: dict[str, SourceClaim]) -> bool:
         """Require every quarantined purge-owned path to remain absent before cascade."""
-        saves_root = self._retrodeck_paths.saves_path()
+        saves_root = self._launcher_paths.saves_path()
         try:
             for path in claims:
                 current = self._save_file_store.claim_source(path, saves_root)

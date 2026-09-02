@@ -45,7 +45,7 @@ def _builder(uow: FakeUnitOfWork) -> PreviewBuilder:
         config=PreviewBuilderConfig(
             uow_factory=FakeUnitOfWorkFactory(uow),
             recovery_store=cast("Any", _Recovery()),
-            retrodeck_paths=cast("Any", _Paths()),
+            launcher_paths=cast("Any", _Paths()),
             settings={},
         )
     )
@@ -117,7 +117,7 @@ def test_preview_pages_stay_within_wire_budget_for_non_ascii_rows() -> None:
         config=PreviewBuilderConfig(
             uow_factory=cast("Any", None),
             recovery_store=cast("Any", _Recovery()),
-            retrodeck_paths=cast("Any", None),
+            launcher_paths=cast("Any", None),
             settings={},
         )
     )

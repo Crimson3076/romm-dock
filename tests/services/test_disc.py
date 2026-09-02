@@ -9,6 +9,7 @@ import logging
 import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
 from domain.disc_selection import Disc
@@ -87,7 +88,12 @@ def disc_resolver() -> FakeDiscResolver:
 
 
 @pytest.fixture
-def service(event_loop, uow_factory, disc_resolver) -> DiscService:
+def launch_renderer() -> FakeLaunchCommandRenderer:
+    return FakeLaunchCommandRenderer()
+
+
+@pytest.fixture
+def service(event_loop, uow_factory, disc_resolver, launch_renderer) -> DiscService:
     return DiscService(
         config=DiscServiceConfig(
             loop=event_loop,
@@ -95,6 +101,7 @@ def service(event_loop, uow_factory, disc_resolver) -> DiscService:
             uow_factory=uow_factory,
             disc_resolver=disc_resolver,
             active_core=FakeActiveCoreResolver(default=(None, None)),
+            launch_renderer=launch_renderer,
         ),
     )
 
@@ -183,6 +190,21 @@ class TestSelectDisc:
         # The pin is persisted via the pin-only write path.
         with uow_unwrap(uow) as u:
             assert u.roms.get(1).selected_disc == _DISC2
+
+    def test_resolve_invocation_receives_the_roms_platform_slug(self, event_loop, service, uow, launch_renderer):
+        """The launch-renderer seam gets a real ``platform_slug``, not a bare id.
+
+        RetroDECK's own ``resolve_emulator_invocation`` ignores ``rom``
+        entirely, so this call site could get away with ``{"id": rom_id}``
+        for years. EmuDeck's ``resolve_invocation`` genuinely reads
+        ``platform_slug`` to resolve the ES-DE system (issue #918's
+        real-hardware follow-up).
+        """
+        _seed_rom(uow, rom_id=1, selected_disc=None)
+        _seed_install(uow, rom_id=1, rom_dir=_ROM_DIR)
+        event_loop.run_until_complete(service.select_disc(1, _DISC2))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "psx"
 
     def test_clear_to_default_persists_null(self, event_loop, service, uow):
         _seed_rom(uow, rom_id=1, selected_disc=_DISC2)
