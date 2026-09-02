@@ -147,8 +147,9 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     )
 
     # The single read-path native-Windows resolver: folds the per-game
-    # selected_exe pick over the live .exe enumeration of an installed ROM's
-    # directory, wrapped in the located Proton build's invocation. Built
+    # selected_exe pick over the live launch-target enumeration (.exe/.sh) of
+    # an installed ROM's directory, wrapped in the Proton or native invocation
+    # the target's kind picks. Built
     # alongside disc_launch_resolver (no service deps) so every launch-bake
     # site and the exe-picker callables draw the bake command from the SAME
     # seam and it never diverges from the picker's selection.

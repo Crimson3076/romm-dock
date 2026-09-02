@@ -10,6 +10,7 @@ from domain.shortcut_data import (
     build_launch_options,
     build_shortcuts_data,
     resolve_emulator_invocation,
+    resolve_native_invocation,
     resolve_proton_invocation,
 )
 
@@ -554,6 +555,32 @@ class TestResolveProtonInvocation:
         proton = ProtonInstallation(name="X", binary_path="/steam/Proton/proton", steam_install_path="/steam root")
         result = resolve_proton_invocation(proton, "/prefixes/1", "/roms/win/game-1")
         assert '"/steam root"' in result
+
+
+class TestResolveNativeInvocation:
+    """Tests for resolve_native_invocation() — the .sh (kind="native") launch branch."""
+
+    def test_renders_env_and_bash_with_no_shell_operators(self):
+        result = resolve_native_invocation("/roms/win/game-1")
+        assert result == 'env -C "/roms/win/game-1" bash'
+        assert "&&" not in result
+        assert ";" not in result
+
+    def test_composes_with_build_launch_options(self):
+        invocation = resolve_native_invocation("/roms/win/game-1")
+        launch_options = build_launch_options(invocation, "/roms/win/game-1/patcher-start.sh")
+        assert launch_options == 'env -C "/roms/win/game-1" bash "/roms/win/game-1/patcher-start.sh"'
+
+    def test_exe_dir_with_spaces_and_quotes_is_escaped(self):
+        invocation = resolve_native_invocation('/roms/win/My "Odd" Game')
+        assert invocation == 'env -C "/roms/win/My \\"Odd\\" Game" bash'
+
+    def test_never_mentions_proton_or_compat_data(self):
+        # A native target has no Proton/Wine involvement at all — no prefix,
+        # no compat-data env vars.
+        result = resolve_native_invocation("/roms/win/game-1")
+        assert "STEAM_COMPAT" not in result
+        assert "proton" not in result.lower()
 
 
 class TestBuildShortcutsDataWindows:

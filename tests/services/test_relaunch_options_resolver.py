@@ -393,7 +393,7 @@ def _seed_windows_install(uow: FakeUnitOfWork, *, rom_id: int, app_id: int, sele
 
 def _windows_resolver_seeded(rom_id: int, launch_options: str, exe_path: str = _WIN_EXE) -> FakeWindowsResolver:
     resolver = FakeWindowsResolver()
-    resolver.set_executables("/roms/win/game-1", [WindowsExecutable(filename="Game.exe", path=exe_path)])
+    resolver.set_executables("/roms/win/game-1", [WindowsExecutable(filename="Game.exe", path=exe_path, kind="exe")])
     resolver.set_launch_options(rom_id, launch_options)
     return resolver
 
@@ -433,6 +433,8 @@ def test_windows_rom_no_proton_bakes_empty_command():
     _seed_windows_install(uow, rom_id=1, app_id=99)
     # No launch_options seeded for rom_id=1 → resolves "" (mirrors "no Proton found").
     windows_resolver = FakeWindowsResolver()
-    windows_resolver.set_executables("/roms/win/game-1", [WindowsExecutable(filename="Game.exe", path=_WIN_EXE)])
+    windows_resolver.set_executables(
+        "/roms/win/game-1", [WindowsExecutable(filename="Game.exe", path=_WIN_EXE, kind="exe")]
+    )
     resolver = _make_resolver(uow=uow, windows_resolver=windows_resolver)
     assert resolver.installed_relaunch_items() == [{"app_id": 99, "launch_options": ""}]

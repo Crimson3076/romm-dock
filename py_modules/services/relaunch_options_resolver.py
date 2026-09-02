@@ -84,7 +84,7 @@ class RelaunchOptionsResolver:
         The one derivation of that path, shared by the launch-options build and
         the bare-path entry point, so a read-path consumer can never compare
         against a path that differs from the one actually launched. A
-        native-Windows ROM resolves to its selected ``.exe`` through
+        native-Windows ROM resolves to its selected launch target through
         ``windows_resolver``; a multi-disc ROM resolves to its selected disc, a
         single-disc ROM to its own ``file_path``, through ``disc_resolver`` —
         the same seams every other launch-bake site uses.

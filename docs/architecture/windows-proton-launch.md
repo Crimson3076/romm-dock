@@ -2,7 +2,9 @@
 
 Technical reference for how the plugin launches native-Windows ROMs — games RomM serves as raw Windows executables
 rather than console dumps — by locating and invoking a Proton build itself, entirely outside the RetroDECK/ES-DE
-emulator machinery every other platform goes through.
+emulator machinery every other platform goes through. A native-Windows install can also select a bundled Linux launcher
+script (`.sh`) instead of a `.exe`, in which case Proton is skipped entirely — see
+[Native Linux launch targets](#native-linux-launch-targets-sh-bypassing-proton-entirely).
 
 ## What a native-Windows ROM is
 
@@ -37,9 +39,9 @@ def _resolve_launch_options(rom, bake_path, core_overrides, windows_launch_optio
 ```
 
 A native-Windows ROM never reaches `resolve_emulator_invocation`, never consults `core_overrides`, and never resolves a
-disc path — its `launch_options` is whatever the caller's Proton resolution already rendered into
-`windows_launch_options`, keyed by `rom_id`. An absent entry (no Proton located, or no `.exe` present) renders as `""` —
-the same empty placeholder every other unlaunchable install produces (see
+disc path — its `launch_options` is whatever the caller's launch-target resolution already rendered into
+`windows_launch_options`, keyed by `rom_id`. An absent entry (no launchable target present, or — for a `.exe` target —
+no Proton located) renders as `""` — the same empty placeholder every other unlaunchable install produces (see
 [Steam Non-Steam Shortcuts](steam-non-steam-shortcuts.md)). `build_shortcuts_data`'s `core_overrides` parameter is
 required precisely so a new bake site can never silently skip the override for every other platform; for a
 native-Windows ROM it is simply never read.
@@ -56,22 +58,27 @@ while actually launching another.
 
 `WindowsLaunchResolver` exposes three methods, layered so each can be used alone:
 
-- **`enumerate_executables(install)`** — lists the launchable `.exe` files in the install's directory (a single-file
-  install enumerates over its own `file_path` alone — a native-Windows ROM can ship as a bare `.exe`; a folder-backed
-  install is scanned recursively). This is what the exe-picker's menu is built from.
+- **`enumerate_executables(install)`** — lists the launchable targets in the install's directory: a `.exe`
+  (`WindowsExecutable.kind == "exe"`) or a bundled `.sh` script (`kind == "native"`, see
+  [Native Linux launch targets](#native-linux-launch-targets-sh-bypassing-proton-entirely)) — a single-file install
+  enumerates over its own `file_path` alone (a native-Windows ROM can ship as a bare `.exe`); a folder-backed install is
+  scanned recursively, and both kinds sort into one alphabetical-by-basename list. This is what the exe-picker's menu is
+  built from.
 - **`resolve_exe_path(install, selected_exe)`** — folds the persisted pin over that enumeration: the pinned filename
-  when it still names a present `.exe`, else the first one found (alphabetical by basename — there is no numbering
-  scheme to parse the way multi-disc labels have one). An unlaunchable install (`launchable is False`) resolves to `""`
-  before any exe work, matching every other bake seam's convention.
-- **`resolve_launch_options(install, selected_exe)`** — wraps the resolved `.exe` path in a full Proton invocation via
-  the injected `ProtonLocator`. `""` when there is no `.exe` to launch, **or** when no Proton build is located — "no
-  Proton installed" is a first-class answer here, never an exception, because a user without Steam's Proton (or with it
-  in a non-standard location) must degrade to "Windows games unavailable" rather than crash the sync.
+  when it still names a present target, else the first one found (alphabetical by basename, `.exe`/`.sh` interleaved —
+  there is no numbering scheme to parse the way multi-disc labels have one). An unlaunchable install
+  (`launchable is False`) resolves to `""` before any target work, matching every other bake seam's convention.
+- **`resolve_launch_options(install, selected_exe)`** — resolves the target, then branches on its `kind`: a `.exe` wraps
+  in a full Proton invocation via the injected `ProtonLocator` (`""` when no Proton build is located — "no Proton
+  installed" is a first-class answer here, never an exception, because a user without Steam's Proton (or with it in a
+  non-standard location) must degrade to "Windows games unavailable" rather than crash the sync); a `.sh` renders the
+  direct `bash` invocation instead and never consults `ProtonLocator` at all. `""` when there is no launchable target at
+  all.
 
 Because the picker's `get_windows_executables`/`select_executable` callables (`services/windows_game.py`) and every bake
 site's read path (`services/library/shortcut_launch_resolver.py`'s `do_scan_windows_launch_options` /
 `do_read_windows_launch_options`) all call through this one resolver, a baked `launch_options` and the picker's shown
-selection can never diverge — there is only one function that turns "which `.exe`" into "what Proton runs".
+selection can never diverge — there is only one function that turns "which target" into "what runs it".
 
 ## `ProtonLocatorAdapter` — discovery and the tie-break rule
 
@@ -148,6 +155,38 @@ exactly as a real Windows game launched from its own install directory would, an
 that folder as its working directory until this fix. `-C` folds into the SAME flat `env` invocation rather than a second
 command or a shell `cd`, so the no-shell-operator property still holds.
 
+## Native Linux launch targets (`.sh`, bypassing Proton entirely)
+
+Some native-Windows games ship (or need) a companion tool that is itself a native Linux program rather than a Windows
+one — the motivating case is [`uranium-shellpatch`](https://github.com/goaaats/uranium-shellpatch), a community CLI
+alternative to Pokémon Uranium's Windows-only GUI patcher, bundled as a RomM asset. Handing a script like that to
+`proton run` is not something Proton can execute at all, so `domain.windows_launch.enumerate_executables` enumerates a
+second kind of launch target alongside `.exe`, distinguished by `WindowsExecutable.kind`:
+
+| Extension | `kind`     | Bake                                              | Consults `ProtonLocator`? |
+| --------- | ---------- | ------------------------------------------------- | ------------------------- |
+| `.exe`    | `"exe"`    | `resolve_proton_invocation` (decisions 1-5 above) | Yes — no build is fatal   |
+| `.sh`     | `"native"` | `resolve_native_invocation`                       | No — never consulted      |
+
+Both kinds share **one** picker, one persisted `roms.selected_exe` pin, and one default rule (alphabetically first
+regardless of kind) — there is no separate "script picker" UI or settings surface, because the picker's job (which file
+does Play launch) is identical either way; only the bake differs. `WindowsLaunchResolver.resolve_launch_options` is the
+one place that reads `kind` and branches.
+
+`resolve_native_invocation(exe_dir)` renders `env -C "<exe_dir>" bash`, and `build_launch_options` appends the quoted
+script path exactly as it appends a `.exe` path for `resolve_proton_invocation` — the same single flat command shape,
+deliberately: it preserves the no-shell-operator property (still zero control operators — see
+[above](#why-the-compat-data-prefix-is-created-in-python-not-in-the-baked-command)) and the working-directory fix (the
+same `-C <dir>` / `_escape_launch_arg` treatment, for the same reason a `.exe` needs it — a script resolving sibling
+files relative to its own location). `bash` is invoked explicitly rather than relying on the script's own executable
+bit, which a file arriving via RomM download is not guaranteed to carry.
+
+Because a `.sh` target never calls `ProtonLocator.locate()`, a native-Windows ROM whose selected/default target is a
+bundled script launches even on a system with **no Proton build installed at all** — the
+[degrade-to-unavailable posture](../user-guide/managing-games.md#when-no-proton-is-found) applies to `.exe` targets
+only. See [ADR-0029 decision 6](../adr/0029-plugin-owns-proton-invocation.md) for why this stays scoped to `.sh` rather
+than becoming a general "run any bundled script" mechanism.
+
 ## Why the plugin locates and invokes Proton itself
 
 Steam has its own per-shortcut compat-tool assignment UI, but the plugin does not use it. Assigning a compat tool to a
@@ -157,12 +196,15 @@ recorded in [ADR-0029](../adr/0029-plugin-owns-proton-invocation.md).
 
 ## The exe-picker flow
 
-A native-Windows install can enumerate more than one `.exe` (an installer's own uninstaller, a launcher plus the real
-game binary, per-DLC executables). `ExeSelector` (`src/components/ExeSelector.tsx`) is the structural twin of
-`DiscSelector`, mounted immediately to its right in the play-section row on the game detail page. It renders a compact
-icon-only trigger for an installed native-Windows ROM whose install enumerates at least one `.exe` (neutral grey when
-following the default pick, accent-tinted when a specific `.exe` is pinned) and nothing at all otherwise — unknown,
-not-installed, non-Windows, and no-`.exe` ROMs all collapse to the backend's `{"has_executables": false}` answer.
+A native-Windows install can enumerate more than one launch target (an installer's own uninstaller, a launcher plus the
+real game binary, per-DLC executables, a bundled `.sh` patcher alongside the game's own `.exe`). `ExeSelector`
+(`src/components/ExeSelector.tsx`) is the structural twin of `DiscSelector`, mounted immediately to its right in the
+play-section row on the game detail page. It renders a compact icon-only trigger for an installed native-Windows ROM
+whose install enumerates at least one launchable target (neutral grey when following the default pick, accent-tinted
+when a specific one is pinned) and nothing at all otherwise — unknown, not-installed, non-Windows, and no-target ROMs
+all collapse to the backend's `{"has_executables": false}` answer. The frontend renders both kinds identically (a bare
+filename); it never reads `kind` — that branch lives entirely in `WindowsLaunchResolver.resolve_launch_options` on the
+backend.
 
 The flow, mirroring the multi-disc picker:
 
@@ -185,7 +227,7 @@ The flow, mirroring the multi-disc picker:
    immediately — no re-sync required.
 
 There is no "reset to default" menu entry, matching the disc picker's own non-`.m3u` case: a native-Windows install has
-no playlist concept to fall back to, only "the first `.exe` enumerated," which the enumeration order already supplies.
+no playlist concept to fall back to, only "the first target enumerated," which the enumeration order already supplies.
 
 ## `CoreService` refuses a native-Windows ROM outright
 
@@ -207,17 +249,17 @@ accident of today's data.
 
 ## Key Files
 
-| File                                                      | Purpose                                                                                              |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `py_modules/domain/windows_launch.py`                     | Pure kernel: `enumerate_executables`, `resolve_launch_path` — no I/O                                 |
-| `py_modules/domain/proton.py`                             | `ProtonInstallation` value object crossing the adapters/services boundary                            |
-| `py_modules/domain/shortcut_data.py`                      | `WINDOWS_PLATFORM_SLUG`, `resolve_proton_invocation`, the bypass branch in `_resolve_launch_options` |
-| `py_modules/adapters/proton_locator.py`                   | `ProtonLocatorAdapter` — Steam-root scan, tie-break rule, `compat_data_path`                         |
-| `py_modules/services/protocols/proton.py`                 | `ProtonLocator` Protocol                                                                             |
-| `py_modules/services/protocols/cross_service.py`          | `WindowsResolver` Protocol                                                                           |
-| `py_modules/services/windows_launch_resolver.py`          | `WindowsLaunchResolver` — the single read-path seam                                                  |
-| `py_modules/services/windows_game.py`                     | `WindowsGameService` — the exe-picker's two callables                                                |
-| `py_modules/services/library/shortcut_launch_resolver.py` | `do_scan_windows_launch_options` / `do_read_windows_launch_options`, the bake sites' entry points    |
-| `py_modules/services/cores.py`                            | `CoreService` — refuses `platform_slug == "win"` outright (no emulator/core concept applies)         |
-| `py_modules/db/migrations/024_add_selected_exe.sql`       | Adds `roms.selected_exe`                                                                             |
-| `src/components/ExeSelector.tsx`                          | The picker UI, structural twin of `DiscSelector`                                                     |
+| File                                                      | Purpose                                                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `py_modules/domain/windows_launch.py`                     | Pure kernel: `enumerate_executables`, `resolve_launch_target`, `resolve_launch_path` — no I/O     |
+| `py_modules/domain/proton.py`                             | `ProtonInstallation` value object crossing the adapters/services boundary                         |
+| `py_modules/domain/shortcut_data.py`                      | `WINDOWS_PLATFORM_SLUG`, `resolve_proton_invocation`, `resolve_native_invocation`                 |
+| `py_modules/adapters/proton_locator.py`                   | `ProtonLocatorAdapter` — Steam-root scan, tie-break rule, `compat_data_path`                      |
+| `py_modules/services/protocols/proton.py`                 | `ProtonLocator` Protocol                                                                          |
+| `py_modules/services/protocols/cross_service.py`          | `WindowsResolver` Protocol                                                                        |
+| `py_modules/services/windows_launch_resolver.py`          | `WindowsLaunchResolver` — the single read-path seam                                               |
+| `py_modules/services/windows_game.py`                     | `WindowsGameService` — the exe-picker's two callables                                             |
+| `py_modules/services/library/shortcut_launch_resolver.py` | `do_scan_windows_launch_options` / `do_read_windows_launch_options`, the bake sites' entry points |
+| `py_modules/services/cores.py`                            | `CoreService` — refuses `platform_slug == "win"` outright (no emulator/core concept applies)      |
+| `py_modules/db/migrations/024_add_selected_exe.sql`       | Adds `roms.selected_exe`                                                                          |
+| `src/components/ExeSelector.tsx`                          | The picker UI, structural twin of `DiscSelector`                                                  |

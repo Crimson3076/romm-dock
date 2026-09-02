@@ -206,8 +206,8 @@ class SqliteRomRepository(BaseRepository):
     def set_selected_exe(self, rom_id: int, filename: str | None) -> None:
         """Write (or clear) the per-game native-Windows exe selection for ``rom_id``.
 
-        ``filename`` is the exe basename to pin, or ``None`` to store SQL NULL
-        (follow the default — the first enumerated ``.exe``). This is the only
+        ``filename`` is the launch-target basename to pin, or ``None`` to store
+        SQL NULL (follow the default — the first enumerated target). This is the only
         write path for the column — the sync UPSERT in :meth:`save` never
         touches it, mirroring :meth:`set_selected_disc`.
         """

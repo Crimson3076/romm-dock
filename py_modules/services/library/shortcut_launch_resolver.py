@@ -54,9 +54,10 @@ class ShortcutLaunchResolverConfig:
     ``settings.json`` core over the standalone-aware es_systems default,
     ``disc_resolver`` resolves a multi-disc ROM's persisted ``selected_disc``
     pin against its install directory, and ``windows_resolver`` resolves a
-    native-Windows ROM's persisted ``selected_exe`` pin into a full
-    Proton-wrapped launch command (bypassing ``active_core``/``disc_resolver``
-    entirely for that platform).
+    native-Windows ROM's persisted ``selected_exe`` pin into a full launch
+    command — Proton-wrapped for a ``.exe`` target, a direct ``bash``
+    invocation for a bundled ``.sh`` target (bypassing
+    ``active_core``/``disc_resolver`` entirely for that platform).
     """
 
     uow_factory: UnitOfWorkFactory
@@ -142,10 +143,10 @@ class ShortcutLaunchResolver:
         Preview-path counterpart to :meth:`do_scan_installed_paths`: a full
         ``iter_all()`` scan, restricted to installs whose raw ``platform_slug``
         is ``"win"`` (checked before any system normalization). Only ROMs that
-        resolve to a launchable Proton command appear — no ``.exe``, or no
-        Proton build located, leaves the ROM absent, and :func:`build_shortcuts_
-        data` renders that as the same empty launch command every other
-        unlaunchable install gets.
+        resolve to a launchable command appear — no launch target, or (for a
+        ``.exe`` target) no Proton build located, leaves the ROM absent, and
+        :func:`build_shortcuts_data` renders that as the same empty launch
+        command every other unlaunchable install gets.
         """
         with self._uow_factory() as uow:
             options: dict[int, str] = {}

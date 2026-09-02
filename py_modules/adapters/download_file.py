@@ -389,7 +389,7 @@ class DownloadFileAdapter:
         safe_root: str,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> str:
-        """Extract a single-file native-Windows ``.zip`` and resolve its launch ``.exe``.
+        """Extract a single-file native-Windows ``.zip`` and resolve its default launch target.
 
         See ``services.protocols.DownloadFileStore.extract_windows_archive``
         for the contract. Chains :meth:`extract_zip` + :meth:`remove_file` +

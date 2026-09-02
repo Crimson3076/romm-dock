@@ -11,6 +11,7 @@ from services.windows_launch_resolver import WindowsLaunchResolver, WindowsLaunc
 _ROM_DIR = "/roms/win/game-1"
 _EXE1 = f"{_ROM_DIR}/Game.exe"
 _EXE2 = f"{_ROM_DIR}/Setup.exe"
+_SCRIPT = f"{_ROM_DIR}/patcher-start.sh"
 _PROTON = ProtonInstallation(name="GE-Proton9-27", binary_path="/steam/proton", steam_install_path="/steam")
 
 
@@ -51,6 +52,11 @@ class TestEnumerateExecutables:
         resolver = _resolver(files=[f"{_ROM_DIR}/data.bin"])
         assert resolver.enumerate_executables(_install()) == []
 
+    def test_sh_script_is_enumerated_alongside_exe_files(self):
+        resolver = _resolver(files=[_EXE1, _SCRIPT])
+        result = resolver.enumerate_executables(_install())
+        assert [(e.filename, e.kind) for e in result] == [("Game.exe", "exe"), ("patcher-start.sh", "native")]
+
 
 class TestResolveExePath:
     def test_pinned_exe_wins(self):
@@ -72,6 +78,10 @@ class TestResolveExePath:
     def test_unlaunchable_install_resolves_empty(self):
         resolver = _resolver(files=[_EXE1])
         assert resolver.resolve_exe_path(_install(launchable=False), None) == ""
+
+    def test_pinned_script_resolves_its_bare_path(self):
+        resolver = _resolver(files=[_EXE1, _SCRIPT])
+        assert resolver.resolve_exe_path(_install(), "patcher-start.sh") == _SCRIPT
 
 
 class TestResolveLaunchOptions:
@@ -107,3 +117,20 @@ class TestResolveLaunchOptions:
         resolver = _resolver(files=[_EXE1, _EXE2])
         result = resolver.resolve_launch_options(_install(), "Setup.exe")
         assert result.endswith(f'"{_EXE2}"')
+
+    def test_native_script_bakes_bash_invocation_without_proton(self):
+        resolver = _resolver(files=[_SCRIPT])
+        result = resolver.resolve_launch_options(_install(), None)
+        assert result == f'env -C "{_ROM_DIR}" bash "{_SCRIPT}"'
+
+    def test_native_script_launches_even_with_no_proton_installed(self):
+        # A .sh target never consults Proton at all — no build installed is
+        # only fatal for a .exe target.
+        resolver = _resolver(files=[_SCRIPT], proton=None)
+        result = resolver.resolve_launch_options(_install(), None)
+        assert result == f'env -C "{_ROM_DIR}" bash "{_SCRIPT}"'
+
+    def test_pinned_script_among_exe_siblings_is_baked_natively(self):
+        resolver = _resolver(files=[_EXE1, _SCRIPT])
+        result = resolver.resolve_launch_options(_install(), "patcher-start.sh")
+        assert result == f'env -C "{_ROM_DIR}" bash "{_SCRIPT}"'

@@ -238,6 +238,33 @@ def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str,
     )
 
 
+def resolve_native_invocation(exe_dir: str) -> str:
+    """Render a bundled native-Windows-ROM Linux script's launch invocation prefix.
+
+    Mirrors :func:`resolve_proton_invocation`'s role, for the OTHER kind of
+    target :func:`domain.windows_launch.enumerate_executables` can resolve
+    (``kind == "native"``, currently ``.sh`` only): a Linux launcher/patcher
+    script shipped alongside a native-Windows ROM as a RomM asset, which Proton
+    cannot run and must not be handed to. It is invoked directly via ``bash``
+    rather than executed in place, because a downloaded file is not guaranteed
+    to carry its executable bit; :func:`build_launch_options` appends the
+    quoted script path the same way it appends a ``.exe`` path for
+    :func:`resolve_proton_invocation`.
+
+    ``exe_dir`` becomes GNU ``env``'s ``-C`` (``--chdir``) argument, exactly as
+    in :func:`resolve_proton_invocation`, so the script sees its own install
+    directory as its working directory rather than the launcher's fixed
+    ``bin/`` — the same working-directory need a native ``.exe`` has, and for
+    the same reason (a script resolving sibling files by a path relative to
+    its own location). Escaped for the same reason ``exe_dir`` is escaped
+    there: unlike a plugin/system-derived path, it comes from an on-disk
+    directory name a server-controlled download could shape. Deliberately a
+    single flat ``env`` invocation with no shell control operators, matching
+    :func:`resolve_proton_invocation`'s no-shell-operator property (ADR-0029).
+    """
+    return f'env -C "{_escape_launch_arg(exe_dir)}" bash'
+
+
 def _resolve_launch_options(
     rom: dict[str, Any],
     bake_path: str,

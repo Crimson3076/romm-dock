@@ -263,17 +263,20 @@ class WindowsResolver(Protocol):
 
     The composition root satisfies this with ``WindowsLaunchResolver``. Mirrors
     :class:`DiscResolver`'s shape: :meth:`enumerate_executables` lists the
-    launchable ``.exe`` files in a ROM's install directory (a single-file
-    install enumerates over its own ``file_path`` alone);
-    :meth:`resolve_exe_path` resolves the persisted ``selected_exe`` pin against
-    that list to the bare path (the stop-game bare-path read draws from this);
-    :meth:`resolve_launch_options` composes the full Proton-wrapped Steam-
-    shortcut launch command — the render every bake site and the exe picker's
-    write path use, so the baked command never diverges from the picker's
-    selection. No Proton found or no ``.exe`` present both resolve to ``""``,
-    which every caller renders as the empty launch command, mirroring
-    ``DiscResolver``'s ``launchable is False`` convention. An install the
-    system cannot launch (``launchable is False``) also resolves to ``""``.
+    launchable targets (``.exe`` or a bundled ``.sh``) in a ROM's install
+    directory (a single-file install enumerates over its own ``file_path``
+    alone); :meth:`resolve_exe_path` resolves the persisted ``selected_exe``
+    pin against that list to the bare path (the stop-game bare-path read draws
+    from this); :meth:`resolve_launch_options` composes the full launch
+    command — Proton-wrapped for a ``.exe`` target, a direct ``bash``
+    invocation for a ``.sh`` target — the render every bake site and the exe
+    picker's write path use, so the baked command never diverges from the
+    picker's selection. No launchable target present resolves to ``""``, which
+    every caller renders as the empty launch command, mirroring
+    ``DiscResolver``'s ``launchable is False`` convention; for a ``.exe``
+    target specifically, no Proton found also resolves to ``""`` (a ``.sh``
+    target never consults Proton). An install the system cannot launch
+    (``launchable is False``) also resolves to ``""``.
     """
 
     def enumerate_executables(self, install: RomInstall) -> list[WindowsExecutable]: ...
