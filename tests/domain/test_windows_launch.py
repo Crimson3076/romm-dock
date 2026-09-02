@@ -1,8 +1,13 @@
-"""Unit tests for ``domain/windows_launch`` — exe enumeration + launch-path resolution."""
+"""Unit tests for ``domain/windows_launch`` — launch-target enumeration + resolution."""
 
 from __future__ import annotations
 
-from domain.windows_launch import WindowsExecutable, enumerate_executables, resolve_launch_path
+from domain.windows_launch import (
+    WindowsExecutable,
+    enumerate_executables,
+    resolve_launch_path,
+    resolve_launch_target,
+)
 
 _WIN_DIR = "/roms/win/Some Game"
 
@@ -14,7 +19,7 @@ def _p(name: str) -> str:
 class TestEnumerateExecutables:
     def test_single_exe_returns_one(self):
         executables = enumerate_executables([_p("Game.exe")])
-        assert executables == [WindowsExecutable(filename="Game.exe", path=_p("Game.exe"))]
+        assert executables == [WindowsExecutable(filename="Game.exe", path=_p("Game.exe"), kind="exe")]
 
     def test_empty_input_returns_empty(self):
         assert enumerate_executables([]) == []
@@ -52,6 +57,28 @@ class TestEnumerateExecutables:
         assert executables[0].filename == "Game.exe"
         assert executables[0].path == _p("Sub/Game.exe")
 
+    def test_sh_script_is_enumerated_as_native(self):
+        executables = enumerate_executables([_p("patcher-start.sh")])
+        assert executables == [
+            WindowsExecutable(filename="patcher-start.sh", path=_p("patcher-start.sh"), kind="native")
+        ]
+
+    def test_sh_extension_match_is_case_insensitive(self):
+        executables = enumerate_executables([_p("Launcher.SH")])
+        assert executables[0].kind == "native"
+
+    def test_exe_and_sh_interleave_in_one_alphabetical_order(self):
+        files = [_p("zeta.exe"), _p("alpha.sh"), _p("mid.exe")]
+        executables = enumerate_executables(files)
+        assert [(e.filename, e.kind) for e in executables] == [
+            ("alpha.sh", "native"),
+            ("mid.exe", "exe"),
+            ("zeta.exe", "exe"),
+        ]
+
+    def test_other_extensions_are_still_ignored(self):
+        assert enumerate_executables([_p("readme.sh.bak"), _p("run.bat"), _p("patch.py")]) == []
+
 
 def _executables() -> list[str]:
     return [_p("Alpha.exe"), _p("Beta.exe"), _p("Gamma.exe")]
@@ -81,3 +108,23 @@ class TestResolveLaunchPath:
 
     def test_no_exe_among_files_returns_none(self):
         assert resolve_launch_path([_p("readme.txt")], "Alpha.exe") is None
+
+
+class TestResolveLaunchTarget:
+    def test_pinned_sh_script_returns_it_with_native_kind(self):
+        files = [_p("Game.exe"), _p("patcher-start.sh")]
+        target = resolve_launch_target(files, "patcher-start.sh")
+        assert target == WindowsExecutable(filename="patcher-start.sh", path=_p("patcher-start.sh"), kind="native")
+
+    def test_default_pick_when_only_a_script_is_present_is_native(self):
+        target = resolve_launch_target([_p("patcher-start.sh")], None)
+        assert target is not None
+        assert target.kind == "native"
+
+    def test_default_pick_among_exe_and_sh_is_alphabetically_first_regardless_of_kind(self):
+        target = resolve_launch_target([_p("zeta.exe"), _p("alpha.sh")], None)
+        assert target is not None
+        assert target.filename == "alpha.sh"
+
+    def test_no_targets_returns_none(self):
+        assert resolve_launch_target([_p("readme.txt")], None) is None

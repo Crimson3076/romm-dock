@@ -1,20 +1,24 @@
 /**
- * ExeSelector — inline `.exe` picker for native-Windows/Proton ROMs.
+ * ExeSelector — inline launch-target picker for native-Windows ROMs.
  *
  * Structural twin of DiscSelector (#865): sits immediately to its right in the
  * play-section row. For an installed native-Windows ROM whose install
- * enumerates at least one launchable `.exe` it renders a compact, icon-only
- * trigger — neutral grey for the default pick (the first enumerated `.exe`),
- * accent-tinted when a specific `.exe` is pinned. Clicking it opens an
- * anchored `showContextMenu` list of the enumerated executables. Picking one
- * rewrites the Steam shortcut's `launch_options` to the Proton-wrapped launch
- * command for that exe and persists the choice in the backend DB, so the Play
- * button always launches the currently-selected executable.
+ * enumerates at least one launchable target — a `.exe` (Proton-launched) or a
+ * bundled `.sh` script (launched natively, no Proton) — it renders a compact,
+ * icon-only trigger — neutral grey for the default pick (the first enumerated
+ * target), accent-tinted when a specific one is pinned. Clicking it opens an
+ * anchored `showContextMenu` list of the enumerated targets, rendered
+ * identically regardless of kind — this component never reads which kind a
+ * target is; that branch lives entirely in the backend's
+ * `WindowsLaunchResolver`. Picking one rewrites the Steam shortcut's
+ * `launch_options` to the freshly-baked launch command for that target and
+ * persists the choice in the backend DB, so the Play button always launches
+ * the currently-selected one.
  *
- * Unknown / not-installed / non-Windows / no-exe ROMs render nothing — the
+ * Unknown / not-installed / non-Windows / no-target ROMs render nothing — the
  * backend's `has_executables: false` covers every one of those cases. The
  * picker re-fetches on `download_complete` (a newly installed ROM may now
- * report executables) and hides on `romm_rom_uninstalled`.
+ * report launch targets) and hides on `romm_rom_uninstalled`.
  */
 
 import { useState, useEffect, useRef, FC } from "react";

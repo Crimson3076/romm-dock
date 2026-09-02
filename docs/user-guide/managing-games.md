@@ -490,32 +490,47 @@ If both an official build and a GE-Proton build are installed, the plugin prefer
 generally the more compatible choice for a non-Steam title. Within whichever it picks, the newest installed version is
 used.
 
-### Picking which `.exe` launches
+### Picking which `.exe` (or script) launches
 
-A native-Windows install can contain more than one `.exe` — a launcher plus the real game binary, an uninstaller, or
-per-DLC executables. When an installed native-Windows game has more than one, a small **picker icon** (a Windows logo)
-appears on its detail page, right next to the Play button — in the same spot the disc and version pickers occupy for
-other games. Its color shows whether you've made a pick: grey means the plugin is using its default (the first `.exe` it
-finds), accent-colored means you've pinned a specific one.
+A native-Windows install can contain more than one launchable file — a launcher plus the real game binary, an
+uninstaller, per-DLC executables, or a bundled Linux launcher/patcher script (a `.sh` file — see
+[Bundled Linux launcher scripts](#bundled-linux-launcher-scripts) below). When an installed native-Windows game has more
+than one, a small **picker icon** (a Windows logo) appears on its detail page, right next to the Play button — in the
+same spot the disc and version pickers occupy for other games. Its color shows whether you've made a pick: grey means
+the plugin is using its default (the first one it finds, alphabetically), accent-colored means you've pinned a specific
+one.
 
 To change it:
 
 1. Open the game's detail page in the Steam Library.
 2. Tap the picker icon next to Play.
-3. Choose the `.exe` you want. The Play button now launches that one.
+3. Choose the file you want. The Play button now launches that one.
 
 Like the disc picker, this takes effect immediately — no re-sync needed — and your pick is remembered: it survives
 uninstalling and re-downloading the game, since it's tied to the game itself rather than to the downloaded files. If the
-`.exe` you picked ever goes missing (say, from a partial re-download), the game quietly falls back to the default `.exe`
-instead of failing to launch. A game whose install has only one `.exe` shows no picker at all — there is nothing to
+file you picked ever goes missing (say, from a partial re-download), the game quietly falls back to the default instead
+of failing to launch. A game whose install has only one launchable file shows no picker at all — there is nothing to
 choose between.
+
+### Bundled Linux launcher scripts
+
+A `.sh` file in a native-Windows install's files is selectable in the same picker as its `.exe` files, but it launches
+differently: it runs directly as a Linux program, not through Proton at all. This exists for community tools that patch
+or launch a game and are themselves Linux programs rather than Windows ones —
+[`uranium-shellpatch`](https://github.com/goaaats/uranium-shellpatch) (a one-time patcher for Pokémon Uranium) is the
+motivating example. Bundle the script alongside the game's other files in your RomM library, and it shows up in the
+picker exactly like any `.exe` would.
+
+Because a `.sh` script never goes through Proton, it launches even if you have no Proton build installed at all — see
+[When no Proton is found](#when-no-proton-is-found) below, which applies to `.exe` files only.
 
 ### When no Proton is found
 
-If Steam has no Proton build installed at all, a native-Windows game has no way to launch — but unlike
-[a download with nothing launchable](#when-a-download-has-nothing-launchable), the game detail page won't call this out
-directly; the game still shows as Installed, with no warning badge. Pressing **Play** simply does nothing, the same as
-[pressing Play on a ROM that isn't downloaded yet](troubleshooting.md#rom-not-downloaded).
+If Steam has no Proton build installed at all, a native-Windows game whose selected launch file is a `.exe` has no way
+to launch (a selected `.sh` script is unaffected — see [Bundled Linux launcher scripts](#bundled-linux-launcher-scripts)
+above) — but unlike [a download with nothing launchable](#when-a-download-has-nothing-launchable), the game detail page
+won't call this out directly; the game still shows as Installed, with no warning badge. Pressing **Play** simply does
+nothing, the same as [pressing Play on a ROM that isn't downloaded yet](troubleshooting.md#rom-not-downloaded).
 
 Install a Proton build (see [Requirements](#requirements) above) and try **Play** again — no re-sync or re-download
 needed. The plugin checks for an installed Proton build fresh every time you press Play, so the very next press launches

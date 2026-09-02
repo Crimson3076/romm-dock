@@ -134,6 +134,36 @@ the working directory it needs. Unlike every other path this function renders, `
 on-disk directory name a server-controlled download could shape, so it gets the same backslash/quote escaping
 `build_launch_options` already applies to the final `.exe` argument (both now share `_escape_launch_arg`).
 
+### 6. A bundled Linux script (`.sh`) is a second, non-Proton launch-target kind
+
+Some native-Windows games need a companion tool that is itself a native Linux program, not a Windows one — the
+motivating case is [`uranium-shellpatch`](https://github.com/goaaats/uranium-shellpatch), a community CLI alternative to
+Pokémon Uranium's Windows-only GUI patcher (NeonCube's `Patcher.exe`, which real-hardware testing under decisions 4-5
+proved launches correctly but is documented as unreliable under Wine for this specific fan-game). Bundling that script
+as a RomM asset and selecting it in the exe picker only works if the picker can select something Proton must never touch
+— handing a Linux ELF-less shell script to `proton run` is not a "try it and see" case, it is simply wrong.
+
+`domain.windows_launch.enumerate_executables` therefore enumerates two kinds of launch target, keyed by extension:
+`.exe` (`kind="exe"`, unchanged — decisions 1-5 apply exactly as before) and `.sh` (`kind="native"`, new). The two share
+one picker, one persisted `roms.selected_exe` pin, and one default rule (alphabetically first, regardless of kind) —
+there is no separate "script picker" UI or settings surface, because the picker's job (which file does Play launch) is
+identical for both; only the bake differs. `WindowsLaunchResolver.resolve_launch_options` is the one place that branches
+on `kind`: a `.exe` renders through `resolve_proton_invocation` exactly as before, a `.sh` renders through the new
+`resolve_native_invocation`, which never calls `ProtonLocator.locate()` at all — a native script is launchable on a
+system with **no Proton build installed**, unlike every `.exe` target.
+
+`resolve_native_invocation` renders `env -C "<exe_dir>" bash`, and `build_launch_options` appends the quoted script path
+exactly as it appends a `.exe` path — the same single flat command shape as `resolve_proton_invocation`, deliberately
+preserving decision 4's no-shell-operator property (still zero control operators) and decision 5's working-directory fix
+(the same `-C <dir>` / escaping treatment, for the same reason: a script resolving sibling files relative to its own
+location). `bash` is invoked explicitly rather than relying on the script's own executable bit, which a file arriving
+via RomM download is not guaranteed to carry.
+
+What this decision deliberately does NOT do: extend the picker to arbitrary executable shapes (no extension-less
+binaries, no `.py`, no `.command`) or make the native branch a general "run any Linux script bundled with a ROM"
+mechanism. `.sh` is the one shape a real, motivating case needed; broadening further is speculative until a second case
+appears (mirroring the "Alternatives considered" reasoning against a third `LauncherBackend` abstraction below).
+
 ## Consequences
 
 - **Native-Windows support adds no new abstraction layer to the codebase.** It is one raw-slug branch at the launch
@@ -146,9 +176,14 @@ on-disk directory name a server-controlled download could shape, so it gets the 
   always gets the community one, however recent the official one is. This is a known, accepted limitation rather than an
   oversight — an explicit per-game or per-user Proton-build override is future work if it turns out to matter in
   practice.
-- **Every future change to the Proton invocation string must preserve the no-shell-operator property.** This is not
-  mechanically enforced (see the invariant register in `CLAUDE.md`) — it holds only if a reviewer re-applies this ADR's
-  reasoning to the next change that touches `resolve_proton_invocation` or `bin/rom-launcher`.
+- **Every future change to the Proton OR native invocation string must preserve the no-shell-operator property.** This
+  is not mechanically enforced (see the invariant register in `CLAUDE.md`) — it holds only if a reviewer re-applies this
+  ADR's reasoning to the next change that touches `resolve_proton_invocation`, `resolve_native_invocation`, or
+  `bin/rom-launcher`.
+- **A `.sh` launch target never requires Proton.** `WindowsLaunchResolver.resolve_launch_options` only calls
+  `ProtonLocator.locate()` on the `.exe` branch, so a system with no Proton build installed can still launch a
+  native-Windows ROM whose selected/default target is a bundled script — the "no Proton found" degrade-to-unavailable
+  posture above applies to `.exe` targets only.
 
 ## Alternatives considered
 

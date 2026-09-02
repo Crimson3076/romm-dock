@@ -1,10 +1,12 @@
-"""WindowsGameService — the native-Windows exe picker's read + write callables.
+"""WindowsGameService — the native-Windows launch-target picker's read + write callables.
 
 Owns the two frontend callables behind the exe picker: ``get_windows_executables``
 reports whether a ROM is a native-Windows install and, if so, the launchable
-``.exe`` candidates plus the current selection; ``select_executable`` pins an
-``.exe`` (or clears the pin back to the default) and returns the freshly-baked
-launch command for the frontend to confirm-set on the live Steam shortcut.
+target candidates (a ``.exe`` run through Proton, or a bundled ``.sh`` run
+natively — see ``domain.windows_launch.WindowsExecutable.kind``) plus the
+current selection; ``select_executable`` pins one (or clears the pin back to
+the default) and returns the freshly-baked launch command for the frontend to
+confirm-set on the live Steam shortcut.
 
 The exe pick lands on the ``Rom`` aggregate via the Unit-of-Work (the pin-only
 ``set_selected_exe`` write path, never the sync UPSERT), mirroring
@@ -58,7 +60,7 @@ class WindowsGameService:
 
         Returns ``{"has_executables": False}`` when the ROM is unknown, not
         installed, is not a native-Windows ROM (raw ``platform_slug != "win"``),
-        or its install enumerates no ``.exe`` at all — the frontend renders no
+        or its install enumerates no launchable target at all — the frontend renders no
         picker in any of those cases. Otherwise returns ``{"has_executables":
         True, "executables": [{"filename"}, ...], "selected": <roms.selected_exe
         | None>}``. ``selected`` is down-validated: a stale pin whose file is no
@@ -88,11 +90,11 @@ class WindowsGameService:
         }
 
     async def select_executable(self, rom_id: int, filename: str | None) -> dict[str, Any]:
-        """Pin (or clear with ``None``) the ``.exe`` selection for ``rom_id``.
+        """Pin (or clear with ``None``) the launch-target selection for ``rom_id``.
 
         ``filename is None`` clears the pin so the ROM follows the default (the
-        first enumerated ``.exe``). A non-``None`` *filename* must name one of
-        the enumerated ``.exe`` files — an unknown filename is a hard
+        first enumerated target). A non-``None`` *filename* must name one of
+        the enumerated targets — an unknown filename is a hard
         ``not_found`` failure and **nothing is written**. The ROM must be an
         installed native-Windows ROM: an unknown/uninstalled ROM or a
         non-Windows ROM returns the canonical failure shape (``not_installed`` /

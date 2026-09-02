@@ -58,8 +58,8 @@ def _seed_install(uow: FakeUnitOfWork, *, rom_id: int, platform_slug: str = "win
 
 def _executables() -> list[WindowsExecutable]:
     return [
-        WindowsExecutable(filename=_EXE1, path=_EXE1_PATH),
-        WindowsExecutable(filename=_EXE2, path=_EXE2_PATH),
+        WindowsExecutable(filename=_EXE1, path=_EXE1_PATH, kind="exe"),
+        WindowsExecutable(filename=_EXE2, path=_EXE2_PATH, kind="exe"),
     ]
 
 
@@ -212,7 +212,7 @@ class TestSelectExecutable:
         _seed_rom(uow, rom_id=1, selected_exe=None)
         _seed_install(uow, rom_id=1)
         windows_resolver.set_executables(
-            _ROM_DIR, [*_executables(), WindowsExecutable(filename="New.exe", path=f"{_ROM_DIR}/New.exe")]
+            _ROM_DIR, [*_executables(), WindowsExecutable(filename="New.exe", path=f"{_ROM_DIR}/New.exe", kind="exe")]
         )
         windows_resolver.set_launch_options(1, f'proton run "{_ROM_DIR}/New.exe"')
         result = event_loop.run_until_complete(service.select_executable(1, "New.exe"))

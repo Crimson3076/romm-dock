@@ -40,7 +40,7 @@ def is_multi_file_download(rom_detail: dict[str, Any]) -> bool:
 
 
 def should_extract_windows_archive(platform_slug: str, file_name: str) -> bool:
-    """Decide whether a downloaded native-Windows ``.zip`` must be extracted to find its ``.exe``.
+    """Decide whether a downloaded native-Windows ``.zip`` must be extracted to find its launch target.
 
     This is a SEPARATE decision from :func:`is_multi_file_download`, which is
     RomM's own "will the download endpoint serve this as a ZIP" gate. This gate

@@ -92,7 +92,7 @@ def _seed_non_windows(uow: FakeUnitOfWork, *, rom_id: int, app_id: int | None = 
 
 def _windows_resolver() -> FakeWindowsResolver:
     resolver = FakeWindowsResolver()
-    resolver.set_executables(_ROM_DIR, [WindowsExecutable(filename="Game.exe", path=_EXE_PATH)])
+    resolver.set_executables(_ROM_DIR, [WindowsExecutable(filename="Game.exe", path=_EXE_PATH, kind="exe")])
     resolver.set_launch_options(1, _WIN_LAUNCH_OPTIONS)
     return resolver
 
