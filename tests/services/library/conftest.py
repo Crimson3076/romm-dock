@@ -18,12 +18,14 @@ import pytest
 from _factories import _make_testable_plugin
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.fake_windows_resolver import FakeWindowsResolver
+from fakes.late_binding import bound
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
 from adapters.cover_art_file_store import CoverArtFileStoreAdapter
@@ -100,7 +102,8 @@ def plugin(tmp_path):
     p._active_core = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
-            core_info=p._core_info,
+            core_info=bound(p._core_info),
+            active_backend_id=bound("retrodeck"),
             platform_core_reader=p._platform_core_reader,
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             logger=decky.logger,
@@ -134,6 +137,7 @@ def plugin(tmp_path):
             windows_resolver=FakeWindowsResolver(),
             renderer_rss=p._renderer_rss,
             renderer_gc=p._renderer_gc,
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 

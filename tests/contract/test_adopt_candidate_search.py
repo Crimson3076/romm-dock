@@ -254,7 +254,7 @@ async def test_the_page_stays_usable_when_the_roms_folder_cannot_be_read(harness
     # catching this raise, so it says the probe ran AND survived.
     seed_rom(harness, _ROM_ID, platform_slug="gba")
     _stage(harness)
-    harness.plugin._rom_adoption_service._search._retrodeck_paths = _UnreadableRomsPaths()
+    harness.plugin._rom_adoption_service._search._launcher_paths = _UnreadableRomsPaths()
 
     with caplog.at_level(logging.WARNING):
         detail = await harness.plugin.get_cached_game_detail(_ROM_ID)

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         ArtworkManager,
         Clock,
         EventEmitter,
+        LaunchCommandRenderer,
         UnitOfWorkFactory,
         UuidGen,
     )
@@ -124,7 +125,9 @@ class SyncOrchestratorConfig:
     boundary — whether applying the chunk would exhaust Steam's per-session heap
     budget, and how much headroom is left for the chunk's additive cover work
     (#1383); the terminal memory delta this module reports is drawn from the same
-    seam.
+    seam. ``launch_renderer`` is the active launcher backend's rendering seam
+    (issue #918), passed straight into :func:`build_shortcuts_data` so the sync
+    bake renders through whichever backend is currently selected.
     """
 
     settings: dict[str, Any]
@@ -143,6 +146,7 @@ class SyncOrchestratorConfig:
     local_library_reader: LocalLibraryReader
     session_budget: SessionBudgetMonitor
     chunk_dispatcher: ChunkDispatcher
+    launch_renderer: LaunchCommandRenderer
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,7 @@ class SyncOrchestrator:
         self._local_library_reader = config.local_library_reader
         self._session_budget = config.session_budget
         self._chunk_dispatcher = config.chunk_dispatcher
+        self._launch_renderer = config.launch_renderer
 
     # ── Sync control ─────────────────────────────────────────────
 
@@ -292,7 +297,13 @@ class SyncOrchestrator:
             )
             self._stamp_component_group_keys(all_roms, resident_keys)
             shortcuts_data = build_shortcuts_data(
-                all_roms, self._plugin_dir, installed_paths, core_overrides, windows_launch_options
+                all_roms,
+                self._plugin_dir,
+                installed_paths,
+                core_overrides,
+                windows_launch_options,
+                resolve_invocation=self._launch_renderer.resolve_invocation,
+                render_launch_options=self._launch_renderer.build_launch_options,
             )
             platform_name_set = {u.name for u in work_queue if u.type == "platform"}
             slug_to_name = {u.slug: u.name for u in work_queue if u.type == "platform" and u.slug}
@@ -1020,7 +1031,13 @@ class SyncOrchestrator:
         }
         self._stamp_component_group_keys(unit_roms, resident_keys)
         shortcuts_data = build_shortcuts_data(
-            unit_roms, self._plugin_dir, installed_paths, core_overrides, windows_launch_options
+            unit_roms,
+            self._plugin_dir,
+            installed_paths,
+            core_overrides,
+            windows_launch_options,
+            resolve_invocation=self._launch_renderer.resolve_invocation,
+            render_launch_options=self._launch_renderer.build_launch_options,
         )
 
         # Collapse to one Steam shortcut per sibling group (ADR-0021): only the

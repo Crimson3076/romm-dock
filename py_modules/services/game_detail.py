@@ -36,8 +36,8 @@ if TYPE_CHECKING:
         AdoptionCandidateProbeFn,
         BiosChecker,
         Clock,
+        LauncherPaths,
         PathExistsReader,
-        RetroDeckPaths,
         SystemResolver,
         UnitOfWorkFactory,
     )
@@ -65,7 +65,7 @@ class GameDetailServiceConfig:
     assemble the game-detail payload. The active-core resolver answers "which
     ``.so`` will this ROM launch with?" so the core-aware BIOS filter keys off
     the per-game pin, not a platform default. ``path_exists`` /
-    ``retrodeck_paths`` / ``resolve_system`` are the single ``stat`` the page
+    ``launcher_paths`` / ``resolve_system`` are the single ``stat`` the page
     runs on an uninstalled ROM's target path; ``candidate_probe`` is the one
     ``readdir`` beside it, answering whether the same game is in the folder under
     another name. Both are bounded and network-free, which is the whole
@@ -80,7 +80,7 @@ class GameDetailServiceConfig:
     achievements: AchievementsReader
     active_core: ActiveCoreReader
     path_exists: PathExistsReader
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     resolve_system: SystemResolver
     candidate_probe: AdoptionCandidateProbeFn
 
@@ -97,7 +97,7 @@ class GameDetailService:
         self._achievements = config.achievements
         self._active_core = config.active_core
         self._path_exists = config.path_exists
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._resolve_system = config.resolve_system
         self._candidate_probe = config.candidate_probe
 
@@ -362,7 +362,7 @@ class GameDetailService:
         the computed path simply misses and this stays false. That degradation is
         intended: it goes quiet rather than claiming something it cannot know.
         """
-        roms_path = self._retrodeck_paths.roms_path()
+        roms_path = self._launcher_paths.roms_path()
         if not roms_path or not rom.fs_name or not rom.platform_slug:
             return False
         try:

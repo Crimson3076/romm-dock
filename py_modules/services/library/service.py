@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         DebugLogger,
         DiscResolver,
         EventEmitter,
+        LaunchCommandRenderer,
         RendererGcFn,
         RendererRssFn,
         RommLibraryApi,
@@ -73,7 +74,9 @@ class LibraryServiceConfig:
     sync). The ``renderer_rss`` / ``renderer_gc`` seams feed the session-budget
     gate: the RSS reader measures the Steam renderer's heap and the GC trigger
     settles it before a reading, so the apply can pause before Steam's per-session
-    budget is exhausted.
+    budget is exhausted. ``launch_renderer`` is the active launcher backend's
+    rendering seam (issue #918), threaded straight into the orchestrator so the
+    sync bake renders through whichever backend is currently selected.
     """
 
     romm_api: RommLibraryApi
@@ -95,6 +98,7 @@ class LibraryServiceConfig:
     windows_resolver: WindowsResolver
     renderer_rss: RendererRssFn
     renderer_gc: RendererGcFn
+    launch_renderer: LaunchCommandRenderer
 
 
 class LibraryService:
@@ -213,6 +217,7 @@ class LibraryService:
                 local_library_reader=self._local_library_reader,
                 session_budget=self._session_budget,
                 chunk_dispatcher=self._chunk_dispatcher,
+                launch_renderer=config.launch_renderer,
             )
         )
 

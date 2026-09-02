@@ -479,66 +479,68 @@ class TestFsSizeBytes:
 class TestEmulatorOverride:
     def test_round_trips_via_get(self, uow: SqliteUnitOfWork):
         uow.roms.save(_rom(1))
-        uow.roms.set_emulator_override(1, "PCSX ReARMed")
+        uow.roms.set_emulator_override(1, "retrodeck", "PCSX ReARMed")
 
         loaded = uow.roms.get(1)
         assert loaded is not None
-        assert loaded.emulator_override == "PCSX ReARMed"
+        assert loaded.emulator_override_for("retrodeck") == "PCSX ReARMed"
 
     def test_defaults_to_none_when_never_pinned(self, uow: SqliteUnitOfWork):
         uow.roms.save(_rom(1))
         loaded = uow.roms.get(1)
         assert loaded is not None
-        assert loaded.emulator_override is None
+        assert loaded.emulator_override_for("retrodeck") is None
 
     def test_setting_none_writes_sql_null(self, uow: SqliteUnitOfWork):
         uow.roms.save(_rom(1))
-        uow.roms.set_emulator_override(1, "PCSX ReARMed")
-        uow.roms.set_emulator_override(1, None)
+        uow.roms.set_emulator_override(1, "retrodeck", "PCSX ReARMed")
+        uow.roms.set_emulator_override(1, "retrodeck", None)
 
         loaded = uow.roms.get(1)
         assert loaded is not None
-        assert loaded.emulator_override is None
-        # The column is SQL NULL, not an empty string.
+        assert loaded.emulator_override_for("retrodeck") is None
+        # The last pin cleared leaves an empty object, stored as SQL NULL.
         assert uow._conn is not None
         stored = uow._conn.execute("SELECT emulator_override FROM roms WHERE rom_id = 1").fetchone()[0]
         assert stored is None
 
-    def test_get_all_overrides_omits_null_rows(self, uow: SqliteUnitOfWork):
+    def test_backends_pin_independently(self, uow: SqliteUnitOfWork):
         uow.roms.save(_rom(1))
-        uow.roms.save(_rom(2))
-        uow.roms.save(_rom(3))
-        uow.roms.set_emulator_override(1, "PCSX ReARMed")
-        uow.roms.set_emulator_override(3, "Beetle PSX HW")
+        uow.roms.set_emulator_override(1, "retrodeck", "PCSX ReARMed")
+        uow.roms.set_emulator_override(1, "emudeck", "DuckStation")
 
-        overrides = uow.roms.get_all_emulator_overrides()
-        assert overrides == {1: "PCSX ReARMed", 3: "Beetle PSX HW"}
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.emulator_override_for("retrodeck") == "PCSX ReARMed"
+        assert loaded.emulator_override_for("emudeck") == "DuckStation"
 
-    def test_get_all_overrides_empty_when_none_pinned(self, uow: SqliteUnitOfWork):
-        uow.roms.save(_rom(1))
-        uow.roms.save(_rom(2))
-        assert uow.roms.get_all_emulator_overrides() == {}
+        # Clearing one backend's pin leaves the other untouched.
+        uow.roms.set_emulator_override(1, "retrodeck", None)
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.emulator_override_for("retrodeck") is None
+        assert loaded.emulator_override_for("emudeck") == "DuckStation"
 
 
 class TestResyncPreservesOverride:
-    """A re-sync builds a fresh ``Rom`` with ``emulator_override=None``; the sync
-    UPSERT must NOT wipe a pin the user set via ``set_emulator_override`` (Q1)."""
+    """A re-sync builds a fresh ``Rom`` with no overrides; the sync UPSERT must
+    NOT wipe a pin the user set via ``set_emulator_override`` (Q1)."""
 
     def test_pin_survives_resync_and_identity_still_updates(self, uow: SqliteUnitOfWork):
         rom_id = 1
         uow.roms.save(_rom(rom_id, app_id=100))
-        uow.roms.set_emulator_override(rom_id, "PCSX ReARMed")
+        uow.roms.set_emulator_override(rom_id, "retrodeck", "PCSX ReARMed")
 
         # A normal library re-sync: fresh Rom, no override, changed identity.
         resynced = _rom(rom_id, app_id=200)
         resynced.name = "Renamed Game"
-        assert resynced.emulator_override is None
+        assert resynced.emulator_override_for("retrodeck") is None
         uow.roms.save(resynced)
 
         loaded = uow.roms.get(rom_id)
         assert loaded is not None
         # (a) The pin survives the re-sync.
-        assert loaded.emulator_override == "PCSX ReARMed"
+        assert loaded.emulator_override_for("retrodeck") == "PCSX ReARMed"
         # (b) Identity columns still update on that save.
         assert loaded.shortcut_app_id == 200
         assert loaded.name == "Renamed Game"
@@ -600,14 +602,14 @@ class TestResyncPreservesSelectedDisc:
         """Both per-game deviations survive a re-sync independently."""
         rom_id = 1
         uow.roms.save(_rom(rom_id, app_id=100))
-        uow.roms.set_emulator_override(rom_id, "Beetle PSX HW")
+        uow.roms.set_emulator_override(rom_id, "retrodeck", "Beetle PSX HW")
         uow.roms.set_selected_disc(rom_id, "FF7 (Disc 3).cue")
 
         uow.roms.save(_rom(rom_id, app_id=200))
 
         loaded = uow.roms.get(rom_id)
         assert loaded is not None
-        assert loaded.emulator_override == "Beetle PSX HW"
+        assert loaded.emulator_override_for("retrodeck") == "Beetle PSX HW"
         assert loaded.selected_disc == "FF7 (Disc 3).cue"
 
 
@@ -667,7 +669,7 @@ class TestResyncPreservesSelectedExe:
         """All three per-game deviations survive a re-sync independently."""
         rom_id = 1
         uow.roms.save(_rom(rom_id, app_id=100))
-        uow.roms.set_emulator_override(rom_id, "Beetle PSX HW")
+        uow.roms.set_emulator_override(rom_id, "retrodeck", "Beetle PSX HW")
         uow.roms.set_selected_disc(rom_id, "FF7 (Disc 3).cue")
         uow.roms.set_selected_exe(rom_id, "Game.exe")
 
@@ -675,7 +677,7 @@ class TestResyncPreservesSelectedExe:
 
         loaded = uow.roms.get(rom_id)
         assert loaded is not None
-        assert loaded.emulator_override == "Beetle PSX HW"
+        assert loaded.emulator_override_for("retrodeck") == "Beetle PSX HW"
         assert loaded.selected_disc == "FF7 (Disc 3).cue"
         assert loaded.selected_exe == "Game.exe"
 

@@ -10,6 +10,7 @@ import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, libretro_option, standalone_option
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
@@ -70,7 +71,7 @@ def _seed_rom(
             fs_name=f"rom-{rom_id}.sfc",
             shortcut_app_id=shortcut_app_id,
             last_synced_at="2026-01-01T00:00:00+00:00",
-            emulator_override=emulator_override,
+            emulator_overrides={"retrodeck": emulator_override} if emulator_override is not None else {},
             selected_disc=selected_disc,
         )
     )
@@ -137,7 +138,7 @@ def bios_checker() -> FakeBiosChecker:
 
 @pytest.fixture
 def settings() -> dict[str, Any]:
-    return {"platform_cores": {}}
+    return {"platform_cores": {"retrodeck": {}}}
 
 
 @pytest.fixture
@@ -166,6 +167,11 @@ def disc_resolver() -> FakeDiscResolver:
 
 
 @pytest.fixture
+def launch_renderer() -> FakeLaunchCommandRenderer:
+    return FakeLaunchCommandRenderer()
+
+
+@pytest.fixture
 def service(
     event_loop,
     logger,
@@ -177,12 +183,14 @@ def service(
     uow_factory,
     active_core,
     disc_resolver,
+    launch_renderer,
 ) -> CoreService:
     return CoreService(
         config=CoreServiceConfig(
             loop=event_loop,
             logger=logger,
             core_info=core_info,
+            active_backend_id=lambda: "retrodeck",
             resolve_system=resolve_system,
             settings=settings,
             settings_persister=settings_persister,
@@ -190,6 +198,7 @@ def service(
             uow_factory=uow_factory,
             active_core=active_core,
             disc_resolver=disc_resolver,
+            launch_renderer=launch_renderer,
         ),
     )
 
@@ -211,7 +220,7 @@ class TestGetPlatformCoreInfo:
         }
 
     def test_windows_rom_returns_no_emulators(self, event_loop, service, uow, core_info):
-        # A native-Windows ROM (ADR-0029) has no emulator/core step at all — the
+        # A native-Windows ROM (ADR-0030) has no emulator/core step at all — the
         # guard fires BEFORE the ES-DE enumeration, not merely because "win" has
         # no es_systems.xml entry.
         _seed_rom(uow, rom_id=42, platform_slug="win")
@@ -254,7 +263,7 @@ class TestGetPlatformCoreInfo:
         # platform_cores) surfaces as platform_core_label so the menu can mark
         # the system-level selection distinctly from the active core (#954).
         _seed_rom(uow, rom_id=42, platform_slug="snes")
-        settings["platform_cores"]["snes"] = "bsnes"
+        settings["platform_cores"]["retrodeck"]["snes"] = "bsnes"
         result = event_loop.run_until_complete(service.get_platform_core_info(42))
         assert result["platform_core_label"] == "bsnes"
 
@@ -262,7 +271,7 @@ class TestGetPlatformCoreInfo:
         # A platform with no per-platform override → platform_core_label is None
         # even when OTHER platforms carry one.
         _seed_rom(uow, rom_id=42, platform_slug="snes")
-        settings["platform_cores"]["gba"] = "mGBA"
+        settings["platform_cores"]["retrodeck"]["gba"] = "mGBA"
         result = event_loop.run_until_complete(service.get_platform_core_info(42))
         assert result["platform_core_label"] is None
 
@@ -345,7 +354,22 @@ class TestSetGameCore:
             '"/roms/snes/mario.sfc"'
         )
         # The pin landed on the Rom aggregate.
-        assert uow.roms.get(42).emulator_override == "bsnes"
+        assert uow.roms.get(42).emulator_override_for("retrodeck") == "bsnes"
+
+    def test_resolve_invocation_receives_the_roms_platform_slug(self, event_loop, service, uow, launch_renderer):
+        """The launch-renderer seam gets a real ``platform_slug``, not a bare ``{}``.
+
+        RetroDECK's own ``resolve_emulator_invocation`` ignores ``rom``
+        entirely, so this call site could get away with an empty dict for
+        years. EmuDeck's ``resolve_invocation`` genuinely reads
+        ``platform_slug`` to resolve the ES-DE system (issue #918's
+        real-hardware follow-up).
+        """
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        event_loop.run_until_complete(service.set_game_core(42, "bsnes"))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "snes"
 
     def test_pins_standalone_emulator_and_bakes_verbatim_command(self, event_loop, service, uow, core_info):
         # A per-game pin may name a STANDALONE emulator (#1210); the bake carries
@@ -359,7 +383,7 @@ class TestSetGameCore:
         assert result["launch_options"] == (
             'flatpak run net.retrodeck.retrodeck -e "%EMULATOR_PCSX2% -batch %ROM%" "/roms/ps2/gt4.iso"'
         )
-        assert uow.roms.get(42).emulator_override == "PCSX2 (Standalone)"
+        assert uow.roms.get(42).emulator_override_for("retrodeck") == "PCSX2 (Standalone)"
 
     def test_uninstalled_pins_without_live_launch(self, event_loop, service, uow):
         # Bound but NOT installed → pin stored, but no shortcut to update live.
@@ -368,7 +392,7 @@ class TestSetGameCore:
         assert result["success"] is True
         assert result["launch_options"] is None
         assert result["app_id"] is None
-        assert uow.roms.get(42).emulator_override == "bsnes"
+        assert uow.roms.get(42).emulator_override_for("retrodeck") == "bsnes"
 
     def test_unbound_pins_without_live_launch(self, event_loop, service, uow):
         # Installed but UNBOUND (no shortcut_app_id) → pin stored, no app_id.
@@ -378,7 +402,7 @@ class TestSetGameCore:
         assert result["success"] is True
         assert result["launch_options"] is None
         assert result["app_id"] is None
-        assert uow.roms.get(42).emulator_override == "bsnes"
+        assert uow.roms.get(42).emulator_override_for("retrodeck") == "bsnes"
 
     def test_unresolvable_label_fails_and_writes_nothing(self, event_loop, service, uow):
         # An un-bakeable / unknown label hard-fails BEFORE any write — the DB
@@ -390,7 +414,7 @@ class TestSetGameCore:
         assert result["reason"] == "core_unavailable"
         assert result["message"] == "Emulator 'Genesis Plus GX' is not available for snes"
         # No pin written.
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
 
     def test_unknown_rom_fails(self, event_loop, service):
         result = event_loop.run_until_complete(service.set_game_core(7, "bsnes"))
@@ -399,7 +423,7 @@ class TestSetGameCore:
         assert "7" in result["message"]
 
     def test_windows_rom_refused_before_any_write(self, event_loop, service, uow, core_info):
-        # A native-Windows ROM has no emulator/core step (ADR-0029) — refused
+        # A native-Windows ROM has no emulator/core step (ADR-0030) — refused
         # BEFORE any write, and before the ES-DE options are even read, so a pin
         # here can never re-bake the shortcut through the RetroDECK path and
         # discard the Proton-wrapped exe launch.
@@ -408,7 +432,7 @@ class TestSetGameCore:
         result = event_loop.run_until_complete(service.set_game_core(42, "bsnes"))
         assert result["success"] is False
         assert result["reason"] == "unsupported"
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
         assert core_info.emulator_options_calls == []
 
     def test_resolves_system_before_label_lookup(self, event_loop, service, uow, core_info, resolve_system):
@@ -446,7 +470,17 @@ class TestClearGameCore:
             '"/roms/snes/mario.sfc"'
         )
         # The pin is gone (SQL NULL).
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
+
+    def test_resolve_invocation_receives_the_roms_platform_slug(
+        self, event_loop, service, uow, active_core, launch_renderer
+    ):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99, emulator_override="Snes9x")
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        active_core.per_rom[42] = ("bsnes_libretro", "bsnes")
+        event_loop.run_until_complete(service.clear_game_core(42))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "snes"
 
     def test_clears_and_bakes_plain_when_platform_unresolvable(self, event_loop, service, uow, active_core):
         # When the resolver yields (None, None) — a genuinely unresolvable
@@ -458,7 +492,7 @@ class TestClearGameCore:
         assert result["success"] is True
         assert result["launch_options"] == 'flatpak run net.retrodeck.retrodeck "/roms/snes/mario.sfc"'
         assert "-e" not in result["launch_options"]
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
 
     def test_clear_uninstalled_drops_pin_without_live_launch(self, event_loop, service, uow):
         _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99, emulator_override="bsnes")
@@ -466,7 +500,7 @@ class TestClearGameCore:
         assert result["success"] is True
         assert result["launch_options"] is None
         assert result["app_id"] is None
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
 
     def test_clear_unknown_rom_fails(self, event_loop, service):
         result = event_loop.run_until_complete(service.clear_game_core(7))
@@ -475,7 +509,7 @@ class TestClearGameCore:
 
     def test_clear_windows_rom_refused(self, event_loop, service, uow, active_core):
         # A native-Windows ROM has no emulator-override concept to clear
-        # (ADR-0029) — refused before the active-core resolver (which knows
+        # (ADR-0030) — refused before the active-core resolver (which knows
         # nothing about Proton/exe selection) is ever consulted.
         _seed_rom(uow, rom_id=42, platform_slug="win", shortcut_app_id=99)
         _seed_install(uow, rom_id=42, file_path="/roms/win/Uranium/Uranium.rgssad", platform_slug="win")
@@ -492,20 +526,20 @@ class TestSetSystemCore:
     def test_writes_label_to_settings_and_persists(self, event_loop, service, settings, settings_persister):
         result = event_loop.run_until_complete(service.set_system_core("snes", "Snes9x"))
         assert result["success"] is True
-        assert settings["platform_cores"] == {"snes": "Snes9x"}
+        assert settings["platform_cores"] == {"retrodeck": {"snes": "Snes9x"}}
         assert settings_persister.save_count == 1
 
     def test_empty_core_label_clears_settings_entry(self, event_loop, service, settings, settings_persister):
-        settings["platform_cores"]["snes"] = "Snes9x"
+        settings["platform_cores"]["retrodeck"]["snes"] = "Snes9x"
         result = event_loop.run_until_complete(service.set_system_core("snes", ""))
         assert result["success"] is True
         # Clearing removes the platform from the map (revert to es_systems default).
-        assert "snes" not in settings["platform_cores"]
+        assert "snes" not in settings["platform_cores"]["retrodeck"]
         assert settings_persister.save_count == 1
 
     def test_windows_platform_is_a_no_op(self, event_loop, service, settings, settings_persister, uow):
         # The native-Windows pseudo-platform has no emulator/core concept
-        # (ADR-0029) — nothing is written to settings.json and no installed ROM
+        # (ADR-0030) — nothing is written to settings.json and no installed ROM
         # is rebaked, but the call still reports success (nothing to fail).
         _seed_rom(uow, rom_id=42, platform_slug="win", shortcut_app_id=99)
         _seed_install(uow, rom_id=42, file_path="/roms/win/Uranium/Uranium.rgssad", platform_slug="win")
@@ -515,11 +549,22 @@ class TestSetSystemCore:
         assert "win" not in settings["platform_cores"]
         assert settings_persister.save_count == 0
 
+    def test_writes_under_the_active_backend_leaving_others_untouched(self, event_loop, service, settings):
+        """A pick made while RetroDECK is active never lands under a different
+        backend's key, and never disturbs a pre-existing EmuDeck pick (#918 follow-up)."""
+        settings["platform_cores"]["emudeck"] = {"snes": "bsnes-hd"}
+        result = event_loop.run_until_complete(service.set_system_core("snes", "Snes9x"))
+        assert result["success"] is True
+        assert settings["platform_cores"] == {
+            "retrodeck": {"snes": "Snes9x"},
+            "emudeck": {"snes": "bsnes-hd"},
+        }
+
     def test_clearing_absent_platform_is_noop(self, event_loop, service, settings):
         # Clearing a platform with no prior selection just leaves the map empty.
         result = event_loop.run_until_complete(service.set_system_core("psx", ""))
         assert result["success"] is True
-        assert settings["platform_cores"] == {}
+        assert settings["platform_cores"] == {"retrodeck": {}}
 
     def test_rechecks_bios_and_invalidates_core_cache(self, event_loop, service, core_info, bios_checker):
         bios_checker.payload = {"needs_bios": True, "files": []}
@@ -553,7 +598,7 @@ class TestSetSystemCore:
         assert result["success"] is False
         assert "bios probe failed" in result["message"]
         # The settings write already landed before the BIOS recheck raised.
-        assert settings["platform_cores"] == {"snes": "Snes9x"}
+        assert settings["platform_cores"] == {"retrodeck": {"snes": "Snes9x"}}
 
 
 # ── set_system_core fan-out (re-bake installed+bound ROMs on the platform) ──
@@ -583,6 +628,15 @@ class TestSetSystemCoreFanOut:
                 '"/roms/snes/b.sfc"'
             ),
         }
+
+    def test_fan_out_resolve_invocation_receives_each_roms_platform_slug(
+        self, event_loop, service, uow, active_core, launch_renderer
+    ):
+        _seed_rom(uow, rom_id=1, platform_slug="snes", shortcut_app_id=101)
+        _seed_install(uow, rom_id=1, file_path="/roms/snes/a.sfc")
+        event_loop.run_until_complete(service.set_system_core("snes", "bsnes"))
+        [(rom, _emulator)] = launch_renderer.calls
+        assert rom["platform_slug"] == "snes"
 
     def test_fan_out_bakes_standalone_e_form(self, event_loop, service, uow, active_core):
         # A per-platform pick may resolve to a STANDALONE emulator (#1210); the

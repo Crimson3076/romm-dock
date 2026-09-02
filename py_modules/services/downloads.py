@@ -44,7 +44,7 @@ if TYPE_CHECKING:
         DownloadFileStore,
         DownloadTargetGateFn,
         EventEmitter,
-        RetroDeckPaths,
+        LauncherPaths,
         RomInstallRecorder,
         RommRomReader,
         RomRemoverProvider,
@@ -117,7 +117,7 @@ class DownloadServiceConfig:
     emit: EventEmitter
     clock: Clock
     sleeper: Sleeper
-    retrodeck_paths: RetroDeckPaths
+    launcher_paths: LauncherPaths
     install_recorder: RomInstallRecorder
     target_gate: DownloadTargetGateFn
     m3u_support: SystemM3uSupportFn
@@ -140,7 +140,7 @@ class DownloadService:
         self._emit = config.emit
         self._clock = config.clock
         self._sleeper = config.sleeper
-        self._retrodeck_paths = config.retrodeck_paths
+        self._launcher_paths = config.launcher_paths
         self._install_recorder = config.install_recorder
         self._target_gate = config.target_gate
         self._m3u_support = config.m3u_support
@@ -215,7 +215,7 @@ class DownloadService:
 
     def _clean_rom_tmp_files(self):
         """Remove leftover .tmp and .zip.tmp files from ROM directories."""
-        roms_base = self._retrodeck_paths.roms_path()
+        roms_base = self._launcher_paths.roms_path()
         if not roms_base:
             return 0
         paths = self._download_file_store.walk_files_matching_suffixes(roms_base, (_TMP_EXT, _ZIP_TMP_EXT))
@@ -223,7 +223,7 @@ class DownloadService:
 
     def _clean_bios_tmp_files(self):
         """Remove leftover .tmp files from BIOS directory."""
-        bios_base = self._retrodeck_paths.bios_path()
+        bios_base = self._launcher_paths.bios_path()
         if not bios_base:
             return 0
         paths = self._download_file_store.walk_files_matching_suffixes(bios_base, (_TMP_EXT,))
@@ -366,7 +366,7 @@ class DownloadService:
         # early-return guards inside still ``return`` (not raise) and discard the
         # flag themselves; a ``return`` does not trip the except.
         try:
-            roms_path = self._retrodeck_paths.roms_path()
+            roms_path = self._launcher_paths.roms_path()
             try:
                 # ``system`` may be an unmapped server slug passed through verbatim
                 # (ADR-0010). Validate it stays under roms_path BEFORE any make_dirs
@@ -562,7 +562,7 @@ class DownloadService:
         """
         extract_dir = os.path.join(os.path.dirname(target_path), extract_dir_name)
         self._download_file_store.make_dirs(extract_dir)
-        roms_base = self._retrodeck_paths.roms_path()
+        roms_base = self._launcher_paths.roms_path()
         tmp_zip = target_path + _ZIP_TMP_EXT
         # ZIP-slip protection: adapter validates members resolve within extract_dir
         # AND that extract_dir itself resolves within roms_base.
@@ -611,7 +611,7 @@ class DownloadService:
         platform_name = rom_detail.get("platform_name", rom_detail.get("platform_slug", ""))
         extract_cb = self._make_extract_callback(rom_id, rom_name, platform_name, file_name)
         launch_file = self._download_file_store.extract_windows_archive(
-            target_path + _ZIP_TMP_EXT, extract_dir, self._retrodeck_paths.roms_path(), progress_callback=extract_cb
+            target_path + _ZIP_TMP_EXT, extract_dir, self._launcher_paths.roms_path(), progress_callback=extract_cb
         )
 
         return self._install_recorder.do_record_install(

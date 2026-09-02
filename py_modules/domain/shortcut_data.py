@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from domain.sibling_group import compute_sibling_group_key
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from domain.proton import ProtonInstallation
 
 # Raw RomM platform slug for a native-Windows ROM. Checked BEFORE any
@@ -208,7 +210,7 @@ def resolve_proton_invocation(proton: ProtonInstallation, compat_data_path: str,
     that only a shell could interpret correctly is not safe to bake. The
     per-ROM compat-data prefix is therefore never created HERE (this function
     stays pure, no I/O) — ``ProtonLocator.compat_data_path`` creates it before
-    this function ever sees the path (ADR-0029 decision 4).
+    this function ever sees the path (ADR-0030 decision 4).
 
     ``exe_dir`` becomes GNU ``env``'s ``-C`` (``--chdir``) argument, so the
     launched ``.exe`` runs with its own install directory as the working
@@ -260,7 +262,7 @@ def resolve_native_invocation(exe_dir: str) -> str:
     there: unlike a plugin/system-derived path, it comes from an on-disk
     directory name a server-controlled download could shape. Deliberately a
     single flat ``env`` invocation with no shell control operators, matching
-    :func:`resolve_proton_invocation`'s no-shell-operator property (ADR-0029).
+    :func:`resolve_proton_invocation`'s no-shell-operator property (ADR-0030).
     """
     return f'env -C "{_escape_launch_arg(exe_dir)}" bash'
 
@@ -270,20 +272,26 @@ def _resolve_launch_options(
     bake_path: str,
     core_overrides: dict[int, EmulatorInvocation],
     windows_launch_options: dict[int, str],
+    resolve_invocation: Callable[[dict[str, Any], EmulatorInvocation | None], str],
+    render_launch_options: Callable[[str, str], str],
 ) -> str:
     """Return *rom*'s launch command given it IS installed (``bake_path`` resolved).
 
     A native-Windows ROM (raw ``platform_slug == "win"``, checked before any
-    system normalization) bypasses the emulator/core machinery entirely: its
-    command is whatever the caller's Proton resolution already rendered into
-    *windows_launch_options*, keyed by ``rom_id`` — absent (no Proton found, or
-    no ``.exe`` present) renders as the same empty launch command every other
-    unlaunchable install does. Every other platform keeps the existing
-    RetroDECK/ES-DE emulator-invocation render.
+    system normalization) bypasses the emulator/core machinery — and the
+    injected *resolve_invocation*/*render_launch_options* launcher-backend
+    seam (issue #918) — entirely: its command is whatever the caller's Proton
+    resolution already rendered into *windows_launch_options*, keyed by
+    ``rom_id`` — absent (no Proton found, or no launchable target present)
+    renders as the same empty launch command every other unlaunchable install
+    does. There is no per-backend concept for a native-Windows ROM (ADR-0030):
+    it always launches through Proton (or, for a bundled ``.sh``, directly),
+    never through RetroDECK/EmuDeck. Every other platform renders through the
+    injected callables, so a launcher-backend switch is reflected here too.
     """
     if rom.get("platform_slug") == WINDOWS_PLATFORM_SLUG:
         return windows_launch_options.get(rom["id"], "")
-    return build_launch_options(resolve_emulator_invocation(rom, core_overrides.get(rom["id"])), bake_path)
+    return render_launch_options(resolve_invocation(rom, core_overrides.get(rom["id"])), bake_path)
 
 
 def extract_version_metadata(rom: dict[str, Any]) -> dict[str, Any]:
@@ -317,8 +325,18 @@ def build_shortcuts_data(
     installed_paths: dict[int, str],
     core_overrides: dict[int, EmulatorInvocation],
     windows_launch_options: dict[int, str] | None = None,
+    *,
+    resolve_invocation: Callable[[dict[str, Any], EmulatorInvocation | None], str] = resolve_emulator_invocation,
+    render_launch_options: Callable[[str, str], str] = build_launch_options,
 ) -> list[dict[str, Any]]:
     """Transform ROM list into shortcut data dicts for frontend AddShortcut calls.
+
+    *resolve_invocation*/*render_launch_options* default to this module's own
+    RetroDECK rendering, so every existing caller is unaffected. The sync
+    orchestrator passes the active launcher backend's bound methods instead
+    (issue #918) — the seam that lets a launcher-backend switch bake a
+    different command without this function's callers ever branching on which
+    backend is active.
 
     *installed_paths* maps ``rom_id`` to the resolved on-disk launch path. An
     installed ROM gets a full launch command in ``launch_options``; a ROM absent
@@ -370,7 +388,14 @@ def build_shortcuts_data(
             "exe": exe,
             "start_dir": start_dir,
             "launch_options": (
-                _resolve_launch_options(rom, installed_paths[rom["id"]], core_overrides, windows_launch_options)
+                _resolve_launch_options(
+                    rom,
+                    installed_paths[rom["id"]],
+                    core_overrides,
+                    windows_launch_options,
+                    resolve_invocation,
+                    render_launch_options,
+                )
                 if rom["id"] in installed_paths
                 else ""
             ),

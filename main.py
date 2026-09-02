@@ -181,6 +181,7 @@ class Plugin:
         self._session_lifecycle_service = services["session_lifecycle_service"]
         self._game_process_service = services["game_process_service"]
         self._relaunch_options_resolver = services["relaunch_options_resolver"]
+        self._launcher_backend_service = services["launcher_backend_service"]
 
         # ── 4b. Legacy credential migration ─────────────────────────────────
         # Upgrade a stored-password install to a Client API Token. The
@@ -203,7 +204,7 @@ class Plugin:
 
         # ── 6. Background tasks ─────────────────────────────────────────────
         self._migration_service.detect_save_sort_change()
-        decky.logger.info("Tender pluginloaded")
+        decky.logger.info("RomM-Dock pluginloaded")
 
     async def _unload(self):  # Decky lifecycle — must be async
         self._sync_service.shutdown()
@@ -212,7 +213,7 @@ class Plugin:
         await self._migration_service.shutdown()
         await self._session_lifecycle_service.shutdown()
         await self._cancel_playtime_flush_tasks()
-        decky.logger.info("Tender pluginunloaded")
+        decky.logger.info("RomM-Dock pluginunloaded")
 
     async def _cancel_playtime_flush_tasks(self):
         """Cancel and await any in-flight play-session flush tasks on unload.
@@ -342,6 +343,29 @@ class Plugin:
 
     async def get_platform_core_info(self, rom_id):
         return await self._core_service.get_platform_core_info(rom_id)
+
+    # ── Launcher backend delegation to LauncherBackendService (issue #918) ──
+
+    async def get_launcher_backends(self):
+        """List every registered launcher backend with its detected installations."""
+        return self._launcher_backend_service.list_backends()
+
+    @migration_blocked
+    @prune_active_blocked
+    async def set_launcher_backend(self, backend_id, installation_id):
+        """Switch the active launcher backend and fan out the shortcut re-bake.
+
+        Mirrors ``set_system_core``: on success every installed+bound ROM's
+        ``launch_options`` is re-baked for the newly-selected backend and
+        returned as ``rebake_items`` for the frontend to confirm-set on each
+        live shortcut (the same ``SetAppLaunchOptions``-confirm mechanism —
+        ADR-0009 — never a shortcut delete/recreate), guarded by the same
+        prune-conflict lease a bulk re-bake needs.
+        """
+        result = self._launcher_backend_service.set_active_backend(backend_id, installation_id)
+        if result.get("success") and result.get("rebake_items"):
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "launcher_backend")
+        return result
 
     # ── Disc picker delegation to DiscService ──────────────
 

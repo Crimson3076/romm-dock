@@ -97,8 +97,8 @@ def render_bundle_readme(context: BundleReadmeContext, records: Sequence[Mapping
     """
     games = context["games"]
     lines = [
-        "decky-romm-sync recovery bundle",
-        "===============================",
+        "romm-dock recovery bundle",
+        "==========================",
         "",
         f"Bundle:  {context['bundle_id']}",
         f"Created: {context['created_at']}",

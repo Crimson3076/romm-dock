@@ -184,7 +184,7 @@ bit, which a file arriving via RomM download is not guaranteed to carry.
 Because a `.sh` target never calls `ProtonLocator.locate()`, a native-Windows ROM whose selected/default target is a
 bundled script launches even on a system with **no Proton build installed at all** — the
 [degrade-to-unavailable posture](../user-guide/managing-games.md#when-no-proton-is-found) applies to `.exe` targets
-only. See [ADR-0029 decision 6](../adr/0029-plugin-owns-proton-invocation.md) for why this stays scoped to `.sh` rather
+only. See [ADR-0030 decision 6](../adr/0030-plugin-owns-proton-invocation.md) for why this stays scoped to `.sh` rather
 than becoming a general "run any bundled script" mechanism.
 
 ## Why the plugin locates and invokes Proton itself
@@ -192,7 +192,7 @@ than becoming a general "run any bundled script" mechanism.
 Steam has its own per-shortcut compat-tool assignment UI, but the plugin does not use it. Assigning a compat tool to a
 shortcut through `SteamClient` — rather than baking a Proton invocation into `launch_options` the way this feature does
 — was not the path taken; the tradeoffs behind that choice, and why appId stability was the deciding factor, are
-recorded in [ADR-0029](../adr/0029-plugin-owns-proton-invocation.md).
+recorded in [ADR-0030](../adr/0030-plugin-owns-proton-invocation.md).
 
 ## The exe-picker flow
 
@@ -233,7 +233,7 @@ no playlist concept to fall back to, only "the first target enumerated," which t
 
 `services/cores.py` (`set_game_core`, `clear_game_core`, `set_system_core`, `get_platform_core_info`) is the one launch
 seam that is **not** built on `WindowsLaunchResolver` — a native-Windows ROM has no emulator/core concept at all
-(ADR-0029), so there is nothing for `CoreService` to resolve through. Each entry point guards
+(ADR-0030), so there is nothing for `CoreService` to resolve through. Each entry point guards
 `rom.platform_slug ==
 "win"` explicitly and refuses (`{"success": False, "reason": "unsupported", ...}` for the per-game
 pin/clear; `get_platform_core_info` reports no emulators; `set_system_core` is a silent no-op) rather than depending on

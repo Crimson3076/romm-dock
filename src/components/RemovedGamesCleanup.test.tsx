@@ -46,7 +46,7 @@ const preview: backend.PrunePreviewResult = {
   limit: 50,
   total: 1,
   free_bytes: 100,
-  recovery_root: "/home/deck/decky-romm-sync-recovery",
+  recovery_root: "/home/deck/romm-dock-recovery",
 };
 
 function shownModal(): ReactElement {
@@ -316,7 +316,7 @@ describe("RemovedGamesCleanup", () => {
     fireEvent.click(button);
     await waitFor(() =>
       expect(toaster.toast).toHaveBeenCalledWith({
-        title: "Tender",
+        title: "RomM-Dock",
         body: "Could not scan removed RomM games.",
       }),
     );
@@ -1335,7 +1335,7 @@ describe("RemovedGamesCleanup", () => {
             rom_ids: [7],
             status: "removed",
             message: "Cancelled after the backup sealed.",
-            bundle_path: "/home/deck/decky-romm-sync-recovery/bundles/Shenmue-II_2026-07-31_07f4953b",
+            bundle_path: "/home/deck/romm-dock-recovery/bundles/Shenmue-II_2026-07-31_07f4953b",
             removed_rom_ids: [],
           },
         ],

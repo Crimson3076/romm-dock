@@ -50,6 +50,7 @@ import { SaveSyncSection } from "./settings/SaveSyncSection";
 import { RegisteredDevicesSection } from "./settings/RegisteredDevicesSection";
 import { ControllerSection } from "./settings/ControllerSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
+import { LauncherBackendSection } from "./settings/LauncherBackendSection";
 import { LibrarySection, AUTO_REGION, DEFAULT_REGION_LABEL } from "./settings/LibrarySection";
 import { showPreferredRegionModal } from "./settings/PreferredRegionModal";
 
@@ -578,6 +579,8 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack }) => {
         namingMode={namingMode}
         onNamingModeChange={handleNamingModeChange}
       />
+
+      <LauncherBackendSection />
 
       <AdvancedSection logLevel={logLevel} onLogLevelChange={handleLogLevelChange} />
     </>

@@ -32,7 +32,7 @@ class TestBuildCoreOverrides:
         _seed_install(plugin, 10, file_path="/roms/psx/a.chd", platform_slug="psx")
         _seed_install(plugin, 11, file_path="/roms/psx/b.chd", platform_slug="psx")
         with plugin._uow:
-            plugin._uow.roms.set_emulator_override(10, "PCSX ReARMed")
+            plugin._uow.roms.set_emulator_override(10, "retrodeck", "PCSX ReARMed")
 
         roms = [{"id": 10, "platform_slug": "psx"}, {"id": 11, "platform_slug": "psx"}]
         result = plugin._sync_service._shortcut_launch_resolver.do_build_core_overrides(roms)
@@ -49,7 +49,7 @@ class TestBuildCoreOverrides:
         ]
         _seed_install(plugin, 10, file_path="/roms/psx/a.chd", platform_slug="psx")
         with plugin._uow:
-            plugin._uow.roms.set_emulator_override(10, "Removed Core")
+            plugin._uow.roms.set_emulator_override(10, "retrodeck", "Removed Core")
 
         roms = [{"id": 10, "platform_slug": "psx"}]
         with caplog.at_level(logging.WARNING):

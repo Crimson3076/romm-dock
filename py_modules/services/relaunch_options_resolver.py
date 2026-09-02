@@ -36,14 +36,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from domain.shortcut_data import build_launch_options, resolve_emulator_invocation
-
 if TYPE_CHECKING:
     from domain.rom import Rom
     from domain.rom_install import RomInstall
+    from lib.late_binding import LateBinding
     from services.protocols import (
         ActiveCoreReader,
         DiscResolver,
+        LaunchCommandRenderer,
         UnitOfWorkFactory,
         WindowsResolver,
     )
@@ -67,6 +67,7 @@ class RelaunchOptionsResolverConfig:
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
     windows_resolver: WindowsResolver
+    launch_renderer: LateBinding[LaunchCommandRenderer]
 
 
 class RelaunchOptionsResolver:
@@ -77,6 +78,7 @@ class RelaunchOptionsResolver:
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
         self._windows_resolver = config.windows_resolver
+        self._launch_renderer = config.launch_renderer
 
     def _resolve_bake_path(self, rom: Rom, install: RomInstall) -> str:
         """Resolve the launch target *rom* bakes — the bare path the run receives.
@@ -111,10 +113,11 @@ class RelaunchOptionsResolver:
                 "launch_options": self._windows_resolver.resolve_launch_options(install, rom.selected_exe),
             }
         emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
-        invocation = resolve_emulator_invocation({"id": rom.rom_id}, emulator)
+        renderer = self._launch_renderer.get()
+        invocation = renderer.resolve_invocation({"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator)
         return {
             "app_id": rom.shortcut_app_id,
-            "launch_options": build_launch_options(invocation, self._resolve_bake_path(rom, install)),
+            "launch_options": renderer.build_launch_options(invocation, self._resolve_bake_path(rom, install)),
         }
 
     def _bound_install(self, rom_id: int) -> tuple[Rom, RomInstall] | None:

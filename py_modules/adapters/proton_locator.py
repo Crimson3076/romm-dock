@@ -61,7 +61,7 @@ class ProtonLocatorAdapter:
 
     def compat_data_path(self, rom_id: int) -> str:
         # Created here, not baked as a shell `mkdir` in the launch command
-        # (ADR-0029 decision 4 rejected that for depending on unverified shell
+        # (ADR-0030 decision 4 rejected that for depending on unverified shell
         # interpretation). This directory is under the plugin's OWN runtime_dir
         # tree, not Steam's compatdata layout, so nothing else — not Steam, not
         # Proton — has ever created `proton-prefixes/` or the per-ROM leaf

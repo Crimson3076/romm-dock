@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 
 from domain.rom_files import is_launchable_target
 from domain.rom_install import RomInstall
-from domain.shortcut_data import build_launch_options, resolve_emulator_invocation
 
 if TYPE_CHECKING:
     import logging
@@ -31,6 +30,7 @@ if TYPE_CHECKING:
         ActiveCoreReader,
         Clock,
         DiscResolver,
+        LaunchCommandRenderer,
         SystemSupportedExtensionsFn,
         UnitOfWorkFactory,
         WindowsResolver,
@@ -47,9 +47,13 @@ class RomInstallRecorderConfig:
     uninstall → reinstall and are honoured on adoption too. ``windows_resolver``
     answers the same question for a native-Windows ROM (raw ``platform_slug ==
     "win"``) — its persisted ``selected_exe`` pin resolved into a full
-    Proton-wrapped command, bypassing ``active_core``/``disc_resolver``
-    entirely. ``system_extensions`` is the live per-system ES-DE accept-list
-    the launchable verdict reads.
+    Proton-wrapped command, bypassing ``active_core``/``disc_resolver``/
+    ``launch_renderer`` entirely (ADR-0030 — there is no per-backend concept
+    for native-Windows). ``system_extensions`` is the live per-system ES-DE
+    accept-list the launchable verdict reads. ``launch_renderer`` is the
+    active launcher backend's rendering seam (issue #918), so every OTHER
+    platform's install/adoption bakes the command for whichever backend is
+    currently selected.
     """
 
     logger: logging.Logger
@@ -59,6 +63,7 @@ class RomInstallRecorderConfig:
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
     windows_resolver: WindowsResolver
+    launch_renderer: LaunchCommandRenderer
 
 
 class RomInstallRecorder:
@@ -72,6 +77,7 @@ class RomInstallRecorder:
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
         self._windows_resolver = config.windows_resolver
+        self._launch_renderer = config.launch_renderer
 
     def do_record_install(
         self,
@@ -155,7 +161,8 @@ class RomInstallRecorder:
         if rom is None:
             if is_windows:
                 return (None, "")
-            return (None, build_launch_options(resolve_emulator_invocation(rom_detail, None), file_path))
+            no_emulator = self._launch_renderer.resolve_invocation(rom_detail, None)
+            return (None, self._launch_renderer.build_launch_options(no_emulator, file_path))
         if is_windows:
             launch_options = (
                 self._windows_resolver.resolve_launch_options(install, selected_exe) if install is not None else ""
@@ -168,7 +175,8 @@ class RomInstallRecorder:
         bake_path = (
             self._disc_resolver.resolve_for_install(install, selected_disc) if install is not None else file_path
         )
-        launch_options = build_launch_options(resolve_emulator_invocation(rom_detail, emulator), bake_path)
+        invocation = self._launch_renderer.resolve_invocation(rom_detail, emulator)
+        launch_options = self._launch_renderer.build_launch_options(invocation, bake_path)
         return (rom.shortcut_app_id, launch_options)
 
     def do_record_applied_launch_options(self, rom_id: int, launch_options: str) -> None:

@@ -58,6 +58,7 @@ def plugin():
     p._game_process_service = MagicMock()
     p._prune_service = MagicMock()
     p._prune_service.is_active.return_value = False
+    p._launcher_backend_service = MagicMock()
     return p
 
 
@@ -263,6 +264,70 @@ class TestCoreCallableDelegation:
         result = await plugin.get_platform_core_info(42)
         plugin._core_service.get_platform_core_info.assert_awaited_once_with(42)
         assert result == {"emulators": [], "active_core": "snes9x_libretro", "active_core_label": "Snes9x"}
+
+
+class TestLauncherBackendCallableDelegation:
+    @pytest.mark.asyncio
+    async def test_get_launcher_backends_delegates(self, plugin):
+        plugin._launcher_backend_service.list_backends.return_value = [
+            {"backend_id": "retrodeck", "display_name": "RetroDECK", "is_active": True, "installations": []}
+        ]
+        result = await plugin.get_launcher_backends()
+        plugin._launcher_backend_service.list_backends.assert_called_once_with()
+        assert result == [
+            {"backend_id": "retrodeck", "display_name": "RetroDECK", "is_active": True, "installations": []}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_set_launcher_backend_delegates(self, plugin):
+        plugin._launcher_backend_service.set_active_backend.return_value = {
+            "success": True,
+            "rebake_items": [{"app_id": 1, "launch_options": "x"}],
+        }
+        result = await plugin.set_launcher_backend("emudeck", "emudeck:/home/deck")
+        plugin._launcher_backend_service.set_active_backend.assert_called_once_with("emudeck", "emudeck:/home/deck")
+        assert result["success"] is True
+        assert result["rebake_items"] == [{"app_id": 1, "launch_options": "x"}]
+        # Mirrors set_system_core: a successful switch with rebake items to
+        # confirm-set attaches the prune-conflict continuation lease.
+        assert result["prune_lease_token"].startswith("launcher_backend:")
+
+    @pytest.mark.asyncio
+    async def test_set_launcher_backend_failure_adds_no_lease_token(self, plugin):
+        plugin._launcher_backend_service.set_active_backend.return_value = {
+            "success": False,
+            "reason": "unknown_backend",
+            "message": "No launcher backend 'bogus'.",
+        }
+        result = await plugin.set_launcher_backend("bogus", "bogus")
+        assert result == {
+            "success": False,
+            "reason": "unknown_backend",
+            "message": "No launcher backend 'bogus'.",
+        }
+        assert "prune_lease_token" not in result
+
+    @pytest.mark.asyncio
+    async def test_set_launcher_backend_success_with_no_rebake_items_adds_no_lease_token(self, plugin):
+        # success=True but an empty rebake_items list is falsy — mirrors
+        # set_system_core's "nothing to confirm-set" carve-out.
+        plugin._launcher_backend_service.set_active_backend.return_value = {"success": True, "rebake_items": []}
+        result = await plugin.set_launcher_backend("retrodeck", "retrodeck")
+        assert "prune_lease_token" not in result
+
+    def test_set_launcher_backend_carries_migration_and_prune_guards(self):
+        from main import Plugin
+
+        assert getattr(Plugin.set_launcher_backend, "_migration_blocked", False) is True
+        assert getattr(Plugin.set_launcher_backend, "_prune_active_blocked", False) is True
+
+    def test_get_launcher_backends_carries_no_guards(self):
+        # Read-only listing: not migration-blocked (whitelisted in
+        # _MIGRATION_BLOCKED_WHITELIST) and not prune-active-blocked.
+        from main import Plugin
+
+        assert getattr(Plugin.get_launcher_backends, "_migration_blocked", False) is False
+        assert getattr(Plugin.get_launcher_backends, "_prune_active_blocked", False) is False
 
 
 class TestFirmwareCallableDelegation:

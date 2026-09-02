@@ -146,7 +146,7 @@ jobs:
           # — into RUNNER_TEMP, because /tmp/output belongs to the container that
           # produced the zip and is not writable here.
           BUILT_ZIP=$(ls /tmp/output/*.zip | head -1)
-          DEST="$RUNNER_TEMP/tender.zip"
+          DEST="$RUNNER_TEMP/romm-dock.zip"
           cp "$BUILT_ZIP" "$DEST"
           gh release upload "$TAG" \
             "$DEST" \

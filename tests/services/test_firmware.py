@@ -13,6 +13,7 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
@@ -85,8 +86,9 @@ def _make_firmware_service(
     plugin_dir=None,
     clock: FakeClock | None = None,
     firmware_file_store=None,
-    retrodeck_paths: FakeRetroDeckPaths | None = None,
+    launcher_paths: FakeRetroDeckPaths | None = None,
     core_info: FakeCoreInfoProvider | None = None,
+    active_backend_id=None,
     resolve_system: FakeSystemResolver | None = None,
     platform_core_reader: FakePlatformCoreReader | None = None,
     logger=None,
@@ -97,6 +99,8 @@ def _make_firmware_service(
     Mirrors the SQLite wiring: persistence flows entirely through
     ``uow_factory`` (no state dict, no persisters). Defaults keep every
     call-site terse; pass overrides only for the axis under test.
+    ``active_backend_id`` defaults to the "retrodeck" backend, mirroring the
+    plugin's default before any backend switch.
     """
     import decky
 
@@ -108,8 +112,9 @@ def _make_firmware_service(
             plugin_dir=plugin_dir if plugin_dir is not None else decky.DECKY_PLUGIN_DIR,
             clock=clock if clock is not None else _make_clock(),
             firmware_file_store=firmware_file_store if firmware_file_store is not None else FirmwareFileAdapter(),
-            retrodeck_paths=retrodeck_paths if retrodeck_paths is not None else FakeRetroDeckPaths(),
+            launcher_paths=launcher_paths if launcher_paths is not None else FakeRetroDeckPaths(),
             core_info=core_info if core_info is not None else FakeCoreInfoProvider(),
+            active_backend_id=active_backend_id if active_backend_id is not None else lambda: "retrodeck",
             resolve_system=resolve_system if resolve_system is not None else FakeSystemResolver(),
             platform_core_reader=platform_core_reader if platform_core_reader is not None else FakePlatformCoreReader(),
             uow_factory=uow_factory if uow_factory is not None else FakeUnitOfWorkFactory(),
@@ -163,6 +168,7 @@ def plugin():
             windows_resolver=FakeWindowsResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
     return p
@@ -188,7 +194,7 @@ class TestFirmwareDestPath:
     def test_flat_default_no_registry(self, fw, tmp_path):
         """File not in registry goes flat in bios root."""
         bios = os.path.join(str(tmp_path), "retrodeck", "bios")
-        fw._retrodeck_paths = FakeRetroDeckPaths(bios=bios)
+        fw._launcher_paths = FakeRetroDeckPaths(bios=bios)
         firmware = {"file_name": "bios.bin", "file_path": "bios/n64/bios.bin"}
         dest = fw._firmware_dest_path(firmware)
         assert dest == os.path.join(str(tmp_path), "retrodeck", "bios", "bios.bin")
@@ -203,7 +209,7 @@ class TestFirmwareDestPath:
         }
 
         bios = os.path.join(str(tmp_path), "retrodeck", "bios")
-        fw._retrodeck_paths = FakeRetroDeckPaths(bios=bios)
+        fw._launcher_paths = FakeRetroDeckPaths(bios=bios)
         firmware = {"file_name": "dc_boot.bin", "file_path": "bios/dc/dc_boot.bin"}
         dest = fw._firmware_dest_path(firmware)
         assert dest == os.path.join(str(tmp_path), "retrodeck", "bios", "dc", "dc_boot.bin")
@@ -219,16 +225,16 @@ class TestFirmwareDestPath:
         }
 
         bios = os.path.join(str(tmp_path), "retrodeck", "bios")
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=bios)):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=bios)):
             firmware = {"file_name": "scph5501.bin", "file_path": "bios/ps/scph5501.bin"}
             dest = fw._firmware_dest_path(firmware)
             assert dest == os.path.join(str(tmp_path), "retrodeck", "bios", "scph5501.bin")
 
     def test_uses_dynamic_bios_path(self, fw, tmp_path):
-        """Uses ``retrodeck_paths.bios_path()`` for the base directory."""
+        """Uses ``launcher_paths.bios_path()`` for the base directory."""
 
         sd_bios = "/run/media/deck/Emulation/retrodeck/bios"
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=sd_bios)):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=sd_bios)):
             firmware = {"file_name": "fw.bin", "file_path": "bios/saturn/fw.bin"}
             dest = fw._firmware_dest_path(firmware)
             assert dest == os.path.join(sd_bios, "fw.bin")
@@ -237,7 +243,7 @@ class TestFirmwareDestPath:
         """File not in registry falls back to flat in bios root."""
 
         bios = os.path.join(str(tmp_path), "retrodeck", "bios")
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=bios)):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=bios)):
             firmware = {"file_name": "fw.bin", "file_path": "bios/saturn/fw.bin"}
             dest = fw._firmware_dest_path(firmware)
             assert dest == os.path.join(str(tmp_path), "retrodeck", "bios", "fw.bin")
@@ -387,13 +393,13 @@ class TestGetFirmwareStatus:
     @pytest.mark.asyncio
     async def test_active_core_label_reflects_per_platform_override(self):
         """A per-platform pin surfaces on the System-page label immediately (#1305)."""
-        label = await self._psp_active_core_label(FakePlatformCoreReader({"psp": "PPSSPP"}))
+        label = await self._psp_active_core_label(FakePlatformCoreReader(retrodeck={"psp": "PPSSPP"}))
         assert label == "PPSSPP"
 
     @pytest.mark.asyncio
     async def test_active_core_label_degrades_when_override_stale(self):
         """An override that no longer resolves falls back to the default emulator label."""
-        label = await self._psp_active_core_label(FakePlatformCoreReader({"psp": "No Longer Here"}))
+        label = await self._psp_active_core_label(FakePlatformCoreReader(retrodeck={"psp": "No Longer Here"}))
         assert label == "PPSSPP (Standalone)"
 
     @pytest.mark.asyncio
@@ -447,7 +453,7 @@ class TestGetFirmwareStatus:
         fw._loop = MagicMock()
         fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             result = await fw.get_firmware_status()
         assert result["success"] is True
         assert result["platforms"][0]["files"][0]["downloaded"] is True
@@ -518,7 +524,7 @@ class TestGetFirmwareStatusBiosAggregates:
         fw._loop = MagicMock()
         fw._loop.run_in_executor = AsyncMock(side_effect=[firmware_list, set()])
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             result = await fw.get_firmware_status()
         return next(p for p in result["platforms"] if p["platform_slug"] == "dc")
 
@@ -613,7 +619,7 @@ class TestGetFirmwareStatusBiosAggregates:
 
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.get_firmware_status()
 
@@ -668,7 +674,7 @@ class TestGetFirmwareStatusBiosAggregates:
 
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.get_firmware_status()
 
@@ -762,7 +768,7 @@ class TestDownloadFirmware:
             with open(dest, "wb") as f:
                 f.write(content)
 
-        fw._retrodeck_paths = FakeRetroDeckPaths(bios=str(bios_dir))
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(bios_dir))
         fw._loop = asyncio.get_event_loop()
 
         with (
@@ -820,7 +826,7 @@ class TestDownloadFirmware:
             "md5_hash": "",
         }
 
-        fw._retrodeck_paths = FakeRetroDeckPaths(bios=str(bios_dir))
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(bios_dir))
         fw._loop = asyncio.get_event_loop()
 
         download_called = []
@@ -885,7 +891,7 @@ class TestDownloadAllFirmware:
         with (
             patch.object(plugin._romm_api, "list_firmware", return_value=firmware_list),
             patch.object(fw, "download_firmware", side_effect=fake_download_firmware),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.download_all_firmware("dc")
 
@@ -974,7 +980,7 @@ class TestDeletePlatformBios:
             romm_api=plugin._romm_api,
             uow_factory=FakeUnitOfWorkFactory(plugin._uow),
             firmware_file_store=store,
-            retrodeck_paths=FakeRetroDeckPaths(bios=str(bios_dir)),
+            launcher_paths=FakeRetroDeckPaths(bios=str(bios_dir)),
         )
         fw._loop = asyncio.get_event_loop()
         fw._bios_registry = {
@@ -1392,7 +1398,7 @@ class TestCheckPlatformBiosRequired:
         fw._loop = MagicMock()
         fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             result = await fw.check_platform_bios("dc")
         assert result["needs_bios"] is True
         assert result["required_count"] == 2
@@ -1447,7 +1453,7 @@ class TestCheckPlatformBiosRequired:
         fw._loop = MagicMock()
         fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             result = await fw.check_platform_bios("dc")
         assert result["needs_bios"] is True
         assert result["required_count"] == 2
@@ -1699,7 +1705,7 @@ class TestCheckPlatformBiosNoCoreFields:
         fw._loop = MagicMock()
         fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
             result = await fw.check_platform_bios("gba")
 
         assert result["needs_bios"] is True
@@ -1871,7 +1877,7 @@ class TestDownloadRequiredFirmware:
         with (
             patch.object(plugin._romm_api, "list_firmware", return_value=firmware_list),
             patch.object(fw, "download_firmware", side_effect=fake_download_firmware),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.download_required_firmware("dc")
 
@@ -1921,7 +1927,7 @@ class TestCheckPlatformBiosOffline:
 
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.check_platform_bios("psx")
 
@@ -1951,7 +1957,7 @@ class TestCheckPlatformBiosOffline:
 
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))),
         ):
             result = await fw.check_platform_bios("n64")
 
@@ -1971,7 +1977,7 @@ class TestCheckPlatformBiosOffline:
 
         with (
             patch.object(plugin._romm_api, "list_firmware", return_value=[]),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))),
         ):
             result = await fw.check_platform_bios("n64")
 
@@ -2010,7 +2016,7 @@ class TestCheckPlatformBiosOffline:
 
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.check_platform_bios("dc")
 
@@ -2168,7 +2174,7 @@ class TestPerCoreFiltering:
         # gpSP only uses gba_bios.bin — all files returned but gb/sgb marked as not used by active
         fw._core_info.active_core = ("gpsp_libretro", "gpSP")
         fw._core_info.available_cores = []
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
             result = await fw.check_platform_bios("gba")
 
         assert result["needs_bios"] is True
@@ -2353,7 +2359,7 @@ class TestPerCoreFiltering:
         fw._core_info.available_cores = []
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.check_platform_bios("gba")
 
@@ -2416,7 +2422,7 @@ class TestCheckPlatformBiosPreResolvedCore:
         # System default = mGBA (optional). The per-game override should win.
         fw._core_info.active_core = ("mgba_libretro", "mGBA")
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
             result = await fw.check_platform_bios("gba", active_core_so="gpsp_libretro")
 
         assert result["needs_bios"] is True
@@ -2438,7 +2444,7 @@ class TestCheckPlatformBiosPreResolvedCore:
         self._gba_two_core_service(fw, firmware_list)
         fw._core_info.active_core = ("mgba_libretro", "mGBA")
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
             result = await fw.check_platform_bios("gba")
 
         assert result["needs_bios"] is True
@@ -2506,7 +2512,7 @@ class TestDownloadFirmwarePostIORegistryHash:
         }
 
         fw_data = {"file_name": "test.bin", "file_path": "bios/test/test.bin", "md5_hash": ""}
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             md5_match, reg_hash_valid, error = fw._download_firmware_post_io(fw_data, 1, dest, tmp_path_file)
 
         assert md5_match is None
@@ -2534,7 +2540,7 @@ class TestDownloadFirmwarePostIORegistryHash:
         }
 
         fw_data = {"file_name": "bad.bin", "file_path": "bios/test/bad.bin", "md5_hash": ""}
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             _md5_match, reg_hash_valid, error = fw._download_firmware_post_io(fw_data, 2, dest, tmp_path_file)
 
         assert reg_hash_valid is False
@@ -2581,7 +2587,7 @@ class TestDownloadFirmwareErrors:
             with open(dest, "wb") as f:
                 f.write(content)
 
-        fw._retrodeck_paths = FakeRetroDeckPaths(bios=str(bios_dir))
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(bios_dir))
         fw._loop = asyncio.get_event_loop()
 
         with (
@@ -2639,7 +2645,7 @@ class TestGetFirmwareStatusOfflineFallback:
         fw._core_info.available_cores = []
         with (
             patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")),
-            patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
+            patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))),
         ):
             result = await fw.get_firmware_status()
 
@@ -2873,7 +2879,7 @@ class TestCheckPlatformBiosCached:
 
         core_info.active_core = ("mgba_libretro", "mGBA")
         core_info.available_cores = [{"label": "mGBA", "so": "mgba_libretro"}]
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path))):
             result = fw.check_platform_bios_cached("gba")
 
         assert result is not None
@@ -2945,7 +2951,7 @@ class TestCheckPlatformBiosCached:
         core_info.active_core = ("flycast_libretro", "Flycast")
         core_info.available_cores = [{"label": "Flycast", "so": "flycast_libretro"}]
 
-        with patch.object(fw, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path))):
+        with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(tmp_path))):
             result = fw.check_platform_bios_cached(slug)
 
         assert result is not None

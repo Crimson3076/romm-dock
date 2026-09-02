@@ -159,14 +159,17 @@ class SystemKnownFn(Protocol):
 class PlatformCoreReader(Protocol):
     """Read seam for the plugin-owned per-platform core selection.
 
-    Exposes the ``settings.json`` ``platform_cores`` map (RomM platform
-    slug → core label) so the resolver can layer a user-chosen
-    platform-wide core over the es_systems default without reading the
-    retired ES-DE gamelist. Returns the stored core label for a slug, or
-    ``None`` when the platform has no plugin-owned selection.
+    Exposes the ``settings.json`` ``platform_cores`` map (``backend_id`` →
+    RomM platform slug → core label) so the resolver can layer a user-chosen
+    platform-wide core over the active backend's own default without reading
+    the retired ES-DE gamelist. Each launcher backend keeps its own
+    independent selection per platform — switching backends never reads or
+    clears another backend's entry. Returns the stored core label for
+    *backend_id*/*platform_slug*, or ``None`` when that backend has no
+    plugin-owned selection for the platform.
     """
 
-    def get_platform_core(self, platform_slug: str) -> str | None: ...
+    def get_platform_core(self, backend_id: str, platform_slug: str) -> str | None: ...
 
 
 class CoreNameProviderFn(Protocol):

@@ -574,6 +574,55 @@ export const clearGameCore = callable<[number], GameCoreApplyResult>("clear_game
 // default.
 export const getPlatformCoreInfo = callable<[number], CoreInfo>("get_platform_core_info");
 
+/**
+ * One installation of a launcher backend detected on this machine (issue #918).
+ * `is_active` marks the CURRENTLY selected installation within its backend —
+ * at most one per backend, so the picker never has to guess the current
+ * selection via a second callable.
+ */
+export interface DetectedLauncherInstallation {
+  installation_id: string;
+  display_name: string;
+  home: string;
+  healthy: boolean;
+  detail: string;
+  is_active: boolean;
+}
+
+/**
+ * One registered launcher backend and every installation of it detected here.
+ * `is_active` marks the CURRENTLY selected backend — exactly one entry in the
+ * list returned by `getLauncherBackends` carries `is_active: true`.
+ */
+export interface LauncherBackendInfo {
+  backend_id: string;
+  display_name: string;
+  is_active: boolean;
+  installations: DetectedLauncherInstallation[];
+}
+
+export const getLauncherBackends = callable<[], LauncherBackendInfo[]>("get_launcher_backends");
+
+/**
+ * Result of switching the active launcher backend. On success every
+ * installed + bound ROM's `launch_options` is re-baked for the newly-selected
+ * backend and returned as `rebake_items` — the frontend fans out
+ * `setLaunchOptionsConfirmed(app_id, launch_options)` over the list, the same
+ * confirm-set mechanism `setSystemCore` uses. On failure `reason` is a stable
+ * slug (`"unknown_backend"`, `"not_detected"`, or the backend's own
+ * `BackendValidation.reason`) and nothing was changed.
+ */
+export const setLauncherBackend = callable<
+  [string, string],
+  {
+    success: boolean;
+    reason?: string;
+    message?: string;
+    rebake_items?: RebakeItem[];
+    prune_lease_token?: string;
+  }
+>("set_launcher_backend");
+
 /** One launchable disc image within a multi-disc ROM's install directory. */
 export interface Disc {
   filename: string;

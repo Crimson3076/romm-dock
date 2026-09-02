@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +14,7 @@ from _factories import _make_testable_plugin
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_migration_file_store import FakeMigrationFileStore
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_relaunch_options_resolver import FakeRelaunchOptionsResolver
@@ -21,6 +24,7 @@ from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.fake_windows_resolver import FakeWindowsResolver
+from fakes.late_binding import bound
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
@@ -29,11 +33,15 @@ from adapters.migration_file import MigrationFileAdapter
 from adapters.persistence import PersistenceAdapter
 from adapters.steam_config import SteamConfigAdapter
 from domain.save_layout import InSaveDir, SaveLayout
+from lib.late_binding import LateBinding
 from services.active_core_resolver import ActiveCoreResolver, ActiveCoreResolverConfig
 from services.firmware import FirmwareService, FirmwareServiceConfig
 from services.library import LibraryService, LibraryServiceConfig
 from services.migration import MigrationService, MigrationServiceConfig
 from services.relaunch_options_resolver import RelaunchOptionsResolver, RelaunchOptionsResolverConfig
+
+if TYPE_CHECKING:
+    from services.protocols import LaunchCommandRenderer
 
 
 class RecordingEmitter:
@@ -80,7 +88,8 @@ def plugin(tmp_path, fake_romm_api):
     p._active_core = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
-            core_info=p._core_info,
+            core_info=bound(p._core_info),
+            active_backend_id=bound("retrodeck"),
             platform_core_reader=FakePlatformCoreReader(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             logger=decky.logger,
@@ -94,8 +103,9 @@ def plugin(tmp_path, fake_romm_api):
             plugin_dir=decky.DECKY_PLUGIN_DIR,
             clock=FakeClock(now=datetime(2026, 1, 1, tzinfo=UTC)),
             firmware_file_store=FirmwareFileAdapter(),
-            retrodeck_paths=FakeRetroDeckPaths(),
+            launcher_paths=FakeRetroDeckPaths(),
             core_info=FakeCoreInfoProvider(),
+            active_backend_id=lambda: "retrodeck",
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             platform_core_reader=FakePlatformCoreReader(),
             uow_factory=FakeUnitOfWorkFactory(),
@@ -124,6 +134,7 @@ def plugin(tmp_path, fake_romm_api):
             windows_resolver=FakeWindowsResolver(),
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         ),
     )
 
@@ -136,12 +147,16 @@ def plugin(tmp_path, fake_romm_api):
     # Real RelaunchOptionsResolver over the shared fake UoW + p._active_core so
     # the migration relaunch-emit integration tests still bake real launch
     # commands from the relocated rom_installs.file_path.
+    launch_renderer = FakeLaunchCommandRenderer()
+    launch_renderer_binding: LateBinding[LaunchCommandRenderer] = LateBinding("launch_renderer")
+    launch_renderer_binding.set(lambda: launch_renderer)
     relaunch_options = RelaunchOptionsResolver(
         config=RelaunchOptionsResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
             active_core=p._active_core,
             disc_resolver=FakeDiscResolver(),
             windows_resolver=FakeWindowsResolver(),
+            launch_renderer=launch_renderer_binding,
         ),
     )
 
@@ -1151,7 +1166,7 @@ class TestMigrationRelaunchOptions:
             uow.kv_config.set("retrodeck_home_path", new_home)
         _seed_install(plugin._uow, 1, file_path=old_rom, system="psx", platform_slug="psx", app_id=4242)
         with plugin._uow as uow:
-            uow.roms.set_emulator_override(1, "PCSX ReARMed")
+            uow.roms.set_emulator_override(1, "retrodeck", "PCSX ReARMed")
 
         result = await plugin.migrate_retrodeck_files()
         assert result["success"] is True
@@ -1196,7 +1211,7 @@ class TestMigrationRelaunchOptions:
             uow.kv_config.set("retrodeck_home_path", new_home)
         _seed_install(plugin._uow, 1, file_path=old_rom, system="psx", platform_slug="psx", app_id=4242)
         with plugin._uow as uow:
-            uow.roms.set_emulator_override(1, "Removed Core")
+            uow.roms.set_emulator_override(1, "retrodeck", "Removed Core")
 
         with caplog.at_level(logging.WARNING):
             result = await plugin.migrate_retrodeck_files()

@@ -220,7 +220,7 @@ describe("AdoptExistingModal — the three exits", () => {
     const { container } = renderModal({ occupied: unknownOccupied() });
     fireEvent.click(buttonByText(container, "Download Instead"));
     expect(container.textContent).toContain("Downloading removes what is here now");
-    expect(container.textContent).toContain("Tender cannot tell what it is, only that it goes");
+    expect(container.textContent).toContain("RomM-Dock cannot tell what it is, only that it goes");
     expect(container.textContent).not.toContain("If it is your own dump");
     expect(container.textContent).not.toContain("0 B");
   });

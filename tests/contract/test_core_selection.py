@@ -66,7 +66,7 @@ async def test_clear_game_core_bakes_post_clear_core_not_old_pin(harness):
     seed_es_systems(harness)
     seed_install(harness, 42, system="gba", platform_slug="gba", file_name="pokemon.gba")
     with harness.uow_factory() as uow:
-        uow.roms.set_emulator_override(42, "VBA Next")
+        uow.roms.set_emulator_override(42, "retrodeck", "VBA Next")
 
     result = await harness.plugin.clear_game_core(42)
 
@@ -77,7 +77,7 @@ async def test_clear_game_core_bakes_post_clear_core_not_old_pin(harness):
     assert "vba_next_libretro.so" not in result["launch_options"]
     # The pin is gone (SQL NULL) — read back through a fresh UoW.
     with harness.uow_factory() as uow:
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
 
 
 async def test_clear_game_core_unknown_rom_returns_canonical_failure(harness):
@@ -101,7 +101,7 @@ async def test_set_system_core_rebakes_only_unpinned_rom(harness):
     seed_install(harness, 1, system="gba", platform_slug="gba", file_name="a.gba")
     seed_install(harness, 2, system="gba", platform_slug="gba", file_name="b.gba")
     with harness.uow_factory() as uow:
-        uow.roms.set_emulator_override(2, "mGBA")
+        uow.roms.set_emulator_override(2, "retrodeck", "mGBA")
 
     result = await harness.plugin.set_system_core("gba", "VBA Next")
 
@@ -126,7 +126,7 @@ async def test_set_game_core_unbakeable_label_returns_canonical_failure(harness)
     assert isinstance(result["message"], str)
     assert result["message"]
     with harness.uow_factory() as uow:
-        assert uow.roms.get(5).emulator_override is None
+        assert uow.roms.get(5).emulator_override_for("retrodeck") is None
 
 
 async def test_get_platform_core_info_payload_shape(harness):

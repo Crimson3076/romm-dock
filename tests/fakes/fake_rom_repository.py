@@ -53,7 +53,7 @@ class FakeRomRepository:
         # and diverge from real SQLite (#945 / #1383).
         existing = self._roms.get(rom.rom_id)
         if existing is not None:
-            stored.emulator_override = existing.emulator_override
+            stored.emulator_overrides = copy.deepcopy(existing.emulator_overrides)
             stored.selected_disc = existing.selected_disc
             stored.selected_exe = existing.selected_exe
             stored.applied_launch_options = existing.applied_launch_options
@@ -76,15 +76,13 @@ class FakeRomRepository:
     def count(self) -> int:
         return len(self._roms)
 
-    def set_emulator_override(self, rom_id: int, label: str | None) -> None:
+    def set_emulator_override(self, rom_id: int, backend_id: str, label: str | None) -> None:
         rom = self._roms.get(rom_id)
         if rom is not None:
-            rom.emulator_override = label
-
-    def get_all_emulator_overrides(self) -> dict[int, str]:
-        return {
-            rom_id: rom.emulator_override for rom_id, rom in self._roms.items() if rom.emulator_override is not None
-        }
+            if label is None:
+                rom.emulator_overrides.pop(backend_id, None)
+            else:
+                rom.emulator_overrides[backend_id] = label
 
     def set_selected_disc(self, rom_id: int, filename: str | None) -> None:
         rom = self._roms.get(rom_id)
