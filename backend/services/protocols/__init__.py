@@ -120,6 +120,7 @@ from services.protocols.paths import (
     SystemM3uSupportFn,
     SystemResolver,
     SystemSupportedExtensionsFn,
+    XemuConfigReader,
 )
 from services.protocols.persistence import SettingsPersister
 from services.protocols.proton import ProtonLocator
@@ -275,4 +276,5 @@ __all__ = [
     "UuidGen",
     "VersionSwitcherFn",
     "WindowsResolver",
+    "XemuConfigReader",
 ]

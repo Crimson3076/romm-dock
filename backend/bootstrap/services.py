@@ -453,6 +453,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             resolve_system=cfg.adapters.http_adapter.resolve_system,
             platform_core_reader=cfg.callbacks.platform_core_reader,
             uow_factory=cfg.callbacks.uow_factory,
+            xemu_config=cfg.callbacks.xemu_config,
         ),
     )
 

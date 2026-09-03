@@ -868,6 +868,8 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     "get_host_status",
     # Read-only RetroDECK path-resolution health probe (for the frontend banner).
     "get_retrodeck_status",
+    # Read-only xemu.toml alignment probe (for the frontend banner).
+    "check_xemu_config_alignment",
     # Cancel / pause operations — must remain callable mid-operation when
     # migration marker fires so the user can stop in-flight work. (Resume,
     # which re-begins a filesystem transfer, IS migration-blocked.)
@@ -1205,6 +1207,7 @@ class TestMainStartupOrdering:
             ),
             callbacks=CallbackBundle(
                 retrodeck_paths=MagicMock(),
+                xemu_config=MagicMock(),
                 get_save_layout=MagicMock(),
                 get_savestate_layout=MagicMock(),
                 get_core_name=MagicMock(),

@@ -59,6 +59,7 @@ import type {
   AdoptResult,
   VerifyContentResult,
   CustomHeaderEntry,
+  XemuAlignmentResult,
 } from "../types";
 
 export interface BackendResult {
@@ -1200,6 +1201,12 @@ export const reconcilePlaytime = callable<
 // ("ok" | "absent" | "unreadable" | "root_missing") plus the probed paths. The
 // frontend owns the human-readable copy; the backend returns the discriminant.
 export const getRetroDeckStatus = callable<[], RetroDeckStatus>("get_retrodeck_status");
+
+// xemu.toml alignment for the Xbox section of the System page — discriminated
+// status ("ok" | "misaligned" | "not_found" | "unreadable") plus per-key
+// detail. The frontend owns the human-readable copy; the backend returns the
+// discriminant.
+export const checkXemuConfigAlignment = callable<[], XemuAlignmentResult>("check_xemu_config_alignment");
 
 // RetroDECK path migration
 export const getMigrationStatus = callable<[], MigrationStatus>("get_migration_status");

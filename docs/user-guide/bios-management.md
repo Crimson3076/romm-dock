@@ -386,6 +386,15 @@ Xbox is a standalone emulator (xemu), not a RetroArch core, and its firmware —
 and the hard disk image xemu boots from — is answered through the same packaged rule card and live reading every other
 standalone emulator uses; nothing about it is special-cased in the plugin.
 
+**The System page also checks whether xemu is actually configured to use the files the plugin places.** Firmware files
+install flat into your BIOS directory (e.g. `~/retrodeck/bios/mcpx_1.0.bin`), matching how EmuDeck's own xemu setup
+expects them — but xemu reads its boot ROM and flash BIOS paths from its own configuration file (`xemu.toml`, under
+`[sys.files]`), which the plugin never writes to. A file being present in your BIOS directory doesn't guarantee xemu is
+configured to look there, so the Xbox section shows a warning when `xemu.toml`'s paths don't point at that same
+directory for the boot ROM and flash BIOS — you'll need to update `xemu.toml` yourself (or launch xemu once, if it
+hasn't created a configuration yet; that case stays quiet rather than warning). The disk image's configured location
+isn't checked the same way, since where EmuDeck places it isn't confirmed the way the BIOS directory is.
+
 ### The Xbox hard disk image
 
 xemu emulates a real Xbox's internal hard drive: every game installs to, and saves onto, **one shared disk image**

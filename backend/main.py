@@ -567,6 +567,9 @@ class Plugin:
     async def delete_bios_folder(self, platform_slug, folder_path):
         return await self._firmware_service.delete_bios_folder(platform_slug, folder_path)
 
+    async def check_xemu_config_alignment(self):
+        return await self._firmware_service.check_xemu_alignment()
+
     # ── Sync delegation to LibraryService ─────────────────────
 
     async def get_platforms(self):

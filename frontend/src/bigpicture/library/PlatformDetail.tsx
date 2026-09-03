@@ -13,10 +13,11 @@
  * Structure and vocabulary: `docs/architecture/qam-panel.md`, section Library.
  */
 
-import type { FC, ReactNode } from "react";
+import { useEffect, useState, type FC, type ReactNode } from "react";
 import { ConfirmModal, DialogButton, Focusable, showContextMenu, showModal, Spinner } from "@decky/ui";
 import { FaMicrochip } from "react-icons/fa";
-import type { FirmwarePlatformExt, SystemCoreInfo, SystemImage } from "../../types";
+import { checkXemuConfigAlignment } from "../../api/backend";
+import type { FirmwarePlatformExt, SystemCoreInfo, SystemImage, XemuAlignmentResult } from "../../types";
 import { biosColorForLevel } from "../../utils/biosColor";
 import { isFetchable } from "../../utils/biosFetchable";
 import { biosFileDescription, biosFileNote } from "../../utils/biosFileNote";
@@ -26,6 +27,7 @@ import { buildEmulatorMenu } from "../../utils/emulatorMenu";
 import { getEventTarget } from "../../utils/events";
 import { pluralize } from "../../utils/pluralize";
 import { SYNC_RUNNING_HINT, useSyncRunning } from "../../utils/syncRunning";
+import { xemuAlignmentBanner } from "../../utils/xemuAlignment";
 import {
   AMBER,
   BusyElsewhere,
@@ -977,6 +979,40 @@ const RemoveSection: FC<{ row: PlatformRow; state: PlatformsPageState }> = ({ ro
   );
 };
 
+/**
+ * xemu's own `[sys.files]` boot ROM / flash BIOS paths may point somewhere
+ * other than this plugin's BIOS directory — a downloaded file being present
+ * never guarantees that, since the plugin does not write `xemu.toml`. Fetched
+ * independently of the platform-wide BIOS walk `usePlatformsPage` owns (that
+ * walk answers what the library holds and what emulators want; this answers
+ * what xemu itself is configured to read), and mounted for the Xbox platform
+ * only — there is no `xemu.toml` for any other system.
+ */
+const XemuAlignmentNotice: FC = () => {
+  const [result, setResult] = useState<XemuAlignmentResult | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    checkXemuConfigAlignment().then((r) => {
+      if (alive) setResult(r);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (result === null) return null;
+  const banner = xemuAlignmentBanner(result.status, result.config_path);
+  if (banner === null) return null;
+
+  return (
+    <Muted>
+      <span style={{ color: AMBER, fontWeight: 600 }}>{banner.title}</span>
+      {` — ${banner.message}`}
+    </Muted>
+  );
+};
+
 export const PlatformDetail: FC<{ row: PlatformRow; state: PlatformsPageState }> = ({ row, state }) => {
   const core = state.coreFor(row.slug);
   const firmware = row.firmware;
@@ -1082,6 +1118,7 @@ export const PlatformDetail: FC<{ row: PlatformRow; state: PlatformsPageState }>
           <FaMicrochip size={16} color={coreColor} />
         </DialogButton>
       </Focusable>
+      {row.slug === "xbox" && <XemuAlignmentNotice />}
       {/* The count is what failed, not the removal: taking the platform's games
           out of Steam needs only the slug. So the line says the number is
           missing and stops there — the buttons below stay live. */}
