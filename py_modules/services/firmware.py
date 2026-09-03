@@ -95,6 +95,7 @@ class FirmwareService:
         self._uow_factory = config.uow_factory
         self._bios_registry: dict[str, Any] = {}
         self._bios_files_index: dict[str, dict[str, Any]] | None = None
+        self._bios_files_by_hash: dict[str, dict[str, Any]] = {}
         self._firmware_cache: list[dict[str, Any]] | None = None
         self._firmware_cache_epoch: float = 0
         self._restore_firmware_cache()
@@ -115,27 +116,66 @@ class FirmwareService:
     def load_bios_registry(self) -> None:
         self._bios_registry = {}
         self._bios_files_index = {}
+        self._bios_files_by_hash = {}
+        self._load_registry_file("bios_registry.json")
+        # Plugin-owned supplement for standalone (non-libretro) emulators the
+        # vendored, emu-atlas-generated bios_registry.json does not cover
+        # (xemu is not a libretro core). Same shape, merged into the same
+        # in-memory registry so every consumer treats it identically —
+        # see defaults/README.md.
+        self._load_registry_file("xbox_bios_registry.json", merge=True)
+        self._bios_files_by_hash = {
+            entry["md5"].lower(): entry for entry in self._bios_files_index.values() if entry.get("md5")
+        }
+
+    def _load_registry_file(self, filename: str, *, merge: bool = False) -> None:
+        """Load one registry JSON file and fold its platforms into the shared index.
+
+        ``merge=False`` replaces ``self._bios_registry`` wholesale (the primary,
+        vendored registry); ``merge=True`` folds the file's platforms into the
+        existing registry instead, for the plugin-owned supplement loaded after
+        it. A missing supplement file is not an error — only the primary
+        registry warns on absence.
+        """
         # Check plugin root first (Decky CLI moves defaults/ contents to root),
         # then defaults/ subdirectory (dev deploys via mise run deploy)
-        root_path = os.path.join(self._plugin_dir, "bios_registry.json")
-        defaults_path = os.path.join(self._plugin_dir, "defaults", "bios_registry.json")
+        root_path = os.path.join(self._plugin_dir, filename)
+        defaults_path = os.path.join(self._plugin_dir, "defaults", filename)
         registry_path = root_path if self._firmware_file_store.exists(root_path) else defaults_path
         try:
             data = self._firmware_file_store.read_bytes(registry_path)
-            self._bios_registry = json.loads(data)
-            # Build flat reverse index: {filename: {entry_data + "platform": slug}}
-            for platform, files in self._bios_registry.get("platforms", {}).items():
-                for filename, entry in files.items():
-                    self._bios_files_index[filename] = {**entry, "platform": platform}
+            registry = json.loads(data)
+            if merge:
+                self._bios_registry.setdefault("platforms", {}).update(registry.get("platforms", {}))
+            else:
+                self._bios_registry = registry
+            for platform, files in registry.get("platforms", {}).items():
+                for name, entry in files.items():
+                    self._bios_files_index[name] = {**entry, "platform": platform}
         except FileNotFoundError:
-            self._logger.warning("bios_registry.json not found, registry enrichment disabled")
+            if not merge:
+                self._logger.warning(f"{filename} not found, registry enrichment disabled")
         except Exception as e:
-            self._logger.error(f"Failed to load bios_registry.json: {e}")
+            self._logger.error(f"Failed to load {filename}: {e}")
 
     # ── Internal helpers ─────────────────────────────────────
 
+    def _resolve_index_entry(self, file_name: str, md5: str = "") -> dict[str, Any] | None:
+        """Look up ``bios_files_index`` by exact name, falling back to content hash.
+
+        A server file whose name is not a registry key — a differently-named
+        BIOS dump, most relevantly for xemu's non-libretro entries — still
+        resolves when its md5 matches a known one, via ``_bios_files_by_hash``.
+        """
+        entry = self.bios_files_index.get(file_name)
+        if entry is not None:
+            return entry
+        if not md5:
+            return None
+        return self._bios_files_by_hash.get(md5.lower())
+
     def _enrich_firmware_file(self, file_dict, core_so=None):
-        entry = self.bios_files_index.get(file_dict.get("file_name", ""))
+        entry = self._resolve_index_entry(file_dict.get("file_name", ""), file_dict.get("md5", ""))
         if entry:
             # Use per-core required value if active core is known
             if core_so and "cores" in entry and core_so in entry["cores"]:
@@ -177,7 +217,7 @@ class FirmwareService:
         """
         bios_base = self._launcher_paths.bios_path()
         file_name = firmware.get("file_name", "")
-        reg_entry = self.bios_files_index.get(file_name)
+        reg_entry = self._resolve_index_entry(file_name, firmware.get("md5_hash", ""))
         if reg_entry and reg_entry.get("firmware_path"):
             return safe_join(bios_base, reg_entry["firmware_path"])
         return safe_join(bios_base, file_name)
@@ -235,6 +275,7 @@ class FirmwareService:
                     "file_name": fw.get("file_name", ""),
                     "downloaded": self._firmware_file_store.exists(dest),
                     "dest": dest,
+                    "md5": fw.get("md5_hash", ""),
                 }
             )
         return items
@@ -598,7 +639,7 @@ class FirmwareService:
 
         # Compute local MD5 once (used for both server-hash and registry-hash checks)
         expected_md5 = fw.get("md5_hash", "")
-        reg_entry = self.bios_files_index.get(file_name)
+        reg_entry = self._resolve_index_entry(file_name, expected_md5)
         reg_md5 = reg_entry.get("md5", "") if reg_entry else ""
 
         local_md5 = self._firmware_file_store.checksum_md5(dest) if (expected_md5 or reg_md5) else None
@@ -701,9 +742,9 @@ class FirmwareService:
             msg += f" ({len(errors)} failed: {', '.join(errors)})"
         return {"success": True, "message": msg, "downloaded": downloaded}
 
-    def _is_firmware_required(self, file_name, core_so):
+    def _is_firmware_required(self, file_name, core_so, md5=""):
         """Check if a firmware file is required for the given core."""
-        index_entry = self.bios_files_index.get(file_name)
+        index_entry = self._resolve_index_entry(file_name, md5)
         if not index_entry:
             return None  # Unknown file
         if core_so and "cores" in index_entry and core_so in index_entry["cores"]:
@@ -743,7 +784,7 @@ class FirmwareService:
             fw
             for fw in firmware_list
             if firmware_paths.parse_firmware_slug(fw.get("file_path", "")) in fw_slugs
-            and self._is_firmware_required(fw.get("file_name", ""), core_so) is True
+            and self._is_firmware_required(fw.get("file_name", ""), core_so, fw.get("md5_hash", "")) is True
         ]
 
         downloaded, errors = await self._download_firmware_batch(platform_firmware)

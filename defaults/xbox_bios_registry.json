@@ -1,0 +1,134 @@
+{
+  "_meta": {
+    "source": "romm-dock maintained (in-tree, not vendored) — xemu is a standalone emulator, out of scope for the emu-atlas/libretro-derived bios_registry.json generator",
+    "emulator": "xemu",
+    "version": "1.0.0",
+    "notes": "Every entry's md5 is used for content-based identification (services/firmware.py falls back to a hash lookup when a server file's name does not match a registry key), so a user's differently-named BIOS dump is still recognized. Only mcpx_1.0.bin is marked required — see docs/user-guide/bios-management.md#xbox-xemu for why the many alternative flash-BIOS dumps below are all optional rather than each independently required."
+  },
+  "platforms": {
+    "xbox": {
+      "mcpx_1.0.bin": {
+        "description": "MCPX Boot ROM 1.0",
+        "required": true,
+        "firmware_path": "mcpx_1.0.bin",
+        "md5": "d49c52a4102f6df7bcf8d0617ac475ed",
+        "size": 512
+      },
+      "mcpx_1.1.bin": {
+        "description": "MCPX Boot ROM 1.1 — NOT compatible with xemu, use MCPX 1.0 instead",
+        "required": false,
+        "firmware_path": "mcpx_1.1.bin",
+        "md5": "2870d58a459c745d7cc4c6122ceb3dcb",
+        "size": 512
+      },
+      "xbox-3944.bin": {
+        "description": "Xbox v1.0 retail BIOS (Kernel 1.00.3944.01)",
+        "required": false,
+        "firmware_path": "xbox-3944.bin",
+        "md5": "e8b39b98cf775496c1c76e4f7756e6ed"
+      },
+      "xbox-4034.bin": {
+        "description": "Xbox v1.0 retail BIOS (Kernel 1.00.4034.01)",
+        "required": false,
+        "firmware_path": "xbox-4034.bin",
+        "md5": "b49a417511b2dbb485aa255a32a319d1"
+      },
+      "xbox-4134.bin": {
+        "description": "Xbox v1.0 retail BIOS (Kernel 1.00.4134.01)",
+        "required": false,
+        "firmware_path": "xbox-4134.bin",
+        "md5": "c0a543ce695201aca87c51b3a5cdf8c8"
+      },
+      "xbox-4627.bin": {
+        "description": "Xbox v1.0 retail BIOS (Kernel 1.00.4627.01)",
+        "required": false,
+        "firmware_path": "xbox-4627.bin",
+        "md5": "ec00e31e746de2473acfe7903c5a4cb7"
+      },
+      "xbox-4817.bin": {
+        "description": "Xbox v1.1 retail BIOS (Kernel 1.00.4817.01)",
+        "required": false,
+        "firmware_path": "xbox-4817.bin",
+        "md5": "430b3edf0f1ea5c77f47845ed3cbd22b"
+      },
+      "xbox-5101.bin": {
+        "description": "Xbox v1.2/v1.3/v1.4/v1.5 retail BIOS (Kernel 1.00.5101.01)",
+        "required": false,
+        "firmware_path": "xbox-5101.bin",
+        "md5": "769898e9682e1f5d065b5961460d03e6"
+      },
+      "xbox-5530.bin": {
+        "description": "Xbox v1.4/v1.5 retail BIOS (Kernel 1.00.5530.01)",
+        "required": false,
+        "firmware_path": "xbox-5530.bin",
+        "md5": "e455feb286dfc16272ad94d773c24460"
+      },
+      "xbox-5713.bin": {
+        "description": "Xbox v1.4/v1.5 retail BIOS (Kernel 1.00.5713.01)",
+        "required": false,
+        "firmware_path": "xbox-5713.bin",
+        "md5": "e27bbf815c67bcbf359907a68ea46978"
+      },
+      "xbox-5838.bin": {
+        "description": "Xbox v1.6 retail BIOS (Kernel 1.00.5838.01)",
+        "required": false,
+        "firmware_path": "xbox-5838.bin",
+        "md5": "c5907d241de37c22b083b6e30fa934b0"
+      },
+      "Complex_4627v1.03.bin": {
+        "description": "Complex 4627 v1.03 custom BIOS (community replacement based on kernel 4627)",
+        "required": false,
+        "firmware_path": "Complex_4627v1.03.bin",
+        "md5": "21445c6f28fca7285b0f167ea770d1e5"
+      },
+      "Complex_4627_Retail_256kb.bin": {
+        "description": "Complex 4627 Retail custom BIOS (256KB)",
+        "required": false,
+        "firmware_path": "Complex_4627_Retail_256kb.bin",
+        "md5": "4132e24c64b7a8d4ea34ff448051e923"
+      },
+      "Complex_Debug_BFM_256kb.bin": {
+        "description": "Complex Debug (BFM) custom BIOS (256KB)",
+        "required": false,
+        "firmware_path": "Complex_Debug_BFM_256kb.bin",
+        "md5": "9de0c9328846b10d24d1f41181a15e7e"
+      },
+      "Cerbios_Hybrid_3.1.0_Beta.bin": {
+        "description": "Cerbios Hybrid v3.1.0 Beta custom BIOS",
+        "required": false,
+        "firmware_path": "Cerbios_Hybrid_3.1.0_Beta.bin",
+        "md5": "cb41af49a794b08b8f36c206564fe55e"
+      },
+      "iND-BiOS_5003.06.bin": {
+        "description": "iND-BiOS 5003.06 custom BIOS",
+        "required": false,
+        "firmware_path": "iND-BiOS_5003.06.bin",
+        "md5": "2c9f4b933e4c57b26a9ec253fae442b9"
+      },
+      "iND-BiOS_5003.67.bin": {
+        "description": "iND-BiOS 5003.67 custom BIOS",
+        "required": false,
+        "firmware_path": "iND-BiOS_5003.67.bin",
+        "md5": "957d2306eb6563eb9c986566c8ea871b"
+      },
+      "iND-BiOS_5003.06_XBL.bin": {
+        "description": "iND-BiOS 5003.06 custom BIOS (Shutdown + RAM Patched + XBL Enabled)",
+        "required": false,
+        "firmware_path": "iND-BiOS_5003.06_XBL.bin",
+        "md5": "b0c482ca1a76a4550c73a391171b8bb1"
+      },
+      "iND-BiOS_5003.67_XBL.bin": {
+        "description": "iND-BiOS 5003.67 custom BIOS (Shutdown + RAM Patched + XBL Enabled)",
+        "required": false,
+        "firmware_path": "iND-BiOS_5003.67_XBL.bin",
+        "md5": "ae7bf411d05c3ef1132b97627c65a62f"
+      },
+      "xbox_hdd.qcow2": {
+        "description": "Xbox virtual hard disk image — required to boot. xemu installs every game to, and saves onto, this one shared disk (not a per-game save file). If you already have one with save data on it, see the user guide before re-downloading — a hash mismatch here after any play session is expected, not corruption.",
+        "required": true,
+        "firmware_path": "xbox_hdd.qcow2",
+        "md5": "aeb163b8b0594aa5dabd663e72273c3b"
+      }
+    }
+  }
+}

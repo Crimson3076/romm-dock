@@ -115,6 +115,47 @@ This is informational, not an error: your files may be perfectly fine, the plugi
 still download them manually through RomM if your emulator needs them. Genuinely BIOS-free systems (such as the NES) are
 unaffected — they keep showing a normal all-ready status.
 
+## Xbox (xemu)
+
+Xbox is a standalone emulator (xemu), not a RetroArch core, so its firmware is identified a little differently than the
+platforms above.
+
+**Detection is content-based, not filename-based.** Every other platform's BIOS files are matched by exact filename.
+Xbox firmware is matched by the file's hash instead, so a BIOS or MCPX dump you renamed, or downloaded under a different
+name than the plugin's default, is still recognized correctly — you don't need to rename anything to match a specific
+filename.
+
+**Only the MCPX 1.0 boot ROM is marked required.** xemu needs exactly one working flash BIOS, but there are many valid
+ones — nine retail kernel versions plus community replacements (Complex, Cerbios, iND-BiOS, and others) — and the plugin
+has no way to express "any one of these satisfies the requirement" (each entry is tracked independently). Marking every
+variant required would show a permanently-red status for everyone, since no one has all of them. Instead, every
+recognized variant shows as present-and-known the moment you have one, without inflating the required count.
+
+**MCPX 1.1 is not compatible with xemu.** If your RomM server has an MCPX 1.1 dump, the plugin recognizes it but flags it
+in its description — use MCPX 1.0 instead.
+
+**Firmware files install flat into your BIOS directory** (e.g. `~/retrodeck/bios/mcpx_1.0.bin`), matching how EmuDeck's
+own xemu setup expects them. If xemu isn't picking up a file the plugin shows as downloaded, check xemu's own
+configuration (`xemu.toml`, under `[sys.files]`) points at the same location — the plugin places the files but does not
+edit xemu's configuration for you.
+
+### The Xbox hard disk image
+
+xemu emulates a real Xbox's internal hard drive: every game installs to, and saves onto, **one shared disk image**
+(`xbox_hdd.qcow2`), not a per-game save file. The plugin treats this file as required firmware like any other — it can
+detect and download it — but with two things worth understanding:
+
+- **A hash mismatch here is normal, not corruption.** The moment you play anything, the disk image's contents (and
+  therefore its hash) diverge from whatever template was on the server. The plugin still recognizes the file by name and
+  location; only the informational hash-match indicator will read "no match" after first use, which is expected.
+- **The plugin never overwrites an existing disk image.** Both **Download All** and **Download Required** skip a file
+  that's already present at its destination, so an existing disk image with your save data is never at risk from a bulk
+  BIOS download. Downloading it only ever bootstraps a fresh copy when none exists yet.
+- **Syncing the disk image's contents with RomM is not yet supported.** Because it's one file shared across your whole
+  Xbox library rather than a per-game save, it doesn't fit the plugin's existing per-game save-sync engine — see
+  [Known Limitations](../architecture/save-file-sync-architecture.md#standalone-emulators-not-supported) in the save-sync
+  architecture doc. Back up `xbox_hdd.qcow2` yourself for now if it holds progress you care about.
+
 ## Per-Platform BIOS Filtering
 
 The plugin only shows BIOS files that belong to the platform you're looking at. For example, a GBA game page shows

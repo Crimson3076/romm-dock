@@ -51,3 +51,20 @@ the pipeline.
 
 The platform-slug map and other default configuration. Unlike `bios_registry.json`, this is maintained in this repo (not
 vendored) and carries no checksum gate.
+
+## `xbox_bios_registry.json` — in-tree default
+
+Firmware identification data for `xemu` (the Xbox emulator), in the same shape as `bios_registry.json` but maintained in
+this repo — like `config.json`, not vendored and not checksum-gated. It exists as a separate file rather than an entry in
+`bios_registry.json` because xemu is a standalone emulator, not a libretro core: it falls entirely outside what the
+emu-atlas generator that produces `bios_registry.json` covers, and this repo's own rule against hand-editing a
+checksum-pinned vendored file (see `.claude/rules/vendored-assets.md`) rules out adding it there directly.
+
+`FirmwareService.load_bios_registry()` loads this file and merges its `platforms` into the same in-memory registry
+`bios_registry.json` populates, so every existing consumer (classification, status, install-path resolution, download)
+handles Xbox the same way it handles every other platform — no Xbox-specific code path exists beyond the merge and the
+content-hash fallback lookup (`services/firmware.py`'s `_bios_files_by_hash`) that lets a differently-named file still be
+identified by its content.
+
+Update by hand-editing this file directly (it is not a snapshot of anything upstream) when a new Xbox BIOS/MCPX variant's
+hash needs adding, then re-run the firmware tests (`tests/services/test_firmware.py`, `tests/domain/test_bios.py`).

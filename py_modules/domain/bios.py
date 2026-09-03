@@ -110,6 +110,32 @@ def format_bios_status(bios: dict[str, Any], platform_slug: str, *, cached_at: f
     )
 
 
+def resolve_registry_entry(
+    registry_platform: dict[str, Any],
+    file_name: str,
+    md5: str = "",
+) -> dict[str, Any] | None:
+    """Look up a registry entry by exact file name, falling back to content hash.
+
+    A server file whose name does not match any registry key can still be
+    identified by its md5 — RomM reports a hash for every firmware file, so a
+    user's differently-named BIOS dump (renamed, or a distribution using a
+    different filename convention than the registry's canonical key) still
+    classifies correctly instead of falling to "unknown". ``md5`` is optional
+    so callers that have not resolved a hash keep the exact-name-only behavior.
+    """
+    entry = registry_platform.get(file_name)
+    if entry is not None:
+        return entry
+    if not md5:
+        return None
+    md5_lower = md5.lower()
+    for candidate in registry_platform.values():
+        if candidate.get("md5", "").lower() == md5_lower:
+            return candidate
+    return None
+
+
 def classify_firmware_file(
     reg_entry: dict[str, Any] | None,
     file_name: str,
@@ -179,16 +205,17 @@ def collect_firmware_status(
 ) -> tuple[BiosFileEntry, ...]:
     """Build BiosFileEntry objects for a list of pre-resolved firmware items.
 
-    Each item must have keys: file_name, downloaded, dest.
-    Looks up reg_entry from registry_platform by file_name and calls
-    build_file_entry for each item.
+    Each item must have keys: file_name, downloaded, dest, and may optionally
+    carry md5. Looks up reg_entry from registry_platform by file_name, falling
+    back to an item's md5 (see resolve_registry_entry) when the name does not
+    match, and calls build_file_entry for each item.
     """
     return tuple(
         build_file_entry(
             item["file_name"],
             item["downloaded"],
             item["dest"],
-            registry_platform.get(item["file_name"]),
+            resolve_registry_entry(registry_platform, item["file_name"], item.get("md5", "")),
             active_core_so,
         )
         for item in items

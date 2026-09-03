@@ -1287,6 +1287,101 @@ class TestBiosRegistry:
         assert result["hash_valid"] is True
 
 
+class TestXboxRegistryMerge:
+    """xbox_bios_registry.json (plugin-owned, non-vendored) merges into the same registry."""
+
+    def test_load_bios_registry_merges_supplement(self, fw, tmp_path):
+        """A second, plugin-owned registry file folds its platforms into the primary one."""
+        import json
+
+        defaults_dir = tmp_path / "defaults"
+        defaults_dir.mkdir()
+        (defaults_dir / "bios_registry.json").write_text(
+            json.dumps({"platforms": {"psx": {"bios.bin": {"required": True, "md5": "aaa"}}}})
+        )
+        (defaults_dir / "xbox_bios_registry.json").write_text(
+            json.dumps({"platforms": {"xbox": {"mcpx_1.0.bin": {"required": True, "md5": "bbb"}}}})
+        )
+
+        fw._plugin_dir = str(tmp_path)
+        fw.load_bios_registry()
+
+        assert "psx" in fw._bios_registry["platforms"]
+        assert "xbox" in fw._bios_registry["platforms"]
+        assert fw._bios_files_index["bios.bin"]["platform"] == "psx"
+        assert fw._bios_files_index["mcpx_1.0.bin"]["platform"] == "xbox"
+
+    def test_missing_supplement_is_not_an_error(self, fw, tmp_path):
+        """No xbox_bios_registry.json present degrades quietly — only the primary registry warns."""
+        import json
+
+        defaults_dir = tmp_path / "defaults"
+        defaults_dir.mkdir()
+        (defaults_dir / "bios_registry.json").write_text(json.dumps({"platforms": {"psx": {}}}))
+
+        fw._plugin_dir = str(tmp_path)
+        fw.load_bios_registry()  # must not raise
+
+        assert "psx" in fw._bios_registry["platforms"]
+        assert "xbox" not in fw._bios_registry["platforms"]
+
+    def test_real_xbox_registry_loads_and_builds_hash_index(self, fw):
+        """The real defaults/xbox_bios_registry.json is present, merged, and hash-indexed."""
+        assert "xbox" in fw._bios_registry["platforms"]
+        assert "mcpx_1.0.bin" in fw._bios_files_index
+        assert fw._bios_files_index["mcpx_1.0.bin"]["required"] is True
+        assert fw._bios_files_by_hash["d49c52a4102f6df7bcf8d0617ac475ed"]["platform"] == "xbox"
+
+
+class TestHashFallbackIdentification:
+    """A server file whose name is not a registry key still resolves by content hash."""
+
+    def test_enrich_firmware_matches_by_hash_when_name_differs(self, fw):
+        """Renamed upload (registry name != server name) still classifies via md5."""
+        fw._bios_files_index = {
+            "mcpx_1.0.bin": {
+                "description": "MCPX Boot ROM 1.0",
+                "required": True,
+                "md5": "d49c52a4102f6df7bcf8d0617ac475ed",
+                "platform": "xbox",
+            },
+        }
+        fw._bios_files_by_hash = {"d49c52a4102f6df7bcf8d0617ac475ed": fw._bios_files_index["mcpx_1.0.bin"]}
+        file_dict = {"file_name": "my_renamed_mcpx.bin", "md5": "D49C52A4102F6DF7BCF8D0617AC475ED"}
+
+        result = fw._enrich_firmware_file(file_dict)
+
+        assert result["classification"] == "required"
+        assert result["description"] == "MCPX Boot ROM 1.0"
+
+    def test_enrich_firmware_no_hash_match_stays_unknown(self, fw):
+        """A name miss with no matching hash still falls to unknown — no false positive."""
+        fw._bios_files_index = {}
+        fw._bios_files_by_hash = {"d49c52a4102f6df7bcf8d0617ac475ed": {"platform": "xbox"}}
+        file_dict = {"file_name": "something_else.bin", "md5": "0000000000000000000000000000000"}
+
+        result = fw._enrich_firmware_file(file_dict)
+
+        assert result["classification"] == "unknown"
+
+    def test_firmware_dest_path_uses_canonical_name_on_hash_match(self, fw, tmp_path):
+        """A hash-matched file installs under the registry's canonical firmware_path, not its upload name."""
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(tmp_path))
+        fw._bios_files_index = {
+            "mcpx_1.0.bin": {
+                "firmware_path": "mcpx_1.0.bin",
+                "md5": "d49c52a4102f6df7bcf8d0617ac475ed",
+                "platform": "xbox",
+            },
+        }
+        fw._bios_files_by_hash = {"d49c52a4102f6df7bcf8d0617ac475ed": fw._bios_files_index["mcpx_1.0.bin"]}
+        firmware = {"file_name": "my_renamed_mcpx.bin", "md5_hash": "d49c52a4102f6df7bcf8d0617ac475ed"}
+
+        dest = fw._firmware_dest_path(firmware)
+
+        assert dest == os.path.join(str(tmp_path), "mcpx_1.0.bin")
+
+
 class TestCheckPlatformBiosRequired:
     @pytest.mark.asyncio
     async def test_required_counts(self, fw, tmp_path):
