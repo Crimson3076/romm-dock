@@ -380,6 +380,28 @@ than by name, so until the bytes are read it names no file at all. This is why t
 time: reading your whole BIOS folder every time a game page opened would be far more work than reading the handful of
 files one system's emulators care about.
 
+## Xbox (xemu)
+
+Xbox is a standalone emulator (xemu), not a RetroArch core, and its firmware — the MCPX boot ROM, the flash BIOS image,
+and the hard disk image xemu boots from — is answered through the same packaged rule card and live reading every other
+standalone emulator uses; nothing about it is special-cased in the plugin.
+
+### The Xbox hard disk image
+
+xemu emulates a real Xbox's internal hard drive: every game installs to, and saves onto, **one shared disk image**
+(`xbox_hdd.qcow2`), not a per-game save file. The plugin treats this file as firmware like any other — it can detect and
+download it — but with two things worth understanding:
+
+- **The plugin never overwrites an existing disk image.** Both **Download All** and **Download Required** skip a file
+  that's already present at its destination, so an existing disk image with your save data is never at risk from a bulk
+  BIOS download. Downloading it only ever bootstraps a fresh copy when none exists yet.
+- **Syncing the disk image's contents with RomM is not yet supported.** Because it's one file shared across your whole
+  Xbox library rather than a per-game save, it doesn't fit the plugin's existing per-game save-sync engine — see
+  [Known Limitations](../architecture/save-file-sync-architecture.md#standalone-emulators-not-supported) in the save-sync
+  architecture doc. Back up `xbox_hdd.qcow2` yourself for now if it holds progress you care about.
+
+## Per-Platform BIOS Filtering
+
 **Not every standalone emulator can be answered for.** The packaged cards cover five of them today; the rest are
 installed emulators the plugin has no source for, and it says so rather than guessing — a system launching one of those
 reads **unknown** (below), never "not needed".
