@@ -71,6 +71,44 @@ yet; start it from RPCS3 in the meantime.
 
 To find the files, open the game's detail page — the **ROM File** section shows the filename the download produced.
 
+### Xbox game launches via ES-DE but not from the Steam shortcut (EmuDeck)
+
+**Symptom**: An Xbox game shows BIOS as ready and launches fine if you open it directly through ES-DE, but pressing
+**Play** on its Steam shortcut does nothing (a brief flash, then back to Steam) — on both Gaming Mode and Desktop Mode.
+The plugin's log (`~/homebrew/logs/romm-dock/`) shows a line like:
+
+```text
+emudeck_launcher_backend: %EMULATOR_XEMU% did not resolve for '%EMULATOR_XEMU% -dvd_path %ROM%'
+```
+
+**Why**: This is an EmuDeck configuration gap, not a plugin bug. xemu's launch path is resolved through EmuDeck's own
+`~/ES-DE/custom_systems/es_find_rules.xml` — the same file every other standalone emulator (Cemu, Dolphin, ShadPS4, …)
+has a `<emulator name="...">` entry in. On some EmuDeck installs the `XEMU` entry never gets written into this file, so
+the plugin can't verify xemu actually exists on disk and — correctly — refuses to bake a launch command it can't
+confirm will work, rather than baking something broken.
+
+**Fix**: Add the missing entry yourself. First find your real xemu launcher script (the filename varies — it may be
+`xemu.sh` or `xemu-emu.sh`):
+
+```bash
+find ~/Emulation/tools/launchers -iname "*xemu*"
+```
+
+Then open `~/ES-DE/custom_systems/es_find_rules.xml` in a text editor and add a block matching the style of its
+existing `<emulator>` entries, using the path you just found:
+
+```xml
+    <emulator name="XEMU">
+        <rule type="staticpath">
+            <entry>/home/YOUR_USERNAME/Emulation/tools/launchers/xemu-emu.sh</entry>
+        </rule>
+    </emulator>
+```
+
+Place it anywhere among the other `<emulator>` blocks, before the closing `</ruleList>` tag, and save. No plugin or
+Steam restart is required — the file is re-read (mtime-cached) the next time the launch command is resolved, which
+happens automatically on your next **Play** press.
+
 ### Controller doesn't work in RetroArch menus
 
 **Symptom**: The game plays fine, but the RetroArch Quick Menu (L3+R3) can't be navigated with the controller — only
