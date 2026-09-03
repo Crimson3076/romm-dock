@@ -24,24 +24,21 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      # Mint a GitHub App installation token so release-please's PR/branch
-      # pushes are authored by the App, not GITHUB_TOKEN. Pushes made with
-      # GITHUB_TOKEN do not trigger workflows (anti-recursion), which left
-      # the release PR's required status checks stuck "Expected" and
-      # unmergeable. An App token makes those checks run automatically.
-      # Scope it to exactly what release-please needs (contents + PRs).
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-
+      # release-please's PR/branch pushes need an identity other than the
+      # default GITHUB_TOKEN: GitHub Actions refuses to trigger further
+      # workflow runs from a GITHUB_TOKEN-authored push (anti-recursion),
+      # which leaves the release PR's required status checks stuck
+      # "Expected" and unmergeable. A GitHub App installation token is one
+      # fix (tried first here, reverted — see git history — because a
+      # single-owner repo has no one else to scope App permissions away
+      # from, so it bought nothing over a PAT for twice the setup: create
+      # an App, install it, mint and rotate a private key). A classic PAT
+      # from the repo owner's own account is the other, simpler fix: one
+      # token, one secret, same anti-recursion bypass.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
