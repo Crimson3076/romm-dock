@@ -115,6 +115,7 @@ from services.protocols.paths import (
     SystemM3uSupportFn,
     SystemResolver,
     SystemSupportedExtensionsFn,
+    XemuConfigReader,
 )
 from services.protocols.persistence import (
     PluginMetadataReader,
@@ -269,4 +270,5 @@ __all__ = [
     "UuidGen",
     "VersionSwitcherFn",
     "WindowsResolver",
+    "XemuConfigReader",
 ]

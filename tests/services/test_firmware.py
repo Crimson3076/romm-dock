@@ -20,6 +20,7 @@ from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_retrodeck_paths import FakeRetroDeckPaths
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.fake_windows_resolver import FakeWindowsResolver
+from fakes.fake_xemu_config import FakeXemuConfigReader
 from fakes.library_peers import FakeArtworkManager
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
@@ -91,6 +92,7 @@ def _make_firmware_service(
     active_backend_id=None,
     resolve_system: FakeSystemResolver | None = None,
     platform_core_reader: FakePlatformCoreReader | None = None,
+    xemu_config: FakeXemuConfigReader | None = None,
     logger=None,
     load_registry: bool = True,
 ) -> FirmwareService:
@@ -118,6 +120,7 @@ def _make_firmware_service(
             resolve_system=resolve_system if resolve_system is not None else FakeSystemResolver(),
             platform_core_reader=platform_core_reader if platform_core_reader is not None else FakePlatformCoreReader(),
             uow_factory=uow_factory if uow_factory is not None else FakeUnitOfWorkFactory(),
+            xemu_config=xemu_config if xemu_config is not None else FakeXemuConfigReader(),
         ),
     )
     if load_registry:
@@ -1380,6 +1383,70 @@ class TestHashFallbackIdentification:
         dest = fw._firmware_dest_path(firmware)
 
         assert dest == os.path.join(str(tmp_path), "mcpx_1.0.bin")
+
+
+class TestCheckXemuAlignment:
+    """Tests for FirmwareService.check_xemu_alignment."""
+
+    async def test_not_found_when_no_xemu_toml_exists(self, fw):
+        fw._xemu_config = FakeXemuConfigReader(sys_files=None, config_path=None)
+        result = await fw.check_xemu_alignment()
+        assert result == {"status": "not_found", "config_path": None, "files": {}}
+
+    async def test_unreadable_when_config_found_but_unparseable(self, fw):
+        fw._xemu_config = FakeXemuConfigReader(sys_files=None, config_path="/home/deck/xemu.toml")
+        result = await fw.check_xemu_alignment()
+        assert result["status"] == "unreadable"
+        assert result["config_path"] == "/home/deck/xemu.toml"
+        assert result["files"] == {}
+
+    async def test_ok_when_both_firmware_keys_match_bios_dir(self, fw, tmp_path):
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(tmp_path))
+        fw._xemu_config = FakeXemuConfigReader(
+            sys_files={
+                "bootrom_path": os.path.join(str(tmp_path), "mcpx_1.0.bin"),
+                "flashrom_path": os.path.join(str(tmp_path), "Complex_4627v1.03.bin"),
+            },
+            config_path="/home/deck/xemu.toml",
+        )
+        result = await fw.check_xemu_alignment()
+        assert result["status"] == "ok"
+
+    async def test_misaligned_when_flashrom_points_elsewhere(self, fw, tmp_path):
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(tmp_path))
+        fw._xemu_config = FakeXemuConfigReader(
+            sys_files={
+                "bootrom_path": os.path.join(str(tmp_path), "mcpx_1.0.bin"),
+                "flashrom_path": "/some/other/place/Complex_4627v1.03.bin",
+            },
+            config_path="/home/deck/xemu.toml",
+        )
+        result = await fw.check_xemu_alignment()
+        assert result["status"] == "misaligned"
+
+    async def test_misaligned_when_a_firmware_key_is_absent(self, fw, tmp_path):
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(tmp_path))
+        fw._xemu_config = FakeXemuConfigReader(
+            sys_files={"bootrom_path": os.path.join(str(tmp_path), "mcpx_1.0.bin")},
+            config_path="/home/deck/xemu.toml",
+        )
+        result = await fw.check_xemu_alignment()
+        assert result["status"] == "misaligned"
+
+    async def test_hdd_path_mismatch_alone_does_not_cause_misaligned(self, fw, tmp_path):
+        """The disk image's location is informational only — never gates status."""
+        fw._launcher_paths = FakeRetroDeckPaths(bios=str(tmp_path))
+        fw._xemu_config = FakeXemuConfigReader(
+            sys_files={
+                "bootrom_path": os.path.join(str(tmp_path), "mcpx_1.0.bin"),
+                "flashrom_path": os.path.join(str(tmp_path), "Complex_4627v1.03.bin"),
+                "hdd_path": "/some/other/storage/xbox_hdd.qcow2",
+            },
+            config_path="/home/deck/xemu.toml",
+        )
+        result = await fw.check_xemu_alignment()
+        assert result["status"] == "ok"
+        assert result["files"]["hdd_path"]["in_plugin_bios_dir"] is False
 
 
 class TestCheckPlatformBiosRequired:

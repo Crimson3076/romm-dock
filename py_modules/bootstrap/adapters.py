@@ -59,6 +59,7 @@ from adapters.steam_recovery import SteamRecoveryAdapter
 from adapters.steamgriddb import SteamGridDbAdapter
 from adapters.system_clock import SystemClock
 from adapters.system_uuid_gen import SystemUuidGen
+from adapters.xemu_config import XemuConfigAdapter
 from domain.state_migrations import fold_legacy_save_sync_settings, migrate_settings
 
 if TYPE_CHECKING:
@@ -107,6 +108,7 @@ if TYPE_CHECKING:
         SystemSupportedExtensionsFn,
         UnitOfWorkFactory,
         UuidGen,
+        XemuConfigReader,
     )
 
 # Filename of the SQLite database inside the plugin runtime dir. Created by the
@@ -172,6 +174,7 @@ class CallbackBundle:
     """Provider callables and persister Protocols injected into services."""
 
     retrodeck_paths: RetroDeckPaths
+    xemu_config: XemuConfigReader
     get_save_layout: RetroArchSaveLayoutProvider
     get_savestate_layout: RetroArchSavestateLayoutProvider
     get_core_name: CoreNameProviderFn
@@ -294,6 +297,7 @@ def bootstrap(
     uow_factory: UnitOfWorkFactory = functools.partial(SqliteUnitOfWork, db_path)
 
     retrodeck_paths = RetroDeckPathsAdapter(user_home=user_home, logger=logger)
+    xemu_config = XemuConfigAdapter(user_home=user_home, logger=logger)
     retroarch_config = RetroArchConfigAdapter(user_home=user_home, logger=logger)
     retroarch_core_info = RetroArchCoreInfoAdapter(user_home=user_home, logger=logger)
     core_resolver = CoreResolver(
@@ -411,6 +415,7 @@ def bootstrap(
     )
     callbacks = CallbackBundle(
         retrodeck_paths=retrodeck_paths,
+        xemu_config=xemu_config,
         get_save_layout=retroarch_config.get_save_layout,
         get_savestate_layout=retroarch_config.get_savestate_layout,
         get_core_name=retroarch_core_info.get_corename,

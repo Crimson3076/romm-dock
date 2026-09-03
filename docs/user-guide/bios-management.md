@@ -135,9 +135,12 @@ recognized variant shows as present-and-known the moment you have one, without i
 in its description — use MCPX 1.0 instead.
 
 **Firmware files install flat into your BIOS directory** (e.g. `~/retrodeck/bios/mcpx_1.0.bin`), matching how EmuDeck's
-own xemu setup expects them. If xemu isn't picking up a file the plugin shows as downloaded, check xemu's own
-configuration (`xemu.toml`, under `[sys.files]`) points at the same location — the plugin places the files but does not
-edit xemu's configuration for you.
+own xemu setup expects them. The System page automatically checks whether xemu's own configuration (`xemu.toml`, under
+`[sys.files]`) actually points at that same directory for the boot ROM and flash BIOS, and shows a warning on the Xbox
+section if it doesn't — the plugin places the files but does not edit xemu's configuration for you, so a warning means
+you'll need to update `xemu.toml` yourself (or launch xemu once, if it hasn't created a configuration yet — that case
+stays quiet rather than warning). The disk image's configured location isn't checked the same way, since where EmuDeck
+places it isn't confirmed the way the BIOS directory is.
 
 ### The Xbox hard disk image
 

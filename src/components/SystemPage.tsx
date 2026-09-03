@@ -16,6 +16,7 @@ import {
   deletePlatformBios,
   setSystemCore,
   debugLog,
+  checkXemuConfigAlignment,
 } from "../api/backend";
 import type { FirmwarePlatformExt } from "../types";
 import { scrollToTop } from "../utils/scrollHelpers";
@@ -23,6 +24,7 @@ import { biosColorForLevel } from "../utils/biosColor";
 import { detach } from "../utils/detach";
 import { getEventTarget } from "../utils/events";
 import { buildEmulatorMenu } from "../utils/emulatorMenu";
+import { xemuAlignmentBanner, type XemuAlignmentBanner } from "../utils/xemuAlignment";
 import {
   capturePruneLeaseAdmission,
   mountPruneLeaseOwner,
@@ -127,6 +129,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [biosStatus, setBiosStatus] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [xemuBanner, setXemuBanner] = useState<XemuAlignmentBanner | null>(null);
 
   async function refreshSystem() {
     setBiosLoading(true);
@@ -150,6 +153,12 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
     mountPruneLeaseOwner(leaseOwner);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial async data loads on mount are the standard React pattern; the rule is overzealous here
     detach(refreshSystem());
+    // xemu.toml alignment for the Xbox section's warning — "ok"/"not_found"
+    // stay quiet (banner cleared to null); harmless to fetch unconditionally
+    // since a non-Xbox setup has no xemu.toml and resolves to "not_found".
+    checkXemuConfigAlignment()
+      .then((r) => setXemuBanner(xemuAlignmentBanner(r.status, r.config_path)))
+      .catch((e) => detach(debugLog(`Failed to check xemu config alignment: ${e}`)));
     return () => {
       detach(releasePruneLeasesByOwner(leaseOwner));
     };
@@ -343,6 +352,15 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
         {platform.active_core_label && !hasMultipleCores && (
           <PanelSectionRow>
             <Field label="Emulator Core" description={platform.active_core_label} bottomSeparator="none" />
+          </PanelSectionRow>
+        )}
+        {platform.platform_slug === "xbox" && xemuBanner && (
+          <PanelSectionRow>
+            <Field
+              label={<span style={{ color: "#ffaa00" }}>{xemuBanner.title}</span>}
+              description={xemuBanner.message}
+              bottomSeparator="none"
+            />
           </PanelSectionRow>
         )}
         <PanelSectionRow>

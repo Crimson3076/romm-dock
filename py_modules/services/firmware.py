@@ -21,6 +21,7 @@ from domain.bios import collect_firmware_status, compute_bios_level, format_bios
 from domain.bios_file import BiosFile
 from domain.emulator_commands import label_to_invocation, options_to_payload, select_default_option
 from domain.firmware_cache import FirmwareCacheEntry
+from domain.xemu_config import compute_xemu_alignment
 from lib.errors import error_response
 from lib.list_result import ErrorCode
 from lib.path_safety import PathTraversalError, safe_join
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
         RommFirmwareApi,
         SystemResolver,
         UnitOfWorkFactory,
+        XemuConfigReader,
     )
 
 _FIRMWARE_CACHE_TTL = 3600  # 1 hour
@@ -71,6 +73,7 @@ class FirmwareServiceConfig:
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
     uow_factory: UnitOfWorkFactory
+    xemu_config: XemuConfigReader
 
 
 class FirmwareService:
@@ -93,6 +96,7 @@ class FirmwareService:
         self._resolve_system = config.resolve_system
         self._platform_core_reader = config.platform_core_reader
         self._uow_factory = config.uow_factory
+        self._xemu_config = config.xemu_config
         self._bios_registry: dict[str, Any] = {}
         self._bios_files_index: dict[str, dict[str, Any]] | None = None
         self._bios_files_by_hash: dict[str, dict[str, Any]] = {}
@@ -142,6 +146,12 @@ class FirmwareService:
         root_path = os.path.join(self._plugin_dir, filename)
         defaults_path = os.path.join(self._plugin_dir, "defaults", filename)
         registry_path = root_path if self._firmware_file_store.exists(root_path) else defaults_path
+        # load_bios_registry() always sets this to {} immediately before calling
+        # here; the guard is for the type checker, which cannot narrow a field
+        # set by a different method than the one reading it.
+        if self._bios_files_index is None:
+            self._bios_files_index = {}
+        index = self._bios_files_index
         try:
             data = self._firmware_file_store.read_bytes(registry_path)
             registry = json.loads(data)
@@ -151,7 +161,7 @@ class FirmwareService:
                 self._bios_registry = registry
             for platform, files in registry.get("platforms", {}).items():
                 for name, entry in files.items():
-                    self._bios_files_index[name] = {**entry, "platform": platform}
+                    index[name] = {**entry, "platform": platform}
         except FileNotFoundError:
             if not merge:
                 self._logger.warning(f"{filename} not found, registry enrichment disabled")
@@ -949,3 +959,32 @@ class FirmwareService:
                 "message": f"Deleted {deleted} file(s), {len(errors)} error(s)",
             }
         return {"success": True, "deleted_count": deleted, "message": f"Deleted {deleted} BIOS file(s)"}
+
+    async def check_xemu_alignment(self) -> dict[str, Any]:
+        """Check whether xemu's own configuration points at this plugin's BIOS directory.
+
+        Discriminated-status union (Callable response shapes carve-out):
+        ``status`` is ``"ok"`` when xemu.toml's ``bootrom_path`` and
+        ``flashrom_path`` both resolve to this plugin's BIOS directory,
+        ``"misaligned"`` when xemu.toml was read but either does not,
+        ``"not_found"`` when no xemu.toml exists at any known location (xemu
+        likely hasn't been launched yet), or ``"unreadable"`` when one was
+        found but could not be read or parsed. ``hdd_path`` is reported in
+        ``files`` for information only and never drives ``status`` — where
+        EmuDeck places the Xbox disk image is not confirmed the way the BIOS
+        directory is, so a mismatch there is not treated as an error (see
+        docs/user-guide/bios-management.md#xbox-xemu).
+        """
+        sys_files, config_path = await self._loop.run_in_executor(None, self._xemu_config.get_sys_files)
+        if config_path is None:
+            return {"status": "not_found", "config_path": None, "files": {}}
+        if sys_files is None:
+            return {"status": "unreadable", "config_path": config_path, "files": {}}
+
+        files = compute_xemu_alignment(sys_files, self._launcher_paths.bios_path())
+        aligned = files["bootrom_path"]["in_plugin_bios_dir"] and files["flashrom_path"]["in_plugin_bios_dir"]
+        return {
+            "status": "ok" if aligned else "misaligned",
+            "config_path": config_path,
+            "files": files,
+        }

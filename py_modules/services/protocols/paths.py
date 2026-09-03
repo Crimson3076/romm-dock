@@ -200,6 +200,17 @@ class RetroArchConfigReader(Protocol):
     def get_savestate_layout(self) -> SaveLayout: ...
 
 
+class XemuConfigReader(Protocol):
+    """Object seam for xemu.toml reads.
+
+    Held by ``FirmwareService`` to check whether xemu's own configured
+    ``[sys.files]`` paths point at this plugin's BIOS directory. Implemented
+    by :class:`adapters.xemu_config.XemuConfigAdapter`.
+    """
+
+    def get_sys_files(self) -> tuple[dict[str, str] | None, str | None]: ...
+
+
 class RetroArchCoreInfoReader(Protocol):
     """Object seam for RetroArch per-core ``.info`` reads.
 
