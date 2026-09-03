@@ -73,7 +73,6 @@ class TestClassifyCommand:
             ("PICO-8 (Standalone)", PICO8_STANDALONE, "bakeable", None, "standalone", None),
             ("RPCS3 Shortcut (Standalone)", PS3_RPCS3_SHORTCUT, "unbakeable", "shortcut_script", "standalone", None),
             ("RPCS3 Game Serial (Standalone)", PS3_RPCS3_GAME_SERIAL, "needs_setup", "inject", "standalone", None),
-            ("xemu (Standalone)", XEMU_INJECT_WITH_ROM, "needs_setup", "inject", "standalone", None),
             ("Vita3K (Standalone)", VITA3K_INJECT_NO_ROM, "needs_setup", "inject", "standalone", None),
             ("MAME (Standalone)", ARCADE_MAME_STANDALONE, "unbakeable", "no_rom_target", "standalone", None),
             ("MAME - Current", APPLE2_MAME_LIBRETRO_QUOTED, "unbakeable", "no_rom_target", "standalone", None),
@@ -109,6 +108,47 @@ class TestClassifyCommand:
         option = classify_command("Dolphin (Standalone)", GC_DOLPHIN_STANDALONE)
         assert option.status == "bakeable"
         assert option.kind == "standalone"
+
+
+class TestXemuInjectUnwrap:
+    """xemu's %INJECT%=<sidecar> prefix is a real invocation underneath, unlike other %INJECT% forms."""
+
+    def test_xemu_inject_is_bakeable(self):
+        option = classify_command("xemu (Standalone)", XEMU_INJECT_WITH_ROM)
+        assert option.status == "bakeable"
+        assert option.reason is None
+        assert option.kind == "standalone"
+        assert option.core_so is None
+
+    def test_xemu_command_has_inject_prefix_stripped(self):
+        option = classify_command("xemu (Standalone)", XEMU_INJECT_WITH_ROM)
+        assert option.command == "%EMULATOR_XEMU% -dvd_path %ROM%"
+        assert "%INJECT%" not in option.command
+
+    def test_xemu_option_renders_an_invocation_with_the_stripped_command(self):
+        option = classify_command("xemu (Standalone)", XEMU_INJECT_WITH_ROM)
+        assert option_to_invocation(option) == EmulatorInvocation.standalone(
+            "%EMULATOR_XEMU% -dvd_path %ROM%", "xemu (Standalone)"
+        )
+
+    def test_vita3k_suffix_form_is_unaffected(self):
+        """Vita3K's %INJECT% is a suffix, not xemu's prefix shape — stays needs_setup."""
+        option = classify_command("Vita3K", VITA3K_INJECT_NO_ROM)
+        assert option.status == "needs_setup"
+        assert option.reason == "inject"
+        assert option.command == VITA3K_INJECT_NO_ROM.strip()
+
+    def test_inject_prefix_without_xemu_emulator_token_is_unaffected(self):
+        """The prefix shape alone isn't enough — must specifically be %EMULATOR_XEMU%."""
+        option = classify_command("Other", "%INJECT%=%BASENAME%.sidecar %EMULATOR_OTHER% %ROM%")
+        assert option.status == "needs_setup"
+        assert option.reason == "inject"
+
+    def test_malformed_xemu_inject_falls_back_to_needs_setup(self):
+        """A prefix that doesn't parse as <sidecar-token> <rest> stays needs_setup."""
+        option = classify_command("xemu (Standalone)", "%INJECT%=%EMULATOR_XEMU% -dvd_path %ROM%")
+        assert option.status == "needs_setup"
+        assert option.reason == "inject"
 
 
 class TestDowngradeIfNotInstalled:

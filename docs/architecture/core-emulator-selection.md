@@ -172,7 +172,13 @@ default — no plugin curation, no per-system table.
 A command is `bakeable` only when it is a real emulator invocation the plugin can carry verbatim into a Steam shortcut's
 `-e`. `classify_command` applies these rules in order, first match wins:
 
-1. contains `%INJECT%` → `needs_setup` (`"inject"`) — needs ES-DE to generate a sidecar first (Vita3K, Xemu);
+1. contains `%INJECT%` → `needs_setup` (`"inject"`) — needs ES-DE to generate a sidecar first (Vita3K), **except** xemu's
+   own `%INJECT%=<sidecar> %EMULATOR_XEMU% …` prefix form, which is unwrapped to the real invocation underneath and
+   classified normally — confirmed by running that invocation directly with no sidecar present: xemu launched the game
+   normally, so the sidecar is an ES-DE-side scraper artifact xemu never reads at runtime. The unwrap is anchored on
+   both the prefix shape and `%EMULATOR_XEMU%` specifically; Vita3K's form is a suffix (`… %INJECT%=…`) and never
+   matches, and no other `%INJECT%` emulator has been verified the same way, so this is not a general "%INJECT% is
+   always safe to strip" rule (`domain/emulator_commands.py`'s `_strip_xemu_inject_prefix`);
 2. contains `%ENABLESHORTCUTS%` or `%EMULATOR_OS-SHELL%` → `unbakeable` (`"shortcut_script"`);
 3. does not end in `%ROM%` → `unbakeable` (`"no_rom_target"`) — trailing args after `%ROM%` break the bake;
 4. contains `"` or `\;` → `unbakeable` (`"quoting"`);
