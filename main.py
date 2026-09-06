@@ -477,6 +477,9 @@ class Plugin:
     async def delete_platform_bios(self, platform_slug):
         return await self._firmware_service.delete_platform_bios(platform_slug)
 
+    async def check_xemu_config_alignment(self):
+        return await self._firmware_service.check_xemu_alignment()
+
     # ── Sync delegation to LibraryService ─────────────────────
 
     async def get_platforms(self):

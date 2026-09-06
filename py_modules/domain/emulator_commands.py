@@ -29,6 +29,17 @@ _LIBRETRO_RE = re.compile(r"^%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/([\w-]+_li
 
 _PLACEHOLDER_RE = re.compile(r"%[^%]+%")
 
+# xemu's ES-DE command is `%INJECT%=%BASENAME%.esprefix %EMULATOR_XEMU% -dvd_path
+# %ROM%` — an %INJECT% *prefix* naming an ES-DE-generated per-game sidecar,
+# followed by the real invocation. Confirmed by running the captured group
+# directly with no sidecar present: xemu launched the game normally, so the
+# sidecar is an ES-DE-side scraper artifact, not something xemu reads at
+# runtime. Anchored on the prefix shape AND %EMULATOR_XEMU% specifically —
+# Vita3K's %INJECT% form is a suffix (`%EMULATOR_VITA3K% -r %INJECT%=...`) and
+# never matches this, so it keeps its needs_setup classification; that
+# assumption has not been verified the way xemu's has.
+_XEMU_INJECT_RE = re.compile(r"^%INJECT%=\S+\s+(%EMULATOR_XEMU%.*)$")
+
 # Placeholders ES-DE's ``run_game.sh`` resolves that a baked ``-e`` override can
 # safely carry verbatim. ``%EMULATOR_*%`` (any emulator binary token, e.g.
 # ``%EMULATOR_RPCS3%``) is accepted by prefix, not listed here. ``%STARTDIR%``
@@ -57,19 +68,24 @@ class EmulatorOption:
     ``label`` is ES-DE's display label — the pick key the per-game/per-platform
     override stores. ``kind`` is ``"libretro"`` (a RetroArch core; ``core_so``
     is its bare name) or ``"standalone"`` (``core_so`` is ``None``).
-    ``command`` is the raw ES-DE command text, retained so a standalone option
-    can be rendered into an ``EmulatorInvocation`` (a libretro option rebuilds
-    from ``core_so``); it is not exposed on the frontend payload.
+    ``command`` is the ES-DE command text — for xemu's ``%INJECT%`` form, the
+    real invocation with the sidecar prefix already stripped (see
+    ``_strip_xemu_inject_prefix``), else the raw text — retained so a
+    standalone option can be rendered into an ``EmulatorInvocation`` (a
+    libretro option rebuilds from ``core_so``); it is not exposed on the
+    frontend payload.
 
     ``status`` is the bake verdict:
 
     - ``"bakeable"`` — a real emulator invocation ending in ``%ROM%`` the plugin
-      can bake into a shortcut ``-e`` override (``reason`` is ``None``).
+      can bake into a shortcut ``-e`` override (``reason`` is ``None``). Also
+      reached by xemu's ``%INJECT%`` form once its sidecar prefix is stripped.
     - ``"needs_setup"`` — a command that is well-formed but not yet launchable
-      from Steam as-is: a ``%INJECT%`` form that needs ES-DE to generate a
-      sidecar first (reason ``"inject"``), or a standalone emulator that is not
-      installed in RetroDECK (reason ``"not_installed"``, applied post-hoc by
-      :func:`downgrade_if_not_installed` from the adapter's on-disk probe).
+      from Steam as-is: an ``%INJECT%`` form other than xemu's that needs
+      ES-DE to generate a sidecar first (reason ``"inject"``), or a standalone
+      emulator that is not installed in RetroDECK (reason ``"not_installed"``,
+      applied post-hoc by :func:`downgrade_if_not_installed` from the
+      adapter's on-disk probe).
     - ``"unbakeable"`` — cannot be baked; ``reason`` says why.
 
     ``reason`` is ``None`` when bakeable, else one of ``"inject"``,
@@ -91,17 +107,28 @@ def classify_command(label: str, text: str) -> EmulatorOption:
     Applies the bake-verdict rules in order (the first that matches wins) and
     determines the emulator kind, returning a fully-populated
     :class:`EmulatorOption`. Pure — no I/O, deterministic in its inputs.
+
+    xemu's ``%INJECT%=<sidecar>`` prefix is unwrapped first (see
+    ``_XEMU_INJECT_RE``) — the verdict, kind, and ``command`` are then computed
+    from the real invocation underneath it, not the raw text.
     """
-    status, reason = _bake_verdict(text)
-    kind, core_so = _emulator_kind(text)
+    effective = _strip_xemu_inject_prefix(text) or text.strip()
+    status, reason = _bake_verdict(effective)
+    kind, core_so = _emulator_kind(effective)
     return EmulatorOption(
         label=label,
         kind=kind,
         core_so=core_so,
-        command=text.strip(),
+        command=effective,
         status=status,
         reason=reason,
     )
+
+
+def _strip_xemu_inject_prefix(text: str) -> str | None:
+    """Return the real invocation inside xemu's ``%INJECT%`` form, or ``None`` if *text* isn't that shape."""
+    match = _XEMU_INJECT_RE.match(text.strip())
+    return match.group(1) if match else None
 
 
 def downgrade_if_not_installed(option: EmulatorOption, emulator_installed: bool) -> EmulatorOption:

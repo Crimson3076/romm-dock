@@ -180,6 +180,11 @@ describe("SystemPage", () => {
       message: "",
     });
     vi.mocked(backend.setSystemCore).mockResolvedValue({ success: true });
+    vi.mocked(backend.checkXemuConfigAlignment).mockResolvedValue({
+      status: "not_found",
+      config_path: null,
+      files: {},
+    });
     vi.mocked(setLaunchOptionsConfirmed).mockResolvedValue(true);
   });
 
@@ -1920,6 +1925,79 @@ describe("SystemPage", () => {
       await flushAsync();
       // Three platforms → three dividers (System→snes, snes→ps1, ps1→n64); none trails the last.
       expect(container.querySelectorAll('[data-testid="platform-separator"]')).toHaveLength(3);
+    });
+  });
+
+  describe("xemu config alignment banner", () => {
+    it("renders nothing for xbox when status is not_found (default mock)", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [makeBiosPlatform({ platform_slug: "xbox" })],
+      });
+      const { queryByText } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      expect(queryByText("xemu isn't configured to use these files")).toBeNull();
+    });
+
+    it("renders nothing for xbox when status is ok", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [makeBiosPlatform({ platform_slug: "xbox" })],
+      });
+      vi.mocked(backend.checkXemuConfigAlignment).mockResolvedValue({
+        status: "ok",
+        config_path: "/home/deck/.local/share/xemu/xemu/xemu.toml",
+        files: {},
+      });
+      const { queryByText } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      expect(queryByText("xemu isn't configured to use these files")).toBeNull();
+    });
+
+    it("renders the misaligned warning on the xbox platform card", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [makeBiosPlatform({ platform_slug: "xbox" })],
+      });
+      vi.mocked(backend.checkXemuConfigAlignment).mockResolvedValue({
+        status: "misaligned",
+        config_path: "/home/deck/.local/share/xemu/xemu/xemu.toml",
+        files: {},
+      });
+      const { getByText } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      expect(getByText("xemu isn't configured to use these files")).toBeTruthy();
+      expect(getByText(/Checked: \/home\/deck\/\.local\/share\/xemu\/xemu\/xemu\.toml/)).toBeTruthy();
+    });
+
+    it("renders the unreadable warning on the xbox platform card", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [makeBiosPlatform({ platform_slug: "xbox" })],
+      });
+      vi.mocked(backend.checkXemuConfigAlignment).mockResolvedValue({
+        status: "unreadable",
+        config_path: "/home/deck/.local/share/xemu/xemu/xemu.toml",
+        files: {},
+      });
+      const { getByText } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      expect(getByText("xemu configuration unreadable")).toBeTruthy();
+    });
+
+    it("does NOT render the banner on a non-xbox platform even when misaligned", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [makeBiosPlatform({ platform_slug: "snes" })],
+      });
+      vi.mocked(backend.checkXemuConfigAlignment).mockResolvedValue({
+        status: "misaligned",
+        config_path: "/home/deck/.local/share/xemu/xemu/xemu.toml",
+        files: {},
+      });
+      const { queryByText } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      expect(queryByText("xemu isn't configured to use these files")).toBeNull();
     });
   });
 

@@ -33,6 +33,7 @@ from fakes.fake_rom_file_store import FakeRomFileStore
 from fakes.fake_save_file_store import FakeSaveFileStore
 from fakes.fake_sgdb_artwork_cache import FakeSgdbArtworkCache
 from fakes.fake_unit_of_work import FakeUnitOfWorkFactory
+from fakes.fake_xemu_config import FakeXemuConfigReader
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
 
 from adapters.gavel_native import GavelNativeAdapter
@@ -282,6 +283,7 @@ class TestWireServices:
                 bios=str(tmp_path / "retrodeck" / "bios"),
                 home=str(tmp_path / "retrodeck"),
             ),
+            "xemu_config": FakeXemuConfigReader(),
             "get_save_layout": MagicMock(return_value=InSaveDir(sort_by_content=True, sort_by_core=False)),
             "get_savestate_layout": MagicMock(return_value=InSaveDir(sort_by_content=False, sort_by_core=False)),
             "get_core_name": MagicMock(return_value="Snes9x"),
@@ -343,6 +345,7 @@ class TestWireServices:
             ),
             callbacks=CallbackBundle(
                 retrodeck_paths=deps["retrodeck_paths"],
+                xemu_config=deps["xemu_config"],
                 get_save_layout=deps["get_save_layout"],
                 get_savestate_layout=deps["get_savestate_layout"],
                 get_core_name=deps["get_core_name"],

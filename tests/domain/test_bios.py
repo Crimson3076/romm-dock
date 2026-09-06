@@ -14,6 +14,7 @@ from domain.bios import (
     compute_bios_level,
     format_bios_status,
     is_used_by_active_core,
+    resolve_registry_entry,
 )
 
 
@@ -378,6 +379,58 @@ class TestCollectFirmwareStatus:
         result = collect_firmware_status(items, registry_platform, "mgba_libretro")
         assert result[0].required is False
         assert result[0].classification == "optional"
+
+    def test_falls_back_to_hash_when_name_does_not_match(self):
+        """A server file named differently than the registry key still resolves via md5."""
+        registry_platform = {
+            "mcpx_1.0.bin": {
+                "description": "MCPX Boot ROM 1.0",
+                "required": True,
+                "md5": "d49c52a4102f6df7bcf8d0617ac475ed",
+            },
+        }
+        items = [
+            {
+                "file_name": "my_mcpx_dump.bin",
+                "downloaded": True,
+                "dest": "/bios/my_mcpx_dump.bin",
+                "md5": "D49C52A4102F6DF7BCF8D0617AC475ED",
+            }
+        ]
+        result = collect_firmware_status(items, registry_platform, None)
+        assert result[0].classification == "required"
+        assert result[0].description == "MCPX Boot ROM 1.0"
+
+    def test_no_hash_match_falls_to_unknown(self):
+        """A name miss with a non-matching (or absent) hash never false-positives."""
+        registry_platform = {"mcpx_1.0.bin": {"required": True, "md5": "d49c52a4102f6df7bcf8d0617ac475ed"}}
+        items = [{"file_name": "unrelated.bin", "downloaded": False, "dest": "/bios/unrelated.bin", "md5": ""}]
+        result = collect_firmware_status(items, registry_platform, None)
+        assert result[0].classification == "unknown"
+
+
+class TestResolveRegistryEntry:
+    """Tests for resolve_registry_entry — exact-name lookup with a hash fallback."""
+
+    def test_exact_name_match_wins(self):
+        registry_platform = {"bios.bin": {"md5": "aaa"}}
+        assert resolve_registry_entry(registry_platform, "bios.bin", "bbb") == {"md5": "aaa"}
+
+    def test_falls_back_to_hash_on_name_miss(self):
+        registry_platform = {"bios.bin": {"md5": "aaa"}}
+        assert resolve_registry_entry(registry_platform, "renamed.bin", "AAA") == {"md5": "aaa"}
+
+    def test_no_md5_supplied_returns_none_on_name_miss(self):
+        registry_platform = {"bios.bin": {"md5": "aaa"}}
+        assert resolve_registry_entry(registry_platform, "renamed.bin") is None
+
+    def test_hash_miss_returns_none(self):
+        registry_platform = {"bios.bin": {"md5": "aaa"}}
+        assert resolve_registry_entry(registry_platform, "renamed.bin", "zzz") is None
+
+    def test_entry_with_no_md5_field_never_hash_matches(self):
+        registry_platform = {"bios.bin": {}}
+        assert resolve_registry_entry(registry_platform, "renamed.bin", "") is None
 
 
 def _make_bios(**overrides) -> BiosStatus:

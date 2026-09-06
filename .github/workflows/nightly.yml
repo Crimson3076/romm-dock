@@ -1,0 +1,103 @@
+name: Nightly Build
+
+# Publishes a testable, pre-release build of the plugin on every push to
+# `nightly` — the branch this fork develops on ahead of a stable release.
+# Unlike release.yml, this never goes through release-please: there is no
+# version bump, no changelog entry, and no tag on `main`. The `nightly` git
+# tag and GitHub pre-release are recreated on every run (old asset replaced)
+# rather than accumulating one release per push.
+
+on:
+  push:
+    branches: [nightly]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A second push before the first finishes must not race it for the shared
+# `nightly` tag/release — serialize, and there is no reason to keep a
+# superseded build running once a newer one has started.
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download Decky CLI
+        run: |
+          mkdir -p /tmp/decky-cli
+          curl -L -o /tmp/decky-cli/decky "https://github.com/SteamDeckHomebrew/cli/releases/download/0.0.8/decky-linux-x86_64"
+          # Same pinned artifact as release.yml — see that workflow for why.
+          echo "6777e356508c1ce887f8e61b0fa4954bb48b32e6d97341eef68ea4e0d6ead9a0  /tmp/decky-cli/decky" | sha256sum -c -
+          chmod +x /tmp/decky-cli/decky
+          echo "/tmp/decky-cli" >> $GITHUB_PATH
+
+      - name: Package plugin
+        run: |
+          sudo $(which decky) plugin build -o /tmp/output -s directory $GITHUB_WORKSPACE
+          sudo chown -R $(whoami) .
+
+      - name: Smoke-test nightly zip
+        run: |
+          BUILT_ZIP=$(ls /tmp/output/*.zip | head -1)
+          echo "Checking $BUILT_ZIP for required entries..."
+          # Mirrors release.yml's smoke test — see that workflow for why each
+          # entry matters. Kept in sync by hand; if you add an entry there,
+          # add it here too.
+          for required in main.py plugin.json package.json dist/index.js bin/rom-launcher \
+              py_modules/bootstrap/__init__.py py_modules/bootstrap/adapters.py py_modules/bootstrap/services.py \
+              py_modules/db/migrations/001_initial.sql py_modules/db/migrations/002_add_emulator_override.sql \
+              bios_registry.json xbox_bios_registry.json py_modules/native/libgavel-x86_64-linux.so; do
+            if ! unzip -l "$BUILT_ZIP" | grep -qE "/$required\b"; then
+              echo "ERROR: nightly zip is missing $required"
+              unzip -l "$BUILT_ZIP"
+              exit 1
+            fi
+          done
+          LAUNCHER_PERMS=$(unzip -Z "$BUILT_ZIP" | grep -E '/bin/rom-launcher$' | awk '{print $1}')
+          if [[ "$LAUNCHER_PERMS" != *x* ]]; then
+            echo "ERROR: bin/rom-launcher is not executable in the zip (perms: '$LAUNCHER_PERMS')"
+            unzip -Z "$BUILT_ZIP" | grep -E '/bin/rom-launcher$' || true
+            exit 1
+          fi
+          if unzip -l "$BUILT_ZIP" | grep -qE '\.map\b'; then
+            echo "ERROR: nightly zip contains source maps — should have been stripped"
+            exit 1
+          fi
+          echo "Smoke test passed."
+
+      - name: Publish nightly pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUILT_ZIP=$(ls /tmp/output/*.zip | head -1)
+          DEST="$RUNNER_TEMP/romm-dock-nightly.zip"
+          cp "$BUILT_ZIP" "$DEST"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          # Recreate rather than accumulate: delete the previous nightly
+          # release AND its tag (--cleanup-tag), then publish fresh at the
+          # current commit. One rolling "nightly" release, not one per push.
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly "$DEST" \
+            --prerelease \
+            --title "Nightly ($SHORT_SHA)" \
+            --notes "Automated nightly build from commit $GITHUB_SHA on the \`nightly\` branch. Not a stable release — for testing only." \
+            --target "$GITHUB_SHA"
