@@ -155,6 +155,15 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
     setBiosLoading(false);
   }
 
+  async function refreshActiveBackendName() {
+    try {
+      const backends = await getLauncherBackends();
+      setActiveBackendDisplayName(backends.find((b) => b.is_active)?.display_name ?? null);
+    } catch (e) {
+      detach(debugLog(`Failed to fetch launcher backends for picker copy: ${e}`));
+    }
+  }
+
   // Load System data (core + BIOS) on mount — this page IS the System view.
   useEffect(() => {
     mountPruneLeaseOwner(leaseOwner);
@@ -166,11 +175,25 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
     checkXemuConfigAlignment()
       .then((r) => setXemuBanner(xemuAlignmentBanner(r.status, r.config_path)))
       .catch((e) => detach(debugLog(`Failed to check xemu config alignment: ${e}`)));
-    getLauncherBackends()
-      .then((backends) => setActiveBackendDisplayName(backends.find((b) => b.is_active)?.display_name ?? null))
-      .catch((e) => detach(debugLog(`Failed to fetch launcher backends for picker copy: ${e}`)));
+    detach(refreshActiveBackendName());
+
+    // Every per-platform core resolution the backend hands out is already
+    // correctly re-scoped to the new active backend on its very next read —
+    // but this page has no reason to re-fetch on its own after a switch made
+    // elsewhere on this same page (LauncherBackendSection), so without this
+    // its per-platform "Active Core" labels keep showing the old backend's
+    // resolution until the page remounts.
+    const onDataChanged = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.type !== "launcher_backend_changed") return;
+      detach(refreshSystem());
+      detach(refreshActiveBackendName());
+    };
+    globalThis.addEventListener("romm_data_changed", onDataChanged);
+
     return () => {
       detach(releasePruneLeasesByOwner(leaseOwner));
+      globalThis.removeEventListener("romm_data_changed", onDataChanged);
     };
   }, []);
 

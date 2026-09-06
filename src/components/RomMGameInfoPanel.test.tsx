@@ -1581,6 +1581,50 @@ describe("RomMGameInfoPanel", () => {
       expect(container.textContent).toContain("FROM_CORE_CHANGED");
     });
 
+    it("launcher_backend_changed: invalidates cache + re-fetches core info the same way core_changed does", async () => {
+      // A backend switch (EmuDeck -> RetroDECK, say) changes which catalogue
+      // and overrides every platform resolves against on this rom's very
+      // next read — this event exists only to make an already-open panel
+      // re-fetch that, not to carry any payload of its own.
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 60,
+        rom_file: "mario.sfc",
+        save_sync_enabled: true,
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      vi.mocked(cachedStore.invalidateCachedGameDetail).mockClear();
+      vi.mocked(cachedStore.getCachedGameDetail).mockClear();
+      vi.mocked(backend.getPlatformCoreInfo).mockClear();
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 60,
+        rom_file: "mario.sfc",
+        metadata: makeMetadata(),
+        stale_fields: [],
+      });
+      vi.mocked(backend.getPlatformCoreInfo).mockResolvedValue({
+        active_core: "retroarch_core.so",
+        active_core_label: "FROM_BACKEND_SWITCH",
+        platform_core_label: null,
+        has_game_override: false,
+        emulator_data_available: true,
+        emulators: [],
+      });
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", { detail: { type: "launcher_backend_changed", backend_id: "retrodeck" } }),
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(vi.mocked(cachedStore.invalidateCachedGameDetail)).toHaveBeenCalledWith(testAppId);
+      expect(vi.mocked(backend.getPlatformCoreInfo)).toHaveBeenCalledWith(60);
+    });
+
     it("core_changed: a cached detail with no BIOS answer keeps the tab (#1693)", async () => {
       // The firmware cache is invalidated by every BIOS download and delete, and
       // a detail derived while it is cold carries no BIOS answer. Reading that

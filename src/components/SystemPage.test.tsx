@@ -1269,6 +1269,51 @@ describe("SystemPage", () => {
       expect(config.activeBackendDisplayName).toBe("EmuDeck");
     });
 
+    it("re-fetches firmware status and the active backend name on a launcher_backend_changed event", async () => {
+      // Every per-platform core resolution the backend hands out is already
+      // correctly re-scoped to whichever backend is active on its very next
+      // read — this event exists only to make an already-open System page
+      // (which now also hosts the Launcher backend picker itself) re-fetch
+      // that, not to carry any payload beyond which backend it switched to.
+      vi.mocked(backend.getLauncherBackends).mockResolvedValue([
+        { backend_id: "emudeck", display_name: "EmuDeck", is_active: true, installations: [] },
+        { backend_id: "retrodeck", display_name: "RetroDECK", is_active: false, installations: [] },
+      ]);
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({ success: true, platforms: [] });
+      render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      vi.mocked(backend.getFirmwareStatus).mockClear();
+      vi.mocked(backend.getLauncherBackends).mockClear();
+      vi.mocked(backend.getLauncherBackends).mockResolvedValue([
+        { backend_id: "emudeck", display_name: "EmuDeck", is_active: false, installations: [] },
+        { backend_id: "retrodeck", display_name: "RetroDECK", is_active: true, installations: [] },
+      ]);
+
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", { detail: { type: "launcher_backend_changed", backend_id: "retrodeck" } }),
+        );
+        await Promise.resolve();
+      });
+
+      expect(vi.mocked(backend.getFirmwareStatus)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(backend.getLauncherBackends)).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores an unrelated romm_data_changed event type", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({ success: true, platforms: [] });
+      render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      vi.mocked(backend.getFirmwareStatus).mockClear();
+
+      await act(async () => {
+        globalThis.dispatchEvent(new CustomEvent("romm_data_changed", { detail: { type: "bios", platform_slug: "snes" } }));
+        await Promise.resolve();
+      });
+
+      expect(vi.mocked(backend.getFirmwareStatus)).not.toHaveBeenCalled();
+    });
+
     it("calls setSystemCore with empty label when default core is selected and dispatches romm_data_changed", async () => {
       vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
         success: true,

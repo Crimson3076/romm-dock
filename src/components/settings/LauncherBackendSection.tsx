@@ -86,6 +86,15 @@ export const LauncherBackendSection: FC = () => {
           leaseOwner,
           admission,
         );
+        // Every per-game/per-platform resolution the backend hands out is
+        // already correctly re-scoped to the new active backend on its very
+        // next read (ActiveCoreResolver's LateBinding) — but an ALREADY-OPEN
+        // game-detail or System page has no reason to re-fetch on its own, so
+        // without this it keeps showing whatever it last rendered under the
+        // old backend until the user navigates away and back.
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", { detail: { type: "launcher_backend_changed", backend_id: newBackendId } }),
+        );
       } else {
         // set_active_backend leaves the previous backend bound on any failure
         // (validation runs before anything is persisted or re-baked), so

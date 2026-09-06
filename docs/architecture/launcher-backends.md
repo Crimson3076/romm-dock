@@ -188,6 +188,23 @@ unchanged, because it is the same write, just triggered by a different setting. 
 shortcut-migration path**: the fan-out re-bake IS the migration, re-baking every existing shortcut's `launch_options`
 (however it got there) to the newly-selected backend's command.
 
+## Already-open pages must be told to re-fetch
+
+Every per-game/per-platform core resolution (`ActiveCoreResolver`, `CoreService`) is scoped to whichever backend is
+CURRENTLY active and re-reads it live on every call — a backend switch is correct on its very next read with no code
+change needed there. What is NOT automatic is an already-open page's own React state: the game-detail page's Emulator
+Core picker and the System page's per-platform "Active Core" labels are fetched once (on mount, or on their own
+explicit refresh triggers) and hold that in local state, so without an explicit nudge they keep showing whatever they
+last rendered under the OLD backend until the page remounts.
+
+`LauncherBackendSection.applySwitch` (now hosted on the System page, alongside the per-platform picker) dispatches a
+`romm_data_changed` event of type `launcher_backend_changed` once `setLauncherBackend` succeeds — after the ADR-0029
+rebake, never on a failed/reverted switch. Two listeners react to it: `panelEvents.ts`'s `dispatchDataChanged` routes it
+through the same `handleCoreChange` handler `core_changed` already uses (it never reads its payload, only the panel's
+current rom), and `SystemPage.tsx` re-runs its own `refreshSystem()` + active-backend-name fetch. Neither listener
+re-derives anything the backend didn't already resolve correctly — they only make an open page catch up to a switch
+that already happened underneath it.
+
 ## Callables
 
 - **`get_launcher_backends()`** — every registered backend (`backend_id`, `display_name`) with its detected

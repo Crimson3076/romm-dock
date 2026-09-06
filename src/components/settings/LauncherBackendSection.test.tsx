@@ -199,6 +199,44 @@ describe("LauncherBackendSection", () => {
     expect(vi.mocked(setLaunchOptionsConfirmed)).toHaveBeenCalledWith(200, "emudeck-launch b.rom");
   });
 
+  it("dispatches a launcher_backend_changed romm_data_changed event after a successful switch", async () => {
+    vi.mocked(backend.getLauncherBackends).mockResolvedValue(bothDetected);
+    vi.mocked(backend.setLauncherBackend).mockResolvedValue({ success: true });
+    const listener = vi.fn();
+    globalThis.addEventListener("romm_data_changed", listener);
+    render(<LauncherBackendSection />);
+    await waitFor(() => expect(vi.mocked(backend.getLauncherBackends)).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      dropdownFor("Launcher")?.onChange?.({ data: "emudeck", label: "EmuDeck" });
+    });
+
+    await waitFor(() =>
+      expect(listener).toHaveBeenCalledWith(
+        expect.objectContaining({ detail: { type: "launcher_backend_changed", backend_id: "emudeck" } }),
+      ),
+    );
+    globalThis.removeEventListener("romm_data_changed", listener);
+  });
+
+  it("does NOT dispatch launcher_backend_changed when setLauncherBackend fails", async () => {
+    vi.mocked(backend.getLauncherBackends).mockResolvedValue(bothDetected);
+    vi.mocked(backend.setLauncherBackend).mockResolvedValue({ success: false, message: "nope" });
+    const listener = vi.fn();
+    globalThis.addEventListener("romm_data_changed", listener);
+    const { findByTestId } = render(<LauncherBackendSection />);
+    await waitFor(() => expect(vi.mocked(backend.getLauncherBackends)).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      dropdownFor("Launcher")?.onChange?.({ data: "emudeck", label: "EmuDeck" });
+    });
+
+    const field = await findByTestId("field");
+    await waitFor(() => expect(field.textContent).toBe("nope"));
+    expect(listener).not.toHaveBeenCalled();
+    globalThis.removeEventListener("romm_data_changed", listener);
+  });
+
   it("surfaces result.message and does NOT apply the dropdown change when setLauncherBackend fails", async () => {
     vi.mocked(backend.getLauncherBackends).mockResolvedValue(bothDetected);
     vi.mocked(backend.setLauncherBackend).mockResolvedValue({

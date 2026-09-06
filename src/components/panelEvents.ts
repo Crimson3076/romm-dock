@@ -160,7 +160,7 @@ async function handleBiosChange(
 
 async function handleCoreChange(
   ctx: PanelEventContext,
-  _detail: Extract<RommDataChangedDetail, { type: "core_changed" }>,
+  _detail: Extract<RommDataChangedDetail, { type: "core_changed" | "launcher_backend_changed" }>,
 ): Promise<void> {
   // Re-fetch cached game detail to pick up the new core-aware BIOS status.
   invalidateCachedGameDetail(ctx.appId);
@@ -350,6 +350,12 @@ function dispatchDataChanged(ctx: PanelEventContext, detail: RommDataChangedDeta
     case "bios":
       return handleBiosChange(ctx, detail);
     case "core_changed":
+    case "launcher_backend_changed":
+      // Same refresh either way: re-read the core/BIOS picture for the open
+      // ROM. A launcher-backend switch changes which backend's catalogue and
+      // overrides every platform resolves against, so it is as unconditional
+      // here as a per-platform core_changed — handleCoreChange never reads
+      // its detail payload, only ctx's current rom.
       return handleCoreChange(ctx, detail);
     case "metadata":
       return handleMetadataChange(ctx, detail);

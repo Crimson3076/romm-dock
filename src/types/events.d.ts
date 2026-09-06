@@ -17,6 +17,7 @@ export type RommDataChangedDetail =
   | { type: "metadata"; rom_id: number }
   | { type: "bios"; platform_slug: string }
   | { type: "core_changed"; platform_slug: string }
+  | { type: "launcher_backend_changed"; backend_id: string }
   | { type: "cover_refreshed"; rom_id: number }
   | { type: "rom_adopted"; rom_id: number }
   | { type: "version_switched"; app_id: number; rom_id: number }
