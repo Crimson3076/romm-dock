@@ -290,7 +290,7 @@ class TestGetSgdbArtworkBase64:
 
         assert result["base64"] is None
         assert result["no_api_key"] is False
-        # No RomM read and no IGDB cross-ref happened on the passive path.
+        # No RomM read and no IGDB cross-ref happened in this per-asset callable.
         assert not any(name == "get_rom" for name, _a, _k in fake_romm_api.call_log)
         assert not any(p.startswith("/games/igdb/") for p in fake_steamgrid_db_api.requested_paths)
 
@@ -365,7 +365,7 @@ class TestGetSgdbArtworkBase64:
 
 
 class TestGetSgdbResolution:
-    """The picker-driven resolution cascade in ``get_sgdb_resolution``.
+    """The dedicated resolution cascade in ``get_sgdb_resolution``.
 
     Exercises every ``classify_resolution`` branch (RomM is the source of
     truth) plus the unresolved fall-through to IGDB cross-ref and the

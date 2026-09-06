@@ -120,6 +120,7 @@ describe("play row save-sync fan-out (#1758)", () => {
     vi.mocked(registerConnectionHeartbeat).mockReturnValue(() => {});
     vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(cachedDetail);
     vi.mocked(backend.testConnection).mockResolvedValue({ success: true, message: "ok" });
+    vi.mocked(backend.getSgdbResolution).mockResolvedValue({ decision: "no_api_key" });
   });
 
   it("flips the play button to Resolve Conflict off the section's broadcast, with no read of its own", async () => {

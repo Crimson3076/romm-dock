@@ -79,6 +79,34 @@ import {
  *  new rom_id whose artwork has to be applied afresh (#1298 item 3). */
 const artworkApplied = new Map<number, number>();
 
+/** Passive resolution/apply attempts currently running, keyed by exact binding.
+ *  The object identity is the attempt token: overlapping views share a request,
+ *  while the current-ROM check keeps an old version from starting stale writes. */
+interface PassiveArtworkAttempt {
+  appId: number;
+  romId: number;
+  stage: "resolving" | "applying";
+}
+
+const artworkInFlight = new Map<string, PassiveArtworkAttempt>();
+const artworkBinding = new Map<number, number>();
+const artworkViewCounts = new Map<number, number>();
+
+const artworkAttemptKey = (appId: number, romId: number): string => `${appId}:${romId}`;
+
+function invalidateApplyingArtwork(appId: number): void {
+  for (const [key, attempt] of artworkInFlight) {
+    if (attempt.appId === appId && attempt.stage === "applying") artworkInFlight.delete(key);
+  }
+}
+
+function bindArtworkRom(appId: number, romId: number): void {
+  if (artworkBinding.get(appId) === romId) return;
+  artworkBinding.set(appId, romId);
+  invalidateApplyingArtwork(appId);
+  detach(cancelArtworkApply(appId));
+}
+
 /** How long the authoritative connection check may run before the wait itself is
  *  worth a log line. It is NOT a deadline after which the server counts as
  *  unreachable — see the check below. */
@@ -212,24 +240,68 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
   useEffect(() => registerConnectionHeartbeat(), []);
 
   useEffect(() => {
+    artworkViewCounts.set(appId, (artworkViewCounts.get(appId) ?? 0) + 1);
     mountPruneLeaseOwner(`game-detail:${appId}`);
+
+    const onDataChanged = (event: WindowEventMap["romm_data_changed"]) => {
+      const changed = event.detail;
+      if (changed.type === "version_switched" && changed.app_id === appId) {
+        // The backend binding changes before the shared detail reload completes.
+        // Fence and cancel the outgoing apply at the event boundary, not after it.
+        bindArtworkRom(appId, changed.rom_id);
+      }
+    };
+    globalThis.addEventListener("romm_data_changed", onDataChanged);
+
     return () => {
-      detach(cancelArtworkApply(appId));
-      detach(releasePruneLeasesByOwner(`game-detail:${appId}`));
+      globalThis.removeEventListener("romm_data_changed", onDataChanged);
+      const remainingViews = (artworkViewCounts.get(appId) ?? 1) - 1;
+      if (remainingViews > 0) artworkViewCounts.set(appId, remainingViews);
+      else {
+        artworkViewCounts.delete(appId);
+        // A resolving attempt can be shared by a quick remount. An apply has
+        // just been canceled, so invalidate it and let that remount retry.
+        invalidateApplyingArtwork(appId);
+        detach(cancelArtworkApply(appId));
+        detach(releasePruneLeasesByOwner(`game-detail:${appId}`));
+      }
     };
   }, [appId]);
 
-  // Auto-apply SGDB artwork on first visit, once per (appId, rom_id) — so a
-  // version switch re-applies for the newly bound rom_id (#1298 item 3). Only
-  // marked applied after success, so a transient failure retries next visit.
+  // Auto-resolve and apply SGDB artwork on first visit. An ambiguous match stays
+  // silent for the manual picker; a version switch starts a new attempt for the
+  // newly bound rom_id (#1298 item 3). Only a real Steam write records success,
+  // so a missing key, unavailable art, or transient failure retries next visit.
   useEffect(() => {
     const romId = detail.romId;
     if (!romId || artworkApplied.get(appId) === romId) return;
-    applyArtwork(romId, appId)
-      .then(() => {
-        artworkApplied.set(appId, romId);
-      })
-      .catch((e) => debugLog(`Auto-artwork error: ${e}`));
+    bindArtworkRom(appId, romId);
+    const attemptKey = artworkAttemptKey(appId, romId);
+    if (artworkInFlight.has(attemptKey)) return;
+
+    const attempt: PassiveArtworkAttempt = { appId, romId, stage: "resolving" };
+    artworkInFlight.set(attemptKey, attempt);
+    const isCurrent = () =>
+      artworkInFlight.get(attemptKey) === attempt &&
+      artworkBinding.get(appId) === romId &&
+      (artworkViewCounts.get(appId) ?? 0) > 0 &&
+      getGameDetail(appId).romId === romId;
+
+    const resolveAndApply = async () => {
+      try {
+        const resolution = await getSgdbResolution(romId);
+        if (resolution.decision !== "resolved" || !isCurrent()) return;
+        attempt.stage = "applying";
+        const applied = await applyArtwork(romId, appId);
+        if (applied > 0 && isCurrent()) artworkApplied.set(appId, romId);
+      } catch (e) {
+        detach(debugLog(`Auto-artwork error: ${e}`));
+      } finally {
+        if (artworkInFlight.get(attemptKey) === attempt) artworkInFlight.delete(attemptKey);
+      }
+    };
+
+    detach(resolveAndApply());
   }, [appId, detail.romId]);
 
   // Connection check — exactly one per mount, issued before this page's other
@@ -491,6 +563,10 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
       return;
     }
     const romId = detail.romId;
+    // Manual refresh owns the outcome once clicked: a slower passive resolution
+    // must not start a newer apply and supersede the user's explicit request.
+    artworkInFlight.delete(artworkAttemptKey(appId, romId));
+    detach(cancelArtworkApply(appId));
     setActionPending("artwork");
     const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
     try {

@@ -137,9 +137,8 @@ class SteamGridService:
 
         Checks the persisted ROM row first, then the in-memory
         pending-sync map. Returns ``None`` when neither carries a
-        ``sgdb_id``. RomM re-reads and IGDB cross-refs are gated behind
-        the explicit ``get_sgdb_resolution`` user action, not this
-        passive lookup.
+        ``sgdb_id``. RomM re-reads and IGDB cross-refs belong to the
+        dedicated ``get_sgdb_resolution`` flow, not this per-asset lookup.
         """
         rom_id = int(rom_id)
         with self._uow_factory() as uow:
@@ -204,11 +203,11 @@ class SteamGridService:
     # -- resolution cascade (callable) -------------------------------------
 
     async def get_sgdb_resolution(self, rom_id):
-        """Resolve which SGDB game id to use for *rom_id*, picker-driven.
+        """Resolve which SGDB game id to use for *rom_id*.
 
-        The single explicit user action that may re-read RomM and run the
-        IGDB cross-ref / name-search cascade. RomM's ``sgdb_id`` always
-        wins when present. Returns one of:
+        This is the single flow that may re-read RomM and run the IGDB
+        cross-ref / name-search cascade. RomM's ``sgdb_id`` always wins
+        when present. Returns one of:
 
         - ``{"decision": "no_api_key"}`` — no key configured.
         - ``{"decision": "resolved", "sgdb_id": int}`` — a winning id was
