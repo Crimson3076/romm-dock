@@ -50,17 +50,19 @@ EmuDeck support. See [Acknowledgments](#acknowledgments) for full credit._
   capsules and custom icons, with a manual picker for games that don't match automatically
 - **Save sync** — Opt-in save syncing across devices through your RomM server, automatically before launch and after you
   quit; identical saves resolve silently, and if both sides genuinely changed you decide which one wins
-  ([not every system syncs yet](https://danielcopper.github.io/romm-tender/user-guide/save-sync-support-matrix/))
+  ([not every system syncs yet](https://crimson3076.github.io/romm-dock/user-guide/save-sync-support-matrix/))
 - **Save slots & version history** — Multiple named save profiles per game, plus per-file version history with restore
 - **ROM downloads** — Download on demand with progress, pause/resume/cancel, and a managed queue
 - **BIOS management** — Per-platform BIOS status, download all or only what your active core requires, hash-verified
-  against a bundled registry, and delete them again when you're done
+  against a bundled registry, and delete them again when you're done. Xbox/xemu firmware is included, matched by content
+  rather than filename, with a check that xemu's own config actually points at the plugin's BIOS directory
 - **Game detail page** — Replaces Steam's page for synced games: RomM metadata, RetroAchievements progress, playtime,
   install and BIOS status, save management, and per-game actions
 - **Multi-disc & multi-version** — Pick the disc for multi-disc games and switch between regions or revisions of the
   same game, right from its Steam page
 - **Native-Windows games** — Windows-only titles launch straight through Proton, which the plugin finds and runs for
-  you; pick which `.exe` to launch when an install has more than one
+  you; pick which `.exe` to launch when an install has more than one. A bundled `.sh` script launches natively instead,
+  bypassing Proton entirely
 - **Emulator cores** — Set the core per system, or override it for a single game
 - **Steam Input** — Pick a Steam Input mode (Default / Force On / Force Off) and apply it to every shortcut the plugin
   created
