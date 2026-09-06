@@ -21,7 +21,10 @@ export interface XemuAlignmentBanner {
  * which is the legitimate fresh-install case. Only `misaligned` and
  * `unreadable` are loud.
  */
-export function xemuAlignmentBanner(status: XemuAlignmentStatus, configPath: string | null): XemuAlignmentBanner | null {
+export function xemuAlignmentBanner(
+  status: XemuAlignmentStatus,
+  configPath: string | null,
+): XemuAlignmentBanner | null {
   switch (status) {
     case "misaligned":
       return {

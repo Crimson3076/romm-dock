@@ -84,8 +84,8 @@ emudeck_launcher_backend: %EMULATOR_XEMU% did not resolve for '%EMULATOR_XEMU% -
 **Why**: This is an EmuDeck configuration gap, not a plugin bug. xemu's launch path is resolved through EmuDeck's own
 `~/ES-DE/custom_systems/es_find_rules.xml` — the same file every other standalone emulator (Cemu, Dolphin, ShadPS4, …)
 has a `<emulator name="...">` entry in. On some EmuDeck installs the `XEMU` entry never gets written into this file, so
-the plugin can't verify xemu actually exists on disk and — correctly — refuses to bake a launch command it can't
-confirm will work, rather than baking something broken.
+the plugin can't verify xemu actually exists on disk and — correctly — refuses to bake a launch command it can't confirm
+will work, rather than baking something broken.
 
 **Fix**: Add the missing entry yourself. First find your real xemu launcher script (the filename varies — it may be
 `xemu.sh` or `xemu-emu.sh`):
@@ -94,15 +94,15 @@ confirm will work, rather than baking something broken.
 find ~/Emulation/tools/launchers -iname "*xemu*"
 ```
 
-Then open `~/ES-DE/custom_systems/es_find_rules.xml` in a text editor and add a block matching the style of its
-existing `<emulator>` entries, using the path you just found:
+Then open `~/ES-DE/custom_systems/es_find_rules.xml` in a text editor and add a block matching the style of its existing
+`<emulator>` entries, using the path you just found:
 
 ```xml
-    <emulator name="XEMU">
-        <rule type="staticpath">
-            <entry>/home/YOUR_USERNAME/Emulation/tools/launchers/xemu-emu.sh</entry>
-        </rule>
-    </emulator>
+<emulator name="XEMU">
+    <rule type="staticpath">
+        <entry>/home/YOUR_USERNAME/Emulation/tools/launchers/xemu-emu.sh</entry>
+    </rule>
+</emulator>
 ```
 
 Place it anywhere among the other `<emulator>` blocks, before the closing `</ruleList>` tag, and save. No plugin or

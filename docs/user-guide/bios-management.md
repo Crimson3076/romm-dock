@@ -131,8 +131,8 @@ has no way to express "any one of these satisfies the requirement" (each entry i
 variant required would show a permanently-red status for everyone, since no one has all of them. Instead, every
 recognized variant shows as present-and-known the moment you have one, without inflating the required count.
 
-**MCPX 1.1 is not compatible with xemu.** If your RomM server has an MCPX 1.1 dump, the plugin recognizes it but flags it
-in its description — use MCPX 1.0 instead.
+**MCPX 1.1 is not compatible with xemu.** If your RomM server has an MCPX 1.1 dump, the plugin recognizes it but flags
+it in its description — use MCPX 1.0 instead.
 
 **Firmware files install flat into your BIOS directory** (e.g. `~/retrodeck/bios/mcpx_1.0.bin`), matching how EmuDeck's
 own xemu setup expects them. The System page automatically checks whether xemu's own configuration (`xemu.toml`, under
@@ -156,8 +156,8 @@ detect and download it — but with two things worth understanding:
   BIOS download. Downloading it only ever bootstraps a fresh copy when none exists yet.
 - **Syncing the disk image's contents with RomM is not yet supported.** Because it's one file shared across your whole
   Xbox library rather than a per-game save, it doesn't fit the plugin's existing per-game save-sync engine — see
-  [Known Limitations](../architecture/save-file-sync-architecture.md#standalone-emulators-not-supported) in the save-sync
-  architecture doc. Back up `xbox_hdd.qcow2` yourself for now if it holds progress you care about.
+  [Known Limitations](../architecture/save-file-sync-architecture.md#standalone-emulators-not-supported) in the
+  save-sync architecture doc. Back up `xbox_hdd.qcow2` yourself for now if it holds progress you care about.
 
 ## Per-Platform BIOS Filtering
 
