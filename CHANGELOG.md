@@ -7,7 +7,6 @@
 
 * **bios:** add Xbox/xemu firmware support with content-based detection ([2951d39](https://github.com/Crimson3076/romm-dock/commit/2951d39be704d086faa5c056d3ca0f005178b77e))
 * **bios:** verify xemu.toml points at the plugin's BIOS directory ([644e57f](https://github.com/Crimson3076/romm-dock/commit/644e57f12fe4c8f5b27a753e4f6d8a57e0ef4ce4))
-* **bios:** Xbox/xemu firmware support + launch-command fix ([8a4f3ea](https://github.com/Crimson3076/romm-dock/commit/8a4f3ea64146abb29aa407a414a4c58bc789c83f))
 * **connection:** send custom HTTP headers to a RomM behind an authenticating proxy ([#1891](https://github.com/danielcopper/romm-tender/issues/1891)) ([f4f2fc0](https://github.com/danielcopper/romm-tender/commit/f4f2fc017ab31b4a26573ab6943a2e2d89a03047)), closes [#1822](https://github.com/danielcopper/romm-tender/issues/1822)
 * **data:** move user data to the user's own home directory ([#1868](https://github.com/danielcopper/romm-tender/issues/1868)) ([15eaf63](https://github.com/danielcopper/romm-tender/commit/15eaf63815b7cb8a82f71d08c5a71811e7c09908)), closes [#1547](https://github.com/danielcopper/romm-tender/issues/1547)
 * **identity:** name the plugin romm-tender and pin its shipped folder ([#1878](https://github.com/danielcopper/romm-tender/issues/1878)) ([1b4f37c](https://github.com/danielcopper/romm-tender/commit/1b4f37c29600edea4adc5a405afbe6806ddd60aa))
