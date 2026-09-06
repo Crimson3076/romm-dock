@@ -613,10 +613,10 @@ class FirmwareService:
         plat["bios_level"] = compute_bios_level(bios_obj)
 
     async def get_firmware_status(self):
-        """Return BIOS/firmware status for all platforms on the RomM server.
+        """Return BIOS/firmware status for firmware-bearing and synced platforms.
 
         When the server is unreachable, falls back to registry-based status
-        for installed platforms so core switching remains available offline.
+        while keeping synced platforms available for core switching offline.
         """
         server_offline = False
         try:
@@ -628,6 +628,8 @@ class FirmwareService:
             platforms_map = self._group_registry_firmware()
 
         synced_slugs = await self._loop.run_in_executor(None, self._read_synced_slugs)
+        for slug in synced_slugs:
+            platforms_map.setdefault(slug, {"platform_slug": slug, "files": []})
         self._enrich_platform_map(platforms_map, synced_slugs)
         platforms = sorted(platforms_map.values(), key=lambda p: p["platform_slug"])
         return {"success": True, "server_offline": server_offline, "platforms": platforms}

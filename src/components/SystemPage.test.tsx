@@ -290,12 +290,69 @@ describe("SystemPage", () => {
       expect(container.textContent).toContain("No synced systems");
     });
 
-    it("renders only currently-synced systems (has_games), hiding unsynced ones", async () => {
+    it("renders a synced firmware-less system with its emulator controls", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [
+          makeBiosPlatform({
+            platform_slug: "n64",
+            files: [],
+            active_core: "mupen64plus_next_libretro",
+            active_core_label: "Mupen64Plus-Next",
+            emulators: [
+              {
+                label: "Mupen64Plus-Next",
+                kind: "libretro",
+                core_so: "mupen64plus_next_libretro",
+                is_default: true,
+                bakeable: true,
+                reason: null,
+              },
+              {
+                label: "ParaLLEl N64",
+                kind: "libretro",
+                core_so: "parallel_n64_libretro",
+                is_default: false,
+                bakeable: true,
+                reason: null,
+              },
+            ],
+          }),
+        ],
+      });
+
+      const { container } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      expect(container.textContent).toContain("n64");
+      expect(container.textContent).toContain("Emulator Core: Mupen64Plus-Next");
+      expect(container.textContent).toContain("0 / 0 files");
+      expect(container.textContent).not.toContain("No synced systems");
+    });
+
+    it("hides firmware-only systems without bound ROMs", async () => {
       vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
         success: true,
         platforms: [
           makeBiosPlatform({ platform_slug: "snes", has_games: true }),
-          makeBiosPlatform({ platform_slug: "ps2", has_games: false }),
+          makeBiosPlatform({
+            platform_slug: "ps2",
+            has_games: false,
+            files: [
+              {
+                id: 9,
+                file_name: "scph.bin",
+                size: 100,
+                md5: "abc",
+                downloaded: false,
+                required: false,
+                description: "Server firmware",
+                hash_valid: null,
+                classification: "unknown",
+              },
+            ],
+            bios_level: "unmanaged",
+          }),
         ],
       });
       const { container } = render(<SystemPage onBack={vi.fn()} />);
@@ -303,6 +360,7 @@ describe("SystemPage", () => {
       // The synced platform renders; the unsynced one is filtered out entirely.
       expect(container.textContent).toContain("snes");
       expect(container.textContent).not.toContain("ps2");
+      expect(container.textContent).not.toContain("scph.bin");
     });
 
     it("renders the no-synced-systems empty state when BIOS platforms exist but none are synced", async () => {

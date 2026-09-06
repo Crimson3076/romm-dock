@@ -63,7 +63,8 @@ is highlighted in amber so you can spot at a glance which core's requirements th
 The **System** page is the per-system emulator settings page: for each platform it shows the **active emulator core**
 first, then the BIOS files that core needs. It lists only your **currently-synced systems** — platforms with at least
 one synced game (whether synced by platform or by collection). Systems you have no synced games for don't appear, even
-if your RomM server has BIOS files for them.
+if your RomM server has BIOS files for them. A synced system still appears when RomM has no firmware records for it, so
+you can configure its emulator even when there are no BIOS files to manage.
 
 1. From the main QAM page, tap **System**
 2. Platforms with synced games that still need required BIOS files are marked with "BIOS needed"
@@ -100,8 +101,8 @@ bulk-cleanup workflows.
 ## Which Systems Need BIOS?
 
 This depends on what's uploaded to your RomM server. Common systems that require BIOS files include PlayStation, PS2,
-Saturn, Dreamcast, and some arcade systems. The plugin only shows BIOS status for platforms that have firmware files in
-your RomM library.
+Saturn, Dreamcast, and some arcade systems. Synced systems without firmware records show an empty BIOS status so their
+emulator settings remain available.
 
 ### Platforms Without Plugin Coverage ("Not managed by the plugin")
 

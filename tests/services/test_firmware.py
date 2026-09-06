@@ -282,7 +282,7 @@ class TestGetFirmwareStatus:
         ]
 
         fw._loop = MagicMock()
-        fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
+        fw._loop.run_in_executor = AsyncMock(side_effect=[firmware_list, set()])
 
         result = await fw.get_firmware_status()
         assert result["success"] is True
@@ -291,6 +291,51 @@ class TestGetFirmwareStatus:
         dc_plat = next(p for p in result["platforms"] if p["platform_slug"] == "dc")
         assert len(dc_plat["files"]) == 2
         assert all(not f["downloaded"] for f in dc_plat["files"])  # get_firmware_status files are dicts
+
+    @pytest.mark.asyncio
+    async def test_includes_bound_n64_without_server_firmware(self):
+        """A synced N64 system remains configurable when RomM has no firmware."""
+        from tests.fakes.fake_core_info_provider import libretro_option
+
+        uow = FakeUnitOfWork()
+        _seed_rom(uow, rom_id=42, platform_slug="n64")
+        romm_api = MagicMock()
+        romm_api.list_firmware.return_value = []
+        core_info = FakeCoreInfoProvider(
+            active_core=("mupen64plus_next_libretro", "Mupen64Plus-Next"),
+            options=[libretro_option("mupen64plus_next_libretro", "Mupen64Plus-Next")],
+        )
+        service = _make_firmware_service(
+            romm_api=romm_api,
+            uow_factory=FakeUnitOfWorkFactory(uow),
+            core_info=core_info,
+        )
+
+        result = await service.get_firmware_status()
+
+        assert [p["platform_slug"] for p in result["platforms"]] == ["n64"]
+        n64 = result["platforms"][0]
+        assert n64["files"] == []
+        assert n64["has_games"] is True
+        assert n64["all_downloaded"] is True
+        assert n64["server_count"] == 0
+        assert n64["local_count"] == 0
+        assert n64["required_count"] == 0
+        assert n64["required_downloaded"] == 0
+        assert n64["bios_level"] == "ok"
+        assert n64["active_core"] == "mupen64plus_next_libretro"
+        assert n64["active_core_label"] == "Mupen64Plus-Next"
+        assert n64["emulator_data_available"] is True
+        assert n64["emulators"] == [
+            {
+                "label": "Mupen64Plus-Next",
+                "kind": "libretro",
+                "core_so": "mupen64plus_next_libretro",
+                "is_default": True,
+                "bakeable": True,
+                "reason": None,
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_enrich_resolves_system_for_cores_keeps_raw_slug_for_platform(self, tmp_path):
@@ -322,7 +367,7 @@ class TestGetFirmwareStatus:
             },
         ]
         fw._loop = MagicMock()
-        fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
+        fw._loop.run_in_executor = AsyncMock(side_effect=[firmware_list, set()])
 
         result = await fw.get_firmware_status()
 
@@ -346,6 +391,44 @@ class TestGetFirmwareStatus:
         assert core_info.active_core_calls == ["dreamcast"]
         assert core_info.emulator_options_calls == ["dreamcast"]
         assert resolver.calls == [("dc", None)]
+
+    @pytest.mark.asyncio
+    async def test_firmwareless_entry_keeps_raw_slug_and_resolves_normalized_system(self):
+        """Synthetic identity/settings stay raw while core lookups normalize."""
+        from tests.fakes.fake_core_info_provider import libretro_option
+
+        raw_slug = "nintendo-64"
+        uow = FakeUnitOfWork()
+        _seed_rom(uow, rom_id=42, platform_slug=raw_slug)
+        romm_api = MagicMock()
+        romm_api.list_firmware.return_value = []
+        core_info = FakeCoreInfoProvider(
+            active_core=("mupen64plus_next_libretro", "Mupen64Plus-Next"),
+            options=[
+                libretro_option("mupen64plus_next_libretro", "Mupen64Plus-Next"),
+                libretro_option("parallel_n64_libretro", "ParaLLEl N64"),
+            ],
+        )
+        resolver = FakeSystemResolver(mapping={raw_slug: "n64"})
+        platform_cores = FakePlatformCoreReader(mapping={"emudeck": {raw_slug: "ParaLLEl N64"}})
+        service = _make_firmware_service(
+            romm_api=romm_api,
+            uow_factory=FakeUnitOfWorkFactory(uow),
+            core_info=core_info,
+            active_backend_id=lambda: "emudeck",
+            resolve_system=resolver,
+            platform_core_reader=platform_cores,
+        )
+
+        result = await service.get_firmware_status()
+
+        platform = result["platforms"][0]
+        assert platform["platform_slug"] == raw_slug
+        assert platform["active_core_label"] == "ParaLLEl N64"
+        assert resolver.calls == [(raw_slug, None)]
+        assert core_info.active_core_calls == ["n64"]
+        assert core_info.emulator_options_calls == ["n64"]
+        assert platform_cores.calls == [("emudeck", raw_slug)]
 
     async def _psp_active_core_label(self, platform_core_reader):
         """Run ``get_firmware_status`` for a psp platform whose default is a standalone.
@@ -377,7 +460,7 @@ class TestGetFirmwareStatus:
             },
         ]
         fw._loop = MagicMock()
-        fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
+        fw._loop.run_in_executor = AsyncMock(side_effect=[firmware_list, set()])
         result = await fw.get_firmware_status()
         psp = next(p for p in result["platforms"] if p["platform_slug"] == "psp")
         return psp["active_core_label"]
@@ -435,6 +518,37 @@ class TestGetFirmwareStatus:
         assert gba_plat["has_games"] is False
 
     @pytest.mark.asyncio
+    async def test_synced_union_is_unique_and_preserves_firmware_entries(self):
+        """Many bound ROMs add each missing system once without replacing BIOS data."""
+        uow = FakeUnitOfWork()
+        _seed_rom(uow, rom_id=1, platform_slug="n64", app_id=101)
+        _seed_rom(uow, rom_id=2, platform_slug="n64", app_id=102)
+        _seed_rom(uow, rom_id=3, platform_slug="gba", app_id=103)
+        _seed_rom(uow, rom_id=4, platform_slug="gba", app_id=104)
+        _seed_rom(uow, rom_id=5, platform_slug="snes", app_id=105)
+        romm_api = MagicMock()
+        romm_api.list_firmware.return_value = [
+            {"id": 1, "file_name": "pifdata.bin", "file_path": "bios/n64/pifdata.bin", "file_size_bytes": 100},
+            {"id": 2, "file_name": "IPL.n64", "file_path": "bios/n64/IPL.n64", "file_size_bytes": 200},
+            {"id": 3, "file_name": "scph.bin", "file_path": "bios/ps2/scph.bin", "file_size_bytes": 300},
+        ]
+        service = _make_firmware_service(romm_api=romm_api, uow_factory=FakeUnitOfWorkFactory(uow))
+
+        result = await service.get_firmware_status()
+
+        slugs = [p["platform_slug"] for p in result["platforms"]]
+        assert slugs == ["gba", "n64", "ps2", "snes"]
+        assert len(slugs) == len(set(slugs))
+        by_slug = {p["platform_slug"]: p for p in result["platforms"]}
+        assert [f["id"] for f in by_slug["n64"]["files"]] == [1, 2]
+        assert by_slug["n64"]["has_games"] is True
+        assert by_slug["gba"]["files"] == []
+        assert by_slug["gba"]["has_games"] is True
+        assert by_slug["snes"]["files"] == []
+        assert by_slug["snes"]["has_games"] is True
+        assert by_slug["ps2"]["has_games"] is False
+
+    @pytest.mark.asyncio
     async def test_detects_downloaded_files(self, fw, tmp_path):
         from unittest.mock import AsyncMock, MagicMock
 
@@ -454,7 +568,7 @@ class TestGetFirmwareStatus:
         ]
 
         fw._loop = MagicMock()
-        fw._loop.run_in_executor = AsyncMock(return_value=firmware_list)
+        fw._loop.run_in_executor = AsyncMock(side_effect=[firmware_list, set()])
 
         with patch.object(fw, "_launcher_paths", FakeRetroDeckPaths(bios=str(bios_dir))):
             result = await fw.get_firmware_status()
@@ -2771,6 +2885,22 @@ class TestDownloadFirmwareErrors:
 
 class TestGetFirmwareStatusOfflineFallback:
     """Tests for get_firmware_status offline fallback to registry."""
+
+    @pytest.mark.asyncio
+    async def test_offline_exposes_synced_platform_without_registry_firmware(self, fw, plugin):
+        """The registry fallback does not hide a bound firmware-less system."""
+        fw._bios_registry = {"platforms": {}}
+        fw._bios_files_index = {}
+        _seed_rom(plugin._uow, rom_id=42, platform_slug="n64")
+
+        with patch.object(plugin._romm_api, "list_firmware", side_effect=Exception("offline")):
+            result = await fw.get_firmware_status()
+
+        assert result["success"] is True
+        assert result["server_offline"] is True
+        assert [p["platform_slug"] for p in result["platforms"]] == ["n64"]
+        assert result["platforms"][0]["files"] == []
+        assert result["platforms"][0]["has_games"] is True
 
     @pytest.mark.asyncio
     async def test_offline_uses_registry(self, fw, plugin, tmp_path):
