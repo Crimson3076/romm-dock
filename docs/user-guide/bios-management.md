@@ -386,7 +386,7 @@ Xbox is a standalone emulator (xemu), not a RetroArch core, and its firmware —
 and the hard disk image xemu boots from — is answered through the same packaged rule card and live reading every other
 standalone emulator uses; nothing about it is special-cased in the plugin.
 
-**The System page also checks whether xemu is actually configured to use the files the plugin places.** Firmware files
+**The Platforms tab also checks whether xemu is actually configured to use the files the plugin places.** Firmware files
 install flat into your BIOS directory (e.g. `~/retrodeck/bios/mcpx_1.0.bin`), matching how EmuDeck's own xemu setup
 expects them — but xemu reads its boot ROM and flash BIOS paths from its own configuration file (`xemu.toml`, under
 `[sys.files]`), which the plugin never writes to. A file being present in your BIOS directory doesn't guarantee xemu is
@@ -406,8 +406,8 @@ download it — but with two things worth understanding:
   BIOS download. Downloading it only ever bootstraps a fresh copy when none exists yet.
 - **Syncing the disk image's contents with RomM is not yet supported.** Because it's one file shared across your whole
   Xbox library rather than a per-game save, it doesn't fit the plugin's existing per-game save-sync engine — see
-  [Known Limitations](../architecture/save-file-sync-architecture.md#standalone-emulators-not-supported) in the save-sync
-  architecture doc. Back up `xbox_hdd.qcow2` yourself for now if it holds progress you care about.
+  [Known Limitations](../architecture/save-file-sync-architecture.md#standalone-emulators-not-supported) in the
+  save-sync architecture doc. Back up `xbox_hdd.qcow2` yourself for now if it holds progress you care about.
 
 ## Per-Platform BIOS Filtering
 
