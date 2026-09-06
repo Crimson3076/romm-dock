@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.33.0](https://github.com/Crimson3076/romm-dock/compare/romm-dock-v0.32.0...romm-dock-v0.33.0) (2026-09-06)
+
+
+### Features
+
+* **bios:** add Xbox/xemu firmware support with content-based detection ([2951d39](https://github.com/Crimson3076/romm-dock/commit/2951d39be704d086faa5c056d3ca0f005178b77e))
+* **bios:** verify xemu.toml points at the plugin's BIOS directory ([644e57f](https://github.com/Crimson3076/romm-dock/commit/644e57f12fe4c8f5b27a753e4f6d8a57e0ef4ce4))
+* **bios:** Xbox/xemu firmware support + launch-command fix ([8a4f3ea](https://github.com/Crimson3076/romm-dock/commit/8a4f3ea64146abb29aa407a414a4c58bc789c83f))
+
+
+### Bug Fixes
+
+* **launch:** bake xemu's %INJECT% command directly, unwrapping its sidecar prefix ([c127136](https://github.com/Crimson3076/romm-dock/commit/c127136c8419150691dbf43aa36a184884d94337))
+
 ## [0.32.0](https://github.com/Crimson3076/romm-dock/compare/romm-dock-v0.31.0...romm-dock-v0.32.0) (2026-09-03)
 
 > **Note:** this is the first release cut by this fork's own release automation. Because no GitHub Release had ever
