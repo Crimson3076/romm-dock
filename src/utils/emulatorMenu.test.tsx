@@ -93,6 +93,25 @@ describe("buildEmulatorMenu", () => {
     expect(onPick).toHaveBeenCalledWith("mGBA");
   });
 
+  it("tags a bakeable libretro entry as (RetroArch) when its own label doesn't already say so", () => {
+    const menu = buildEmulatorMenu(baseConfig());
+    const its = items(menu);
+    expect(its.find((i) => i.text.startsWith("mGBA"))!.text).toBe("mGBA (RetroArch) (default) ✓");
+    expect(its.find((i) => i.text.startsWith("VBA-M"))!.text).toBe("VBA-M (RetroArch)");
+  });
+
+  it("does not double-tag a libretro entry whose own label already names RetroArch", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({ emulators: [libretroEmu("retroarch_core", "RetroArch (Snes9x)", true)] }),
+    );
+    expect(items(menu).find((i) => i.text.startsWith("RetroArch"))!.text).toBe("RetroArch (Snes9x) (default) ✓");
+  });
+
+  it("does not tag a standalone entry as (RetroArch)", () => {
+    const menu = buildEmulatorMenu(baseConfig({ emulators: [standaloneEmu("Dolphin (Standalone)", true)] }));
+    expect(items(menu).find((i) => i.text.startsWith("Dolphin"))!.text).toBe("Dolphin (Standalone) (default) ✓");
+  });
+
   it("renders an un-bakeable emulator as disabled with its reason copy", () => {
     const menu = buildEmulatorMenu(
       baseConfig({
@@ -146,7 +165,7 @@ describe("buildEmulatorMenu", () => {
     );
     const dolphin = items(menu).find((i) => i.text.startsWith("Dolphin"))!;
     expect(dolphin.disabled).toBe(true);
-    expect(dolphin.text).toBe("Dolphin — emulator not installed");
+    expect(dolphin.text).toBe("Dolphin (RetroArch) — emulator not installed");
     expect(dolphin.onClick).toBeUndefined();
   });
 
@@ -169,7 +188,7 @@ describe("buildEmulatorMenu", () => {
       }),
     );
     const its = items(menu);
-    expect(its.find((i) => i.text.startsWith("Dolphin"))!.text).toBe("Dolphin — not provided by EmuDeck");
+    expect(its.find((i) => i.text.startsWith("Dolphin"))!.text).toBe("Dolphin (RetroArch) — not provided by EmuDeck");
     expect(its.find((i) => i.text.startsWith("Ryubing"))!.text).toBe("Ryubing (Standalone) — not provided by EmuDeck");
   });
 

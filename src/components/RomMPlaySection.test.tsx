@@ -3571,7 +3571,7 @@ describe("RomMPlaySection", () => {
       render(<RomMPlaySection appId={testAppId} />);
       await flushAsync();
       const coreItems = await openCoreMenuAndGetItems(testAppId);
-      expect(coreItems[DEFAULT_CORE_IDX]!.props.children).toBe("Snes9x (default)");
+      expect(coreItems[DEFAULT_CORE_IDX]!.props.children).toBe("Snes9x (RetroArch) (default)");
       vi.mocked(toaster.toast).mockClear();
       await act(async () => {
         await coreItems[DEFAULT_CORE_IDX]!.props.onClick?.();
@@ -3725,8 +3725,8 @@ describe("RomMPlaySection", () => {
       // label is the es_systems default (no per-platform override set).
       expect(items[1]!.props.children).toBe("Use System Override (Snes9x) ✓");
       // The active default core ALSO carries the ✓ (in effect).
-      expect(items[2]!.props.children).toBe("Snes9x (default) ✓");
-      expect(items[3]!.props.children).toBe("BlastEm");
+      expect(items[2]!.props.children).toBe("Snes9x (RetroArch) (default) ✓");
+      expect(items[3]!.props.children).toBe("BlastEm (RetroArch)");
     });
 
     it("showCoreMenu marks the pinned non-default core with ✓ (not the default entry, not the reset item) (#945/#211)", async () => {
@@ -3752,9 +3752,9 @@ describe("RomMPlaySection", () => {
       // A per-game core is pinned → the reset item has NO ✓ …
       expect(items[1]!.props.children).toBe("Use System Override (Snes9x)");
       // … the default entry has no ✓ …
-      expect(items[2]!.props.children).toBe("Snes9x (default)");
+      expect(items[2]!.props.children).toBe("Snes9x (RetroArch) (default)");
       // … and only the pinned core carries it.
-      expect(items[3]!.props.children).toBe("BlastEm ✓");
+      expect(items[3]!.props.children).toBe("BlastEm (RetroArch) ✓");
     });
 
     it("showCoreMenu marks the per-platform override core with (system), and only that core (#954)", async () => {
@@ -3781,8 +3781,8 @@ describe("RomMPlaySection", () => {
       });
       expect(items).toHaveLength(4);
       // The per-platform override core carries (system); a different core does not.
-      expect(items[3]!.props.children).toBe("BlastEm (system)");
-      expect(items[2]!.props.children).toBe("Snes9x (default) ✓");
+      expect(items[3]!.props.children).toBe("BlastEm (RetroArch) (system)");
+      expect(items[2]!.props.children).toBe("Snes9x (RetroArch) (default) ✓");
       expect(items[2]!.props.children).not.toContain("(system)");
     });
 
@@ -3836,9 +3836,9 @@ describe("RomMPlaySection", () => {
       expect(items[1]!.props.children).toContain("✓");
       expect(items[1]!.props.children).toBe("Use System Override (BlastEm) ✓");
       // The resolved active core carries (system) + ✓.
-      expect(items[3]!.props.children).toBe("BlastEm (system) ✓");
+      expect(items[3]!.props.children).toBe("BlastEm (RetroArch) (system) ✓");
       // The default (not active) carries neither.
-      expect(items[2]!.props.children).toBe("Snes9x (default)");
+      expect(items[2]!.props.children).toBe("Snes9x (RetroArch) (default)");
     });
 
     it("per-game core pinned: only the pinned core carries ✓, the reset item does not (#211)", async () => {
@@ -3864,7 +3864,7 @@ describe("RomMPlaySection", () => {
       });
       expect(items[1]!.props.children).not.toContain("✓");
       expect(items[1]!.props.children).toBe("Use System Override (BlastEm)");
-      expect(items[3]!.props.children).toBe("BlastEm (system) ✓");
+      expect(items[3]!.props.children).toBe("BlastEm (RetroArch) (system) ✓");
     });
 
     it("showSteamMenu Properties → SteamClient.Apps.OpenAppSettingsDialog(appId, 'general')", async () => {

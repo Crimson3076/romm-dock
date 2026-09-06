@@ -59,6 +59,20 @@ export interface EmulatorMenuConfig {
 }
 
 /**
+ * "(RetroArch)" for a libretro entry whose own label doesn't already say so.
+ *
+ * ES-DE's own catalogue labels a standalone entry distinctly ("Dolphin
+ * (Standalone)") but often labels its libretro sibling with the bare
+ * emulator name ("Dolphin") — nothing in that text says it's the RetroArch
+ * core, so next to its standalone namesake it reads as unidentified rather
+ * than as the RetroArch option. Applied to every libretro entry (bakeable or
+ * not) so a disabled "needs setup" one is just as identifiable.
+ */
+function kindMark(e: EmulatorOption): string {
+  return e.kind === "libretro" && !/retroarch/i.test(e.label) ? " (RetroArch)" : "";
+}
+
+/**
  * The entry text for a bakeable emulator: its label plus the markers saying what
  * it is. "(default)" is the es_systems default, "(system)" the per-platform
  * override, ✓ the one actually in effect — one entry can carry all three, which
@@ -68,7 +82,7 @@ function emulatorEntryLabel(e: EmulatorOption, isActive: boolean, isPlatformCore
   const defaultMark = e.is_default ? " (default)" : "";
   const systemMark = isPlatformCore ? " (system)" : "";
   const activeMark = isActive ? " ✓" : "";
-  return `${e.label}${defaultMark}${systemMark}${activeMark}`;
+  return `${e.label}${kindMark(e)}${defaultMark}${systemMark}${activeMark}`;
 }
 
 /** Build the `<Menu>` element for `showContextMenu`. */
@@ -118,7 +132,10 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
     const key = `emu-${e.label}`;
     if (!e.bakeable) {
       children.push(
-        <MenuItem key={key} disabled={true}>{`${e.label} — ${reasonCopy(e.reason, activeBackendDisplayName)}`}</MenuItem>,
+        <MenuItem
+          key={key}
+          disabled={true}
+        >{`${e.label}${kindMark(e)} — ${reasonCopy(e.reason, activeBackendDisplayName)}`}</MenuItem>,
       );
       continue;
     }
