@@ -30,6 +30,10 @@ export interface CoreInfoFields {
   emulatorDataAvailable: boolean;
   platformCoreLabel: string | null;
   hasGameOverride: boolean;
+  /** The ROM's cross-backend pin, or null. See `CoreInfo.cross_backend_pin`. */
+  crossBackendPin: { backendId: string; label: string } | null;
+  /** Every OTHER installed backend's own catalogue. See `CoreInfo.other_backends`. */
+  otherBackends: Array<{ backendId: string; displayName: string; emulators: EmulatorOption[] }>;
 }
 
 export interface SaveSyncResolution {
@@ -105,6 +109,14 @@ export function extractCoreInfo(coreInfo: CoreInfo): CoreInfoFields {
     emulatorDataAvailable: coreInfo.emulator_data_available,
     platformCoreLabel: coreInfo.platform_core_label ?? null,
     hasGameOverride: coreInfo.has_game_override,
+    crossBackendPin: coreInfo.cross_backend_pin
+      ? { backendId: coreInfo.cross_backend_pin.backend_id, label: coreInfo.cross_backend_pin.label }
+      : null,
+    otherBackends: (coreInfo.other_backends ?? []).map((b) => ({
+      backendId: b.backend_id,
+      displayName: b.display_name,
+      emulators: b.emulators,
+    })),
   };
 }
 

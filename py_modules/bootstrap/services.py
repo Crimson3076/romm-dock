@@ -51,7 +51,13 @@ from services.windows_launch_resolver import WindowsLaunchResolver, WindowsLaunc
 if TYPE_CHECKING:
     from typing import Any
 
-    from services.protocols import CoreInfoProvider, InstalledRomRemoverFn, LaunchCommandRenderer, SiblingSupersedeFn
+    from services.protocols import (
+        BackendBinder,
+        CoreInfoProvider,
+        InstalledRomRemoverFn,
+        LaunchCommandRenderer,
+        SiblingSupersedeFn,
+    )
 
     from .adapters import AdapterBundle, CallbackBundle, RuntimeBundle, StateBundle
 
@@ -127,6 +133,10 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     # exists, below.
     core_info_binding: LateBinding[CoreInfoProvider] = LateBinding("core_info")
     active_backend_id_binding: LateBinding[str] = LateBinding("active_backend_id")
+    # Same cycle, same shape: the cross-backend pin's render seam needs to bind
+    # ANY registered backend on demand, but the only thing that can do that
+    # (LauncherBackendService's own registry) does not exist yet either.
+    backend_binder_binding: LateBinding[BackendBinder] = LateBinding("backend_binder")
 
     # The single read-path core resolver (B1): folds the per-game
     # emulator_overrides pin over the ACTIVE backend's own system-layer
@@ -141,6 +151,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             platform_core_reader=cfg.callbacks.platform_core_reader,
             resolve_system=cfg.adapters.http_adapter.resolve_system,
             logger=cfg.runtime.logger,
+            backend_binder=backend_binder_binding,
         ),
     )
 
@@ -198,14 +209,19 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     # bootstrap/adapters.py because it orchestrates settings + the relaunch
     # seam above, not raw I/O — the two factories it registers ARE adapters
     # and are built there.
+    # Captured as its own variable (not inlined into LauncherBackendServiceConfig
+    # below) so CoreService's ``other_backends`` catalogue read can iterate every
+    # registered factory directly, the same registry LauncherBackendService itself
+    # looks up through.
+    launcher_backend_service_registry = LauncherBackendRegistry(
+        [
+            cfg.adapters.retrodeck_launcher_backend_factory,
+            cfg.adapters.emudeck_launcher_backend_factory,
+        ]
+    )
     launcher_backend_service = LauncherBackendService(
         config=LauncherBackendServiceConfig(
-            registry=LauncherBackendRegistry(
-                [
-                    cfg.adapters.retrodeck_launcher_backend_factory,
-                    cfg.adapters.emudeck_launcher_backend_factory,
-                ]
-            ),
+            registry=launcher_backend_service_registry,
             settings=cfg.stores.settings,
             settings_persister=cfg.callbacks.settings_persister,
             relaunch_items=relaunch_options_resolver,
@@ -215,6 +231,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
     launch_renderer_binding.set(lambda: launcher_backend_service)
     core_info_binding.set(lambda: launcher_backend_service)
     active_backend_id_binding.set(launcher_backend_service.active_backend_id)
+    backend_binder_binding.set(lambda: launcher_backend_service)
 
     # MigrationService is constructed before SaveService so that
     # save_sync_service can receive a bound reference to
@@ -504,6 +521,8 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
             launch_renderer=launcher_backend_service,
+            backend_factories=launcher_backend_service_registry.factories(),
+            backend_binder=launcher_backend_service,
         ),
     )
 

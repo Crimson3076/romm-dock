@@ -95,6 +95,48 @@ class ShortcutLaunchResolver:
                 resolved[rom["id"]] = emulator
         return resolved
 
+    def do_build_cross_backend_overrides(
+        self, roms: list[dict[str, Any]], installed_paths: dict[int, str]
+    ) -> dict[int, str]:
+        """Resolve each ROM's cross-backend pin into an ALREADY-RENDERED launch command.
+
+        Additive and separate from :meth:`do_build_core_overrides`: this checks
+        the NEW ``cross_backend_pin`` layer, which — unlike ``emulator_override``
+        — is a full render through the pinned backend's own instance, not an
+        :class:`EmulatorInvocation` the bake still has to render generically.
+        Only installed ROMs are checked (an uninstalled ROM has no *path* to
+        render against); only ROMs whose pin still resolves appear in the
+        returned ``{rom_id: launch_options}`` map — a ROM absent from it (no
+        pin, or a pin that no longer resolves) falls through to
+        :func:`build_shortcuts_data`'s normal ``core_overrides`` rendering
+        unchanged. The resolver already warns + degrades on a stale pin, so no
+        bogus invocation ever reaches the bake.
+        """
+        resolved: dict[int, str] = {}
+        for rom in roms:
+            path = installed_paths.get(rom["id"])
+            if path is None:
+                continue
+            rendered = self._active_core.cross_backend_render_for_rom(rom["id"], rom, path)
+            if rendered is not None:
+                resolved[rom["id"]] = rendered
+        return resolved
+
+    def do_build_overrides(
+        self, roms: list[dict[str, Any]], installed_paths: dict[int, str]
+    ) -> tuple[dict[int, EmulatorInvocation], dict[int, str]]:
+        """Resolve both override maps a bake site needs in ONE executor round-trip.
+
+        Bundles :meth:`do_build_core_overrides` and
+        :meth:`do_build_cross_backend_overrides`: the two maps answer different
+        questions (a resolved :class:`EmulatorInvocation` to render generically,
+        vs. an ALREADY-RENDERED command) but every bake site needs both at once,
+        so scheduling them as one ``run_in_executor`` call costs nothing
+        semantically and keeps a caller's fan-out from growing per new override
+        layer.
+        """
+        return self.do_build_core_overrides(roms), self.do_build_cross_backend_overrides(roms, installed_paths)
+
     def do_scan_installed_paths(self) -> dict[int, str]:
         """Read ``{rom_id: bake_path}`` for the whole installed library in one scan.
 

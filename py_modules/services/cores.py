@@ -34,10 +34,12 @@ if TYPE_CHECKING:
     from domain.shortcut_data import EmulatorInvocation
     from services.protocols import (
         ActiveCoreReader,
+        BackendBinder,
         BiosChecker,
         CoreInfoProvider,
         DiscResolver,
         LaunchCommandRenderer,
+        LauncherBackendFactory,
         SettingsPersister,
         SystemResolver,
         UnitOfWorkFactory,
@@ -81,6 +83,12 @@ class CoreServiceConfig:
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
     launch_renderer: LaunchCommandRenderer
+    # The cross-backend pin's read seams (get_platform_core_info's
+    # ``other_backends`` catalogue, and set_game_cross_backend_pin's
+    # resolve-before-write): every registered factory (to enumerate every
+    # OTHER backend) and the seam that binds any one of them on demand.
+    backend_factories: list[LauncherBackendFactory]
+    backend_binder: BackendBinder
 
 
 class CoreService:
@@ -99,6 +107,8 @@ class CoreService:
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
         self._launch_renderer = config.launch_renderer
+        self._backend_factories = config.backend_factories
+        self._backend_binder = config.backend_binder
 
     async def get_platform_core_info(self, rom_id: int) -> dict[str, Any]:
         """Return the emulators available for ``rom_id``'s platform + the active one.
@@ -120,6 +130,14 @@ class CoreService:
         ``es_systems.xml`` cannot be read (RetroDECK not detected), so the menu
         can say so instead of showing an empty list. When ``rom_id`` is unknown
         the emulator list is empty and the active emulator is ``(None, None)``.
+
+        ``cross_backend_pin`` is the ROM's ``{"backend_id", "label"}`` pin, or
+        ``None`` — verbatim, for the picker to mark. ``other_backends`` lists
+        every OTHER registered backend detected on this machine (the active one
+        excluded, an undetected one excluded entirely), each with its own
+        ``{backend_id, display_name, emulators}`` catalogue projected through
+        the same payload shape as ``emulators`` above, so the picker can offer a
+        cross-backend pin against any of them.
         """
         return await self._loop.run_in_executor(None, self._platform_core_info_io, rom_id)
 
@@ -142,6 +160,8 @@ class CoreService:
                 "active_core_label": None,
                 "platform_core_label": None,
                 "has_game_override": False,
+                "cross_backend_pin": None,
+                "other_backends": [],
             }
         backend_id = self._active_backend_id()
         system = self._resolve_system(rom.platform_slug)
@@ -155,7 +175,37 @@ class CoreService:
             "active_core_label": active_label,
             "platform_core_label": backend_platform_cores.get(rom.platform_slug),
             "has_game_override": rom.emulator_override_for(backend_id) is not None,
+            "cross_backend_pin": rom.cross_backend_pin,
+            "other_backends": self._other_backends_payload(active_backend_id=backend_id, system=system),
         }
+
+    def _other_backends_payload(self, *, active_backend_id: str, system: str) -> list[dict[str, Any]]:
+        """Every registered backend OTHER than the active one, with its own emulator catalogue.
+
+        Skips a factory that fails to bind (not detected on this machine)
+        entirely — not even as an empty/error entry — so the common
+        single-backend-installed case reports an empty list rather than noise.
+        Each entry projects THAT backend's own ``get_emulator_options`` through
+        the same :func:`options_to_payload` the active backend's ``emulators``
+        field already uses, so the frontend's existing per-backend rendering
+        generalizes to N backends with no new parsing logic.
+        """
+        other: list[dict[str, Any]] = []
+        for factory in self._backend_factories:
+            if factory.backend_id == active_backend_id:
+                continue
+            backend = self._backend_binder.bind_backend(factory.backend_id)
+            if backend is None:
+                continue
+            options = backend.get_emulator_options(system)
+            other.append(
+                {
+                    "backend_id": factory.backend_id,
+                    "display_name": factory.display_name,
+                    "emulators": options_to_payload(options["options"]),
+                }
+            )
+        return other
 
     def _set_system_core_io(self, platform_slug: str, core_label: str) -> list[dict[str, Any]]:
         """Write the per-platform core selection and re-bake the affected shortcuts.
@@ -214,20 +264,19 @@ class CoreService:
 
         rebake_items: list[dict[str, Any]] = []
         for rom, install in pending:
-            emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
-            invocation = self._launch_renderer.resolve_invocation(
-                {"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator
-            )
             # Fold the ROM's persisted disc pick over the install so a
             # per-platform core change re-bakes the pinned disc, not disc 1 /
             # the m3u. A single-disc ROM resolves to its own file_path.
             bake_path = self._disc_resolver.resolve_for_install(install, rom.selected_disc)
-            rebake_items.append(
-                {
-                    "app_id": rom.shortcut_app_id,
-                    "launch_options": self._launch_renderer.build_launch_options(invocation, bake_path),
-                }
-            )
+            rom_dict = {"id": rom.rom_id, "platform_slug": rom.platform_slug}
+            cross_rendered = self._active_core.cross_backend_render_for_rom(rom.rom_id, rom_dict, bake_path)
+            if cross_rendered is not None:
+                launch_options = cross_rendered
+            else:
+                emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
+                invocation = self._launch_renderer.resolve_invocation(rom_dict, emulator)
+                launch_options = self._launch_renderer.build_launch_options(invocation, bake_path)
+            rebake_items.append({"app_id": rom.shortcut_app_id, "launch_options": launch_options})
         return rebake_items
 
     async def set_system_core(self, platform_slug: str, core_label: str) -> dict[str, Any]:
@@ -271,6 +320,11 @@ class CoreService:
         there is nothing to update live: the pin still lands and
         ``launch_options``/``app_id`` are ``None`` (the override applies on the
         next download).
+
+        Mutually exclusive with :meth:`set_game_cross_backend_pin`'s pin: this
+        also clears any cross-backend pin on ``rom_id``, since that pin is
+        checked BEFORE this override at every bake site and would otherwise
+        silently keep winning over this fresh pick.
         """
         return await self._loop.run_in_executor(None, self._set_game_core_io, rom_id, label)
 
@@ -306,12 +360,110 @@ class CoreService:
             # write path (never the sync UPSERT) — scoped to the active backend,
             # leaving any other backend's pin for this ROM untouched.
             rom.pin_emulator_override(backend_id, label)
+            # Mutually exclusive with a cross-backend pin (the symmetric half of
+            # set_game_cross_backend_pin's own clear): cross_backend_render_for_rom
+            # is checked BEFORE this override at every bake site, so a stale pin
+            # left in place here would silently keep winning over this fresh pick.
+            rom.clear_cross_backend_emulator()
             uow.roms.set_emulator_override(rom_id, backend_id, rom.emulator_override_for(backend_id))
+            uow.roms.set_cross_backend_pin(rom_id, rom.cross_backend_pin)
             install = uow.rom_installs.get(rom_id)
         # Bake outside the committed write UoW, uniform with the clear path (the
         # pinned override is the just-resolved emulator, so there is no resolver
         # read and no commit-ordering subtlety here).
         launch_options, app_id = self._launch_options_for(rom, install, invocation)
+        return {"success": True, "launch_options": launch_options, "app_id": app_id}
+
+    async def set_game_cross_backend_pin(self, rom_id: int, backend_id: str, label: str) -> dict[str, Any]:
+        """Pin ``rom_id`` to always launch through *backend_id*'s emulator *label*.
+
+        Additive and separate from :meth:`set_game_core`'s ``emulator_overrides``
+        pin: this pin ignores which backend is globally active — the ROM
+        renders through *backend_id*'s own instance every time, mutually
+        exclusive with the active-backend-scoped override (setting this clears
+        the CURRENTLY active backend's ``emulator_overrides`` entry for this
+        ROM, so at most one deviation type is ever in effect at once).
+
+        *label* is resolved against *backend_id*'s OWN catalogue FIRST — never
+        the active backend's — mirroring :meth:`set_game_core`'s "resolve
+        first, hard-fail if it doesn't resolve, write only on success"
+        discipline. *backend_id* not registered or not detected on this
+        machine is ``reason: "unknown_backend"``; a *label* that does not
+        resolve to a bakeable emulator on *backend_id* is ``reason:
+        "core_unavailable"`` — both hard failures, **nothing is written**. On
+        success the response carries the freshly-baked ``launch_options`` (now
+        rendered through *backend_id*'s own instance) and ``app_id`` for an
+        installed+bound ROM, mirroring :meth:`set_game_core`'s response shape
+        exactly (``None``/``None`` for an uninstalled or unbound ROM).
+        """
+        return await self._loop.run_in_executor(None, self._set_game_cross_backend_pin_io, rom_id, backend_id, label)
+
+    def _set_game_cross_backend_pin_io(self, rom_id: int, backend_id: str, label: str) -> dict[str, Any]:
+        backend = self._backend_binder.bind_backend(backend_id)
+        if backend is None:
+            return {
+                "success": False,
+                "reason": "unknown_backend",
+                "message": f"Launcher backend {backend_id!r} is not installed on this machine",
+            }
+        with self._uow_factory() as uow:
+            rom = uow.roms.get(rom_id)
+            if rom is None:
+                return {
+                    "success": False,
+                    "reason": "not_found",
+                    "message": f"ROM {rom_id} is not tracked",
+                }
+            if rom.platform_slug == "win":
+                return self._windows_unsupported(rom_id)
+            system = self._resolve_system(rom.platform_slug)
+            invocation = label_to_invocation(backend.get_emulator_options(system)["options"], label)
+            if invocation is None:
+                # Hard-fail BEFORE any write — mirrors set_game_core's discipline,
+                # against backend_id's OWN catalogue rather than the active one.
+                return {
+                    "success": False,
+                    "reason": "core_unavailable",
+                    "message": f"Emulator '{label}' is not available for {rom.platform_slug} on {backend_id}",
+                }
+            rom.pin_cross_backend_emulator(backend_id, label)
+            # Mutually exclusive with the active backend's own emulator_overrides
+            # pin (avoids "which one wins" ambiguity) — clear whichever backend is
+            # CURRENTLY active, leaving any OTHER backend's independent pin alone.
+            active_backend_id = self._active_backend_id()
+            rom.clear_emulator_override(active_backend_id)
+            uow.roms.set_cross_backend_pin(rom_id, rom.cross_backend_pin)
+            uow.roms.set_emulator_override(rom_id, active_backend_id, rom.emulator_override_for(active_backend_id))
+            install = uow.rom_installs.get(rom_id)
+        launch_options, app_id = self._launch_options_for(rom, install, None)
+        return {"success": True, "launch_options": launch_options, "app_id": app_id}
+
+    async def clear_game_cross_backend_pin(self, rom_id: int) -> dict[str, Any]:
+        """Clear ``rom_id``'s cross-backend pin (Follow default / Reset).
+
+        Drops the pin so the ROM falls through to its normal active-backend
+        precedence (per-game override → per-platform core → default), then
+        returns the recomputed ``launch_options``/``app_id`` for an
+        installed+bound ROM, mirroring :meth:`clear_game_core`'s shape exactly.
+        """
+        return await self._loop.run_in_executor(None, self._clear_game_cross_backend_pin_io, rom_id)
+
+    def _clear_game_cross_backend_pin_io(self, rom_id: int) -> dict[str, Any]:
+        with self._uow_factory() as uow:
+            rom = uow.roms.get(rom_id)
+            if rom is None:
+                return {
+                    "success": False,
+                    "reason": "not_found",
+                    "message": f"ROM {rom_id} is not tracked",
+                }
+            rom.clear_cross_backend_emulator()
+            uow.roms.set_cross_backend_pin(rom_id, rom.cross_backend_pin)
+            install = uow.rom_installs.get(rom_id)
+        if rom.shortcut_app_id is None or install is None:
+            return {"success": True, "launch_options": None, "app_id": None}
+        emulator = self._active_core.active_emulator_for_rom(rom_id)
+        launch_options, app_id = self._launch_options_for(rom, install, emulator)
         return {"success": True, "launch_options": launch_options, "app_id": app_id}
 
     async def clear_game_core(self, rom_id: int) -> dict[str, Any]:
@@ -330,6 +482,11 @@ class CoreService:
         shape before any write. When the ROM is unknown the same canonical
         failure shape is returned; when it is uninstalled or unbound the NULL
         still lands and ``launch_options``/``app_id`` are ``None``.
+
+        This is the picker's ONE clear-to-default action (no separate Reset
+        item), so it also clears any cross-backend pin on ``rom_id`` — leaving
+        it in place would keep winning over the just-restored default at every
+        bake site, since a cross-backend pin is checked first.
         """
         return await self._loop.run_in_executor(None, self._clear_game_core_io, rom_id)
 
@@ -351,7 +508,13 @@ class CoreService:
                 return self._windows_unsupported(rom_id)
             backend_id = self._active_backend_id()
             rom.clear_emulator_override(backend_id)
+            # "Use System Override" is the one clear-to-default action the picker
+            # offers (no separate Reset item) — it must drop BOTH deviation types,
+            # or a cross-backend pin would survive and keep winning at bake time
+            # even though the user just asked to follow the default.
+            rom.clear_cross_backend_emulator()
             uow.roms.set_emulator_override(rom_id, backend_id, rom.emulator_override_for(backend_id))
+            uow.roms.set_cross_backend_pin(rom_id, rom.cross_backend_pin)
             install = uow.rom_installs.get(rom_id)
         # Cleared pin → follow the per-platform/system default. The write UoW has
         # committed, so the resolver's own UoW now reads the landed NULL and
@@ -392,13 +555,15 @@ class CoreService:
         app_id = rom.shortcut_app_id
         if app_id is None or install is None:
             return (None, None)
-        invocation = self._launch_renderer.resolve_invocation(
-            {"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator
-        )
         # Fold the ROM's persisted disc pick over the install so a per-game core
         # pin/clear re-bakes the pinned disc, not disc 1 / the m3u. A single-disc
         # ROM resolves to its own file_path.
         bake_path = self._disc_resolver.resolve_for_install(install, rom.selected_disc)
+        rom_dict = {"id": rom.rom_id, "platform_slug": rom.platform_slug}
+        cross_rendered = self._active_core.cross_backend_render_for_rom(rom.rom_id, rom_dict, bake_path)
+        if cross_rendered is not None:
+            return (cross_rendered, app_id)
+        invocation = self._launch_renderer.resolve_invocation(rom_dict, emulator)
         return (self._launch_renderer.build_launch_options(invocation, bake_path), app_id)
 
     def _read_rom(self, rom_id: int) -> Rom | None:

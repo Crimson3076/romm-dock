@@ -94,6 +94,14 @@ class RomRepository(Protocol):
         """
         ...
 
+    def set_cross_backend_pin(self, rom_id: int, pin: dict[str, str] | None) -> None:
+        """Pin (or clear with ``None``) the cross-backend emulator pin for *rom_id*.
+
+        The only write path for ``cross_backend_pin``; the sync upsert in
+        :meth:`save` never touches it, so a re-sync preserves the pin.
+        """
+        ...
+
     def set_selected_disc(self, rom_id: int, filename: str | None) -> None:
         """Pin (or clear with ``None``) the per-game disc selection for *rom_id*.
 

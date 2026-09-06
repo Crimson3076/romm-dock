@@ -107,6 +107,8 @@ const DEFAULT_STATE: GameDetailState = {
   emulatorDataAvailable: true,
   platformCoreLabel: null,
   hasGameOverride: false,
+  crossBackendPin: null,
+  otherBackends: [],
 };
 
 type BiosStatusResult = Awaited<ReturnType<typeof getBiosStatus>>;

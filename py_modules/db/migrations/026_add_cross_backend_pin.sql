@@ -1,0 +1,24 @@
+-- =============================================================================
+-- 026_add_cross_backend_pin.sql — per-game cross-launcher-backend emulator pin
+-- Cross-backend picker follow-up to issue #918 / migration 024
+-- =============================================================================
+--
+-- Adds a nullable JSON column to roms holding at most one explicit pin of the
+-- shape '{"backend_id": "<id>", "label": "<label>"}' — "launch THIS game
+-- through THIS SPECIFIC backend's emulator, regardless of which backend is
+-- globally active." NULL = no cross-backend pin.
+--
+-- This is additive and separate from emulator_override (migration 024): that
+-- column remembers a SEPARATE preference PER backend, applied only when that
+-- backend is the active one (an independent RetroDECK pin and an independent
+-- EmuDeck pin for the same ROM coexist). cross_backend_pin is a single pin
+-- that always resolves through its named backend's own rendering, no matter
+-- which backend is currently active. Only pin/clear ever writes it; the sync
+-- UPSERT deliberately excludes it (adapters/repositories/rom.py's
+-- _SYNC_COLUMNS), mirroring emulator_override/selected_disc, so a re-sync
+-- never wipes a user's cross-backend pin.
+--
+-- Transaction-safe DDL only — the runner (adapters/sqlite_migrations.py) wraps
+-- BEGIN/COMMIT and stamps PRAGMA user_version = 26.
+-- -----------------------------------------------------------------------------
+ALTER TABLE roms ADD COLUMN cross_backend_pin TEXT;  -- JSON {backend_id, label}; NULL = no pin (pin/clear only)

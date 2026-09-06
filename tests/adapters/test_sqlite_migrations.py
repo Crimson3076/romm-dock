@@ -83,7 +83,7 @@ def _set_user_version(db_path: str, version: int) -> None:
 # + 021_add_rom_fs_size + 022_rename_collection_kind_user_to_standard
 # + 023_add_rom_install_launchable + 024_emulator_override_per_backend
 # + 025_add_selected_exe).
-_SHIPPED_VERSION = 25
+_SHIPPED_VERSION = 26
 
 # Tables after every shipped migration: the v1 set plus 006's play-session outbox,
 # 012's per-platform completion stamp, and 019's per-collection completion stamp,
@@ -1634,6 +1634,44 @@ class Test025AddSelectedExe:
         conn = sqlite3.connect(db_path)
         try:
             stored = conn.execute("SELECT selected_exe FROM roms WHERE rom_id = 1").fetchone()[0]
+        finally:
+            conn.close()
+        assert stored is None
+
+
+class Test026AddCrossBackendPin:
+    """026 — adds the nullable cross_backend_pin column to roms only, mirroring 002/004/025."""
+
+    def test_adds_cross_backend_pin_to_roms_only(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+
+        apply_migrations(db_path)
+
+        assert _user_version(db_path) == _SHIPPED_VERSION
+        assert "cross_backend_pin" in _columns(db_path, "roms")
+        assert "cross_backend_pin" not in _columns(db_path, "rom_installs")
+
+    def test_cross_backend_pin_absent_before_026(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 25)))
+
+        assert _user_version(db_path) == 25
+        assert "cross_backend_pin" not in _columns(db_path, "roms")
+
+    def test_existing_row_reads_null_across_the_migration(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 25)))
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            _insert_rom(conn, 1, 5000)
+        finally:
+            conn.close()
+
+        assert apply_migrations(db_path) == _SHIPPED_VERSION
+
+        conn = sqlite3.connect(db_path)
+        try:
+            stored = conn.execute("SELECT cross_backend_pin FROM roms WHERE rom_id = 1").fetchone()[0]
         finally:
             conn.close()
         assert stored is None

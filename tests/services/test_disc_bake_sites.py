@@ -154,7 +154,7 @@ class TestLibrarySyncBakeSite:
 class TestInstallRecorderBakeSite:
     """The bake both a completed download and an adoption resolve through."""
 
-    def _recorder(self, uow_factory, disc_resolver):
+    def _recorder(self, uow_factory, disc_resolver, active_core=None, launch_renderer=None):
         from services.rom_install_recorder import RomInstallRecorder, RomInstallRecorderConfig
 
         return RomInstallRecorder(
@@ -163,10 +163,10 @@ class TestInstallRecorderBakeSite:
                 clock=FakeClock(),
                 uow_factory=uow_factory,
                 system_extensions=lambda system_name: frozenset(),
-                active_core=FakeActiveCoreResolver(default=(None, None)),
+                active_core=active_core if active_core is not None else FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=disc_resolver,
                 windows_resolver=FakeWindowsResolver(),
-                launch_renderer=FakeLaunchCommandRenderer(),
+                launch_renderer=launch_renderer if launch_renderer is not None else FakeLaunchCommandRenderer(),
             )
         )
 
@@ -184,6 +184,19 @@ class TestInstallRecorderBakeSite:
         recorder = self._recorder(FakeUnitOfWorkFactory(uow=uow), disc_resolver)
         _app_id, launch_options = recorder.do_resolve_launch_bake(1, {}, _DISC1_PATH)
         assert launch_options.endswith(f'"{_DISC1_PATH}"')
+
+    def test_resolve_launch_bake_cross_backend_pin_wins(self, disc_resolver):
+        uow = FakeUnitOfWork()
+        _seed_multi_disc(uow, rom_id=1, selected_disc=_DISC2, app_id=1234)
+        active_core = FakeActiveCoreResolver(per_rom_cross_backend={1: "cross-rendered-command"})
+        launch_renderer = FakeLaunchCommandRenderer()
+        recorder = self._recorder(
+            FakeUnitOfWorkFactory(uow=uow), disc_resolver, active_core=active_core, launch_renderer=launch_renderer
+        )
+        app_id, launch_options = recorder.do_resolve_launch_bake(1, {}, _DISC1_PATH)
+        assert app_id == 1234
+        assert launch_options == "cross-rendered-command"
+        assert launch_renderer.calls == []
 
     def test_resolve_launch_bake_returns_the_empty_command_for_an_unlaunchable_install(self, disc_resolver):
         # download_complete's re-bake reads through the same seam, so the freshly

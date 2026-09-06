@@ -49,6 +49,13 @@ class Rom:
     # with no key here has no pin and follows its own default — switching the
     # active backend never carries one backend's pin over to another's.
     emulator_overrides: dict[str, str] = field(default_factory=dict)
+    # A single, explicit cross-backend pin — "launch this game through THIS
+    # backend's emulator, regardless of which backend is globally active."
+    # Additive and separate from ``emulator_overrides``: that map is scoped to
+    # whichever backend is active, this pin ignores which backend is active
+    # entirely. ``None`` = no cross-backend pin (follow the normal per-game/
+    # per-platform/default precedence for the active backend).
+    cross_backend_pin: dict[str, str] | None = None
     selected_disc: str | None = None
     selected_exe: str | None = None
     applied_launch_options: str | None = None
@@ -205,6 +212,34 @@ class Rom:
         Every other backend's pin (if any) is left exactly as it was.
         """
         self.emulator_overrides.pop(backend_id, None)
+
+    def pin_cross_backend_emulator(self, backend_id: str, label: str) -> None:
+        """Pin this ROM to launch through *backend_id*'s emulator *label*, always.
+
+        Unlike :meth:`pin_emulator_override`, this pin is NOT scoped to whichever
+        backend happens to be active — it names the backend explicitly, so the
+        ROM launches through *backend_id*'s own rendering even while a different
+        backend is globally active. It does not resolve *label* against
+        *backend_id*'s catalogue (the caller does that before calling this, the
+        same "resolve first, write only on success" discipline
+        :meth:`pin_emulator_override` follows) and it does not touch
+        ``emulator_overrides`` — the two pins are mutually exclusive by the
+        caller's own discipline (``CoreService`` clears the active backend's
+        ``emulator_overrides`` entry when this is set), not by anything enforced
+        here. Both *backend_id* and *label* must be non-blank; either being blank
+        or whitespace-only raises ``ValueError``.
+        """
+        stripped_backend = backend_id.strip()
+        stripped_label = label.strip()
+        if not stripped_backend:
+            raise ValueError("cross_backend_pin backend_id must not be empty")
+        if not stripped_label:
+            raise ValueError("cross_backend_pin label must not be empty")
+        self.cross_backend_pin = {"backend_id": stripped_backend, "label": stripped_label}
+
+    def clear_cross_backend_emulator(self) -> None:
+        """Drop the cross-backend pin so the ROM follows its normal active-backend resolution."""
+        self.cross_backend_pin = None
 
     def pin_selected_disc(self, filename: str) -> None:
         """Pin the multi-disc launch target to the disc named *filename*.

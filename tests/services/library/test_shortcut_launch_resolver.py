@@ -10,6 +10,9 @@ alongside the other launch-bake sites, so a change to the disc pin's handling
 fails every site at once.
 """
 
+from fakes.fake_core_info_provider import libretro_option
+from fakes.fake_launcher_backend_factory import FakeLauncherBackend
+
 from domain.shortcut_data import EmulatorInvocation
 
 # conftest.py patches decky before this import
@@ -64,5 +67,71 @@ class TestBuildCoreOverrides:
         _seed_install(plugin, 10, file_path="/roms/n64/a.z64", platform_slug="n64")
         result = plugin._sync_service._shortcut_launch_resolver.do_build_core_overrides(
             [{"id": 10, "platform_slug": "n64"}]
+        )
+        assert result == {}
+
+
+class TestBuildCrossBackendOverrides:
+    """The ``cross_backend_launch_options`` map both preview and apply pass to
+    ``build_shortcuts_data`` — additive and separate from ``do_build_core_overrides``."""
+
+    def test_resolving_pin_is_rendered_through_the_named_backend(self, plugin):
+        _seed_install(plugin, 10, file_path="/roms/psx/a.chd", platform_slug="psx")
+        emudeck = FakeLauncherBackend(
+            backend_id="emudeck",
+            installation_id="emudeck",
+            emulator_options={
+                "psx": {
+                    "available": True,
+                    "options": [libretro_option("pcsx_rearmed_libretro", "PCSX ReARMed")],
+                }
+            },
+        )
+        plugin._backend_binder.backends["emudeck"] = emudeck
+        with plugin._uow:
+            rom = plugin._uow.roms.get(10)
+            rom.pin_cross_backend_emulator("emudeck", "PCSX ReARMed")
+            plugin._uow.roms.set_cross_backend_pin(10, rom.cross_backend_pin)
+
+        roms = [{"id": 10, "platform_slug": "psx"}]
+        installed_paths = {10: "/roms/psx/a.chd"}
+        result = plugin._sync_service._shortcut_launch_resolver.do_build_cross_backend_overrides(roms, installed_paths)
+
+        assert result == {
+            10: (
+                "flatpak run net.retrodeck.retrodeck -e "
+                '"%EMULATOR_RETROARCH% -L /var/config/retroarch/cores/pcsx_rearmed_libretro.so %ROM%" '
+                '"/roms/psx/a.chd"'
+            )
+        }
+
+    def test_no_pin_returns_empty(self, plugin):
+        _seed_install(plugin, 10, file_path="/roms/n64/a.z64", platform_slug="n64")
+        result = plugin._sync_service._shortcut_launch_resolver.do_build_cross_backend_overrides(
+            [{"id": 10, "platform_slug": "n64"}], {10: "/roms/n64/a.z64"}
+        )
+        assert result == {}
+
+    def test_uninstalled_rom_is_skipped(self, plugin):
+        """A ROM absent from installed_paths is never checked for a pin."""
+        with plugin._uow:
+            from domain.rom import Rom
+
+            plugin._uow.roms.save(
+                Rom(
+                    rom_id=99,
+                    platform_slug="psx",
+                    name="uninstalled",
+                    fs_name="uninstalled.chd",
+                    shortcut_app_id=None,
+                    last_synced_at="2026-01-01T00:00:00+00:00",
+                )
+            )
+            rom = plugin._uow.roms.get(99)
+            rom.pin_cross_backend_emulator("emudeck", "PCSX ReARMed")
+            plugin._uow.roms.set_cross_backend_pin(99, rom.cross_backend_pin)
+
+        result = plugin._sync_service._shortcut_launch_resolver.do_build_cross_backend_overrides(
+            [{"id": 99, "platform_slug": "psx"}], {}
         )
         assert result == {}

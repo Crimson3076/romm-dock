@@ -56,6 +56,15 @@ export interface EmulatorMenuConfig {
   followSystem?: { hasGameOverride: boolean; onFollowSystem: () => void };
   /** Called with the picked emulator LABEL when a bakeable entry is chosen. */
   onPick: (label: string) => void;
+  /**
+   * Game-detail only: every OTHER installed backend's own catalogue, for
+   * cross-backend pinning. Omitted (or empty) on the System page.
+   */
+  otherBackends?: Array<{ backendId: string; displayName: string; emulators: EmulatorOption[] }>;
+  /** Game-detail only: the ROM's current cross-backend pin, or null. */
+  crossBackendPin?: { backendId: string; label: string } | null;
+  /** Game-detail only: called with (backendId, label) when a cross-backend entry is picked. */
+  onPickCrossBackend?: (backendId: string, label: string) => void;
 }
 
 /**
@@ -85,10 +94,49 @@ function emulatorEntryLabel(e: EmulatorOption, isActive: boolean, isPlatformCore
   return `${e.label}${kindMark(e)}${defaultMark}${systemMark}${activeMark}`;
 }
 
+/**
+ * Render one emulator entry — disabled with its reason copy when un-bakeable,
+ * clickable with its active/default/system markers otherwise. Shared between
+ * the native (active-backend) list and every foreign backend's own list, so a
+ * `namePrefix` (e.g. `"EmuDeck: "`) is threaded through for the latter.
+ */
+function renderEntry(
+  e: EmulatorOption,
+  key: string,
+  isActive: boolean,
+  isPlatformCore: boolean,
+  onClickPick: () => void,
+  activeBackendDisplayName: string | null | undefined,
+  namePrefix = "",
+): ReactNode {
+  if (!e.bakeable) {
+    return (
+      <MenuItem key={key} disabled={true}>
+        {`${namePrefix}${e.label}${kindMark(e)} — ${reasonCopy(e.reason, activeBackendDisplayName)}`}
+      </MenuItem>
+    );
+  }
+  return (
+    <MenuItem key={key} onClick={onClickPick}>
+      {`${namePrefix}${emulatorEntryLabel(e, isActive, isPlatformCore)}`}
+    </MenuItem>
+  );
+}
+
 /** Build the `<Menu>` element for `showContextMenu`. */
 export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
-  const { emulators, emulatorDataAvailable, activeLabel, platformCoreLabel, activeBackendDisplayName, followSystem, onPick } =
-    config;
+  const {
+    emulators,
+    emulatorDataAvailable,
+    activeLabel,
+    platformCoreLabel,
+    activeBackendDisplayName,
+    followSystem,
+    onPick,
+    otherBackends,
+    crossBackendPin,
+    onPickCrossBackend,
+  } = config;
 
   if (!emulatorDataAvailable) {
     return (
@@ -115,11 +163,13 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
   if (followSystem) {
     // The core the game falls back to with no per-game pin: the per-platform
     // override when set, else the es_systems default. ✓ sits here when the game
-    // already follows the system (no per-game pin). "System Override" stays
+    // already follows the system (no per-game pin AND no cross-backend pin —
+    // a cross-backend pin always wins over the active backend's own catalogue,
+    // so it must never coincide with this checkmark). "System Override" stays
     // distinct from the "(default)" marker so the menu never shows two defaults.
     const fallbackLabel = platformCoreLabel ?? defaultLabel ?? null;
     const fallbackSuffix = fallbackLabel ? ` (${fallbackLabel})` : "";
-    const followsSystemMark = followSystem.hasGameOverride ? "" : " ✓";
+    const followsSystemMark = !followSystem.hasGameOverride && !crossBackendPin ? " ✓" : "";
     children.push(
       <MenuItem key="follow-system" onClick={followSystem.onFollowSystem}>
         {`Use System Override${fallbackSuffix}${followsSystemMark}`}
@@ -130,24 +180,37 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
 
   for (const e of emulators) {
     const key = `emu-${e.label}`;
-    if (!e.bakeable) {
-      children.push(
-        <MenuItem
-          key={key}
-          disabled={true}
-        >{`${e.label}${kindMark(e)} — ${reasonCopy(e.reason, activeBackendDisplayName)}`}</MenuItem>,
-      );
-      continue;
-    }
-    // The active marker sits on the ACTIVE emulator: the default-marked entry
-    // when nothing overrides, otherwise the one whose label matches the active.
-    const isActive = activeIsDefault ? e.is_default : activeLabel === e.label;
+    // A cross-backend pin always wins over the active backend's own catalogue
+    // (checked first at every bake site), so none of THIS backend's entries —
+    // not even the one matching the active label — may carry the ✓ while a
+    // cross-backend pin is in effect. Only the foreign pinned entry below does.
+    const isActive = !crossBackendPin && (activeIsDefault ? e.is_default : activeLabel === e.label);
     const isPlatformCore = platformCoreLabel !== null && e.label === platformCoreLabel;
-    children.push(
-      <MenuItem key={key} onClick={() => onPick(e.label)}>
-        {emulatorEntryLabel(e, isActive, isPlatformCore)}
-      </MenuItem>,
-    );
+    children.push(renderEntry(e, key, isActive, isPlatformCore, () => onPick(e.label), activeBackendDisplayName));
+  }
+
+  if (otherBackends && otherBackends.length > 0) {
+    // Flat, prefixed list rather than a nested submenu — no nested-`<Menu>`
+    // pattern exists anywhere else in this codebase's @decky/ui usage, so a
+    // flyout submenu here would be an unproven UI shape.
+    children.push(<MenuSeparator key="other-backends-sep" />);
+    for (const backend of otherBackends) {
+      for (const e of backend.emulators) {
+        const key = `emu-${backend.backendId}-${e.label}`;
+        const isActive = !!crossBackendPin && crossBackendPin.backendId === backend.backendId && crossBackendPin.label === e.label;
+        children.push(
+          renderEntry(
+            e,
+            key,
+            isActive,
+            false,
+            () => onPickCrossBackend?.(backend.backendId, e.label),
+            activeBackendDisplayName,
+            `${backend.displayName}: `,
+          ),
+        );
+      }
+    }
   }
 
   return <Menu label="Emulator Core">{children}</Menu>;

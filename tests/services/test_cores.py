@@ -8,9 +8,11 @@ from typing import Any
 
 import pytest
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
+from fakes.fake_backend_binder import FakeBackendBinder
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, libretro_option, standalone_option
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
+from fakes.fake_launcher_backend_factory import FakeLauncherBackendFactory
 from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
@@ -172,6 +174,16 @@ def launch_renderer() -> FakeLaunchCommandRenderer:
 
 
 @pytest.fixture
+def backend_binder() -> FakeBackendBinder:
+    return FakeBackendBinder()
+
+
+@pytest.fixture
+def backend_factories() -> list[FakeLauncherBackendFactory]:
+    return [FakeLauncherBackendFactory("retrodeck")]
+
+
+@pytest.fixture
 def service(
     event_loop,
     logger,
@@ -184,6 +196,8 @@ def service(
     active_core,
     disc_resolver,
     launch_renderer,
+    backend_binder,
+    backend_factories,
 ) -> CoreService:
     return CoreService(
         config=CoreServiceConfig(
@@ -199,6 +213,8 @@ def service(
             active_core=active_core,
             disc_resolver=disc_resolver,
             launch_renderer=launch_renderer,
+            backend_factories=backend_factories,
+            backend_binder=backend_binder,
         ),
     )
 
@@ -217,6 +233,8 @@ class TestGetPlatformCoreInfo:
             "active_core_label": "Snes9x",
             "platform_core_label": None,
             "has_game_override": False,
+            "cross_backend_pin": None,
+            "other_backends": [],
         }
 
     def test_windows_rom_returns_no_emulators(self, event_loop, service, uow, core_info):
@@ -232,6 +250,8 @@ class TestGetPlatformCoreInfo:
             "active_core_label": None,
             "platform_core_label": None,
             "has_game_override": False,
+            "cross_backend_pin": None,
+            "other_backends": [],
         }
         assert core_info.emulator_options_calls == []
 
@@ -246,6 +266,8 @@ class TestGetPlatformCoreInfo:
             "active_core_label": None,
             "platform_core_label": None,
             "has_game_override": False,
+            "cross_backend_pin": None,
+            "other_backends": [],
         }
         assert core_info.emulator_options_calls == []
 
@@ -446,6 +468,23 @@ class TestSetGameCore:
         assert ("dc", None) in resolve_system.calls
         assert core_info.emulator_options_calls == ["dreamcast"]
 
+    def test_clears_an_existing_cross_backend_pin(self, event_loop, service, uow):
+        # A cross-backend pin is checked BEFORE this override at every bake
+        # site (ActiveCoreResolver.cross_backend_render_for_rom) — left in
+        # place, it would silently keep winning over this fresh active-backend
+        # pick, so picking a normal entry must drop it.
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        rom = uow.roms.get(42)
+        rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+        uow.roms.set_cross_backend_pin(42, rom.cross_backend_pin)
+
+        result = event_loop.run_until_complete(service.set_game_core(42, "bsnes"))
+
+        assert result["success"] is True
+        assert uow.roms.get(42).cross_backend_pin is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") == "bsnes"
+
 
 # ── clear_game_core (Reset / Follow default) ───────────────────────────
 
@@ -517,6 +556,273 @@ class TestClearGameCore:
         assert result["success"] is False
         assert result["reason"] == "unsupported"
         assert active_core.emulator_calls == []
+
+    def test_clear_drops_an_existing_cross_backend_pin(self, event_loop, service, uow, active_core):
+        # "Use System Override" is the picker's one clear-to-default action (no
+        # separate Reset item) — it must drop a cross-backend pin too, or the
+        # pin would keep winning over the just-restored default at every bake
+        # site (cross_backend_render_for_rom is checked first).
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        rom = uow.roms.get(42)
+        rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+        uow.roms.set_cross_backend_pin(42, rom.cross_backend_pin)
+
+        result = event_loop.run_until_complete(service.clear_game_core(42))
+
+        assert result["success"] is True
+        assert uow.roms.get(42).cross_backend_pin is None
+
+
+# ── set_game_cross_backend_pin / clear_game_cross_backend_pin ──────────
+
+
+class TestSetGameCrossBackendPin:
+    def test_happy_path_pins_clears_active_override_and_bakes(
+        self, event_loop, service, uow, backend_binder, active_core
+    ):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99, emulator_override="bsnes")
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        from fakes.fake_launcher_backend_factory import FakeLauncherBackend
+
+        backend_binder.backends["emudeck"] = FakeLauncherBackend(
+            backend_id="emudeck",
+            installation_id="emudeck",
+            emulator_options={"snes": {"available": True, "options": [libretro_option("snes9x_libretro", "Snes9x")]}},
+        )
+        active_core.per_rom_cross_backend[42] = "cross-rendered-command"
+
+        result = event_loop.run_until_complete(service.set_game_cross_backend_pin(42, "emudeck", "Snes9x"))
+
+        assert result == {"success": True, "launch_options": "cross-rendered-command", "app_id": 99}
+        rom = uow.roms.get(42)
+        assert rom.cross_backend_pin == {"backend_id": "emudeck", "label": "Snes9x"}
+        # Mutual exclusion: the CURRENTLY active backend's own override is cleared.
+        assert rom.emulator_override_for("retrodeck") is None
+
+    def test_unknown_backend_fails_and_writes_nothing(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        result = event_loop.run_until_complete(service.set_game_cross_backend_pin(42, "does-not-exist", "Snes9x"))
+        assert result["success"] is False
+        assert result["reason"] == "unknown_backend"
+        assert uow.roms.get(42).cross_backend_pin is None
+
+    def test_unresolvable_label_on_named_backend_fails_and_writes_nothing(
+        self, event_loop, service, uow, backend_binder
+    ):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        from fakes.fake_launcher_backend_factory import FakeLauncherBackend
+
+        backend_binder.backends["emudeck"] = FakeLauncherBackend(
+            backend_id="emudeck",
+            installation_id="emudeck",
+            emulator_options={"snes": {"available": True, "options": []}},
+        )
+        result = event_loop.run_until_complete(service.set_game_cross_backend_pin(42, "emudeck", "Snes9x"))
+        assert result["success"] is False
+        assert result["reason"] == "core_unavailable"
+        assert uow.roms.get(42).cross_backend_pin is None
+
+    def test_unknown_rom_fails(self, event_loop, service, backend_binder):
+        from fakes.fake_launcher_backend_factory import FakeLauncherBackend
+
+        backend_binder.backends["emudeck"] = FakeLauncherBackend(
+            backend_id="emudeck", installation_id="emudeck", emulator_options={}
+        )
+        result = event_loop.run_until_complete(service.set_game_cross_backend_pin(7, "emudeck", "Snes9x"))
+        assert result["success"] is False
+        assert result["reason"] == "not_found"
+
+    def test_windows_rom_refused(self, event_loop, service, uow, backend_binder):
+        from fakes.fake_launcher_backend_factory import FakeLauncherBackend
+
+        backend_binder.backends["emudeck"] = FakeLauncherBackend(
+            backend_id="emudeck", installation_id="emudeck", emulator_options={}
+        )
+        _seed_rom(uow, rom_id=42, platform_slug="win", shortcut_app_id=99)
+        result = event_loop.run_until_complete(service.set_game_cross_backend_pin(42, "emudeck", "Snes9x"))
+        assert result["success"] is False
+        assert result["reason"] == "unsupported"
+
+
+class TestClearGameCrossBackendPin:
+    def test_clears_pin_and_falls_back_to_active_backend_resolution(self, event_loop, service, uow, active_core):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        _seed_install(uow, rom_id=42, file_path="/roms/snes/mario.sfc")
+        rom = uow.roms.get(42)
+        rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+        uow.roms.set_cross_backend_pin(42, rom.cross_backend_pin)
+        active_core.per_rom[42] = ("bsnes_libretro", "bsnes")
+
+        result = event_loop.run_until_complete(service.clear_game_cross_backend_pin(42))
+
+        assert result["success"] is True
+        assert uow.roms.get(42).cross_backend_pin is None
+        assert result["launch_options"] == (
+            "flatpak run net.retrodeck.retrodeck -e "
+            '"%EMULATOR_RETROARCH% -L /var/config/retroarch/cores/bsnes_libretro.so %ROM%" '
+            '"/roms/snes/mario.sfc"'
+        )
+
+    def test_unknown_rom_fails(self, event_loop, service):
+        result = event_loop.run_until_complete(service.clear_game_cross_backend_pin(7))
+        assert result["success"] is False
+        assert result["reason"] == "not_found"
+
+    def test_uninstalled_clears_without_live_launch(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=42, platform_slug="snes", shortcut_app_id=99)
+        rom = uow.roms.get(42)
+        rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+        uow.roms.set_cross_backend_pin(42, rom.cross_backend_pin)
+
+        result = event_loop.run_until_complete(service.clear_game_cross_backend_pin(42))
+
+        assert result["success"] is True
+        assert result["launch_options"] is None
+        assert result["app_id"] is None
+
+
+# ── get_platform_core_info: other_backends catalogue ────────────────────
+
+
+class TestOtherBackendsPayload:
+    def _service_with_factories(
+        self,
+        *,
+        event_loop,
+        logger,
+        core_info,
+        resolve_system,
+        settings,
+        settings_persister,
+        bios_checker,
+        uow_factory,
+        active_core,
+        disc_resolver,
+        launch_renderer,
+        backend_binder,
+        factories,
+    ) -> CoreService:
+        return CoreService(
+            config=CoreServiceConfig(
+                loop=event_loop,
+                logger=logger,
+                core_info=core_info,
+                active_backend_id=lambda: "retrodeck",
+                resolve_system=resolve_system,
+                settings=settings,
+                settings_persister=settings_persister,
+                bios_checker=bios_checker,
+                uow_factory=uow_factory,
+                active_core=active_core,
+                disc_resolver=disc_resolver,
+                launch_renderer=launch_renderer,
+                backend_factories=factories,
+                backend_binder=backend_binder,
+            ),
+        )
+
+    def test_excludes_active_backend_and_includes_detected_other(
+        self,
+        event_loop,
+        logger,
+        core_info,
+        resolve_system,
+        settings,
+        settings_persister,
+        bios_checker,
+        uow_factory,
+        active_core,
+        disc_resolver,
+        launch_renderer,
+        backend_binder,
+        uow,
+    ):
+        _seed_rom(uow, rom_id=42, platform_slug="snes")
+        emudeck_options = {"snes": {"available": True, "options": [libretro_option("bsnes_libretro", "bsnes-hd")]}}
+        emudeck_factory = FakeLauncherBackendFactory("emudeck", emulator_options=emudeck_options)
+        backend_binder.backends["emudeck"] = emudeck_factory.bind("emudeck")
+        svc = self._service_with_factories(
+            event_loop=event_loop,
+            logger=logger,
+            core_info=core_info,
+            resolve_system=resolve_system,
+            settings=settings,
+            settings_persister=settings_persister,
+            bios_checker=bios_checker,
+            uow_factory=uow_factory,
+            active_core=active_core,
+            disc_resolver=disc_resolver,
+            launch_renderer=launch_renderer,
+            backend_binder=backend_binder,
+            factories=[FakeLauncherBackendFactory("retrodeck"), emudeck_factory],
+        )
+
+        result = event_loop.run_until_complete(svc.get_platform_core_info(42))
+
+        assert result["other_backends"] == [
+            {
+                "backend_id": "emudeck",
+                "display_name": "emudeck",
+                "emulators": options_to_payload(emudeck_options["snes"]["options"]),
+            }
+        ]
+
+    def test_undetected_backend_is_excluded_entirely(
+        self,
+        event_loop,
+        logger,
+        core_info,
+        resolve_system,
+        settings,
+        settings_persister,
+        bios_checker,
+        uow_factory,
+        active_core,
+        disc_resolver,
+        launch_renderer,
+        backend_binder,
+        uow,
+    ):
+        _seed_rom(uow, rom_id=42, platform_slug="snes")
+        # backend_binder has nothing registered for "emudeck" -> bind_backend()
+        # returns None -> the factory is skipped entirely (not even an
+        # empty/error entry).
+        emudeck_factory = FakeLauncherBackendFactory("emudeck")
+        svc = self._service_with_factories(
+            event_loop=event_loop,
+            logger=logger,
+            core_info=core_info,
+            resolve_system=resolve_system,
+            settings=settings,
+            settings_persister=settings_persister,
+            bios_checker=bios_checker,
+            uow_factory=uow_factory,
+            active_core=active_core,
+            disc_resolver=disc_resolver,
+            launch_renderer=launch_renderer,
+            backend_binder=backend_binder,
+            factories=[FakeLauncherBackendFactory("retrodeck"), emudeck_factory],
+        )
+
+        result = event_loop.run_until_complete(svc.get_platform_core_info(42))
+
+        assert result["other_backends"] == []
+
+    def test_single_backend_installed_reports_empty_list(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=42, platform_slug="snes")
+        result = event_loop.run_until_complete(service.get_platform_core_info(42))
+        assert result["other_backends"] == []
+
+    def test_cross_backend_pin_surfaces_verbatim(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=42, platform_slug="snes")
+        rom = uow.roms.get(42)
+        rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+        uow.roms.set_cross_backend_pin(42, rom.cross_backend_pin)
+        result = event_loop.run_until_complete(service.get_platform_core_info(42))
+        assert result["cross_backend_pin"] == {"backend_id": "emudeck", "label": "Snes9x"}
 
 
 # ── set_system_core (per-platform settings write) ──────────────────────

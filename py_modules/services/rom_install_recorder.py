@@ -168,13 +168,16 @@ class RomInstallRecorder:
                 self._windows_resolver.resolve_launch_options(install, selected_exe) if install is not None else ""
             )
             return (rom.shortcut_app_id, launch_options)
-        emulator = self._active_core.active_emulator_for_rom(int(rom_id))
         # The install record was committed just before this read, so it is
         # present in the normal flow; guard for the rare race where it is not and
         # fall back to the raw path (no multi-disc resolution possible).
         bake_path = (
             self._disc_resolver.resolve_for_install(install, selected_disc) if install is not None else file_path
         )
+        cross_rendered = self._active_core.cross_backend_render_for_rom(int(rom_id), rom_detail, bake_path)
+        if cross_rendered is not None:
+            return (rom.shortcut_app_id, cross_rendered)
+        emulator = self._active_core.active_emulator_for_rom(int(rom_id))
         invocation = self._launch_renderer.resolve_invocation(rom_detail, emulator)
         launch_options = self._launch_renderer.build_launch_options(invocation, bake_path)
         return (rom.shortcut_app_id, launch_options)

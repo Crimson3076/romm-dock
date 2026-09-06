@@ -577,6 +577,16 @@ export interface GameCoreApplyResult {
 // default-marked core in the menu).
 export const setGameCore = callable<[number, string], GameCoreApplyResult>("set_game_core");
 export const clearGameCore = callable<[number], GameCoreApplyResult>("clear_game_core");
+// Cross-backend pin (per-game only): always launch rom_id through backend_id's
+// OWN emulator, regardless of which backend is globally active. Mutually
+// exclusive with setGameCore's pin — setting one clears the other server-side.
+// Response shape mirrors GameCoreApplyResult exactly, including the
+// core_unavailable / unknown_backend hard-fail reasons and the null/null
+// launch_options/app_id pair for an uninstalled or unbound ROM.
+export const setGameCrossBackendPin = callable<[number, string, string], GameCoreApplyResult>(
+  "set_game_cross_backend_pin",
+);
+export const clearGameCrossBackendPin = callable<[number], GameCoreApplyResult>("clear_game_cross_backend_pin");
 // Dedicated core-info path (#923) — active core + available cores for a ROM,
 // decoupled from the BIOS firmware status. Keyed by rom_id (#945): the active
 // core reflects the per-game DB override when one is pinned, else the platform

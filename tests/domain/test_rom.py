@@ -269,6 +269,69 @@ class TestClearEmulatorOverride:
         assert rom.emulator_override_for("emudeck") == "DuckStation"
 
 
+class TestPinCrossBackendEmulator:
+    def test_sets_pin(self):
+        rom = _make_rom()
+        rom.pin_cross_backend_emulator("emudeck", "DuckStation")
+        assert rom.cross_backend_pin == {"backend_id": "emudeck", "label": "DuckStation"}
+
+    def test_strips_surrounding_whitespace(self):
+        rom = _make_rom()
+        rom.pin_cross_backend_emulator("  emudeck  ", "  DuckStation  ")
+        assert rom.cross_backend_pin == {"backend_id": "emudeck", "label": "DuckStation"}
+
+    def test_empty_backend_id_raises(self):
+        rom = _make_rom()
+        with pytest.raises(ValueError, match="cross_backend_pin backend_id must not be empty"):
+            rom.pin_cross_backend_emulator("", "DuckStation")
+        assert rom.cross_backend_pin is None
+
+    def test_whitespace_only_backend_id_raises(self):
+        rom = _make_rom()
+        with pytest.raises(ValueError, match="cross_backend_pin backend_id must not be empty"):
+            rom.pin_cross_backend_emulator("   ", "DuckStation")
+        assert rom.cross_backend_pin is None
+
+    def test_empty_label_raises(self):
+        rom = _make_rom()
+        with pytest.raises(ValueError, match="cross_backend_pin label must not be empty"):
+            rom.pin_cross_backend_emulator("emudeck", "")
+        assert rom.cross_backend_pin is None
+
+    def test_whitespace_only_label_raises(self):
+        rom = _make_rom()
+        with pytest.raises(ValueError, match="cross_backend_pin label must not be empty"):
+            rom.pin_cross_backend_emulator("emudeck", "   ")
+        assert rom.cross_backend_pin is None
+
+    def test_re_pinning_replaces_the_previous_pin(self):
+        rom = _make_rom()
+        rom.pin_cross_backend_emulator("emudeck", "DuckStation")
+        rom.pin_cross_backend_emulator("retrodeck", "PCSX ReARMed")
+        assert rom.cross_backend_pin == {"backend_id": "retrodeck", "label": "PCSX ReARMed"}
+
+    def test_independent_of_emulator_overrides(self):
+        rom = _make_rom()
+        rom.pin_emulator_override("retrodeck", "Snes9x")
+        rom.pin_cross_backend_emulator("emudeck", "DuckStation")
+        assert rom.emulator_override_for("retrodeck") == "Snes9x"
+        assert rom.cross_backend_pin == {"backend_id": "emudeck", "label": "DuckStation"}
+
+
+class TestClearCrossBackendEmulator:
+    def test_clear_after_pin_sets_none(self):
+        rom = _make_rom()
+        rom.pin_cross_backend_emulator("emudeck", "DuckStation")
+        rom.clear_cross_backend_emulator()
+        assert rom.cross_backend_pin is None
+
+    def test_clear_when_already_none_stays_none(self):
+        rom = _make_rom()
+        assert rom.cross_backend_pin is None
+        rom.clear_cross_backend_emulator()
+        assert rom.cross_backend_pin is None
+
+
 class TestPinSelectedDisc:
     def test_sets_filename(self):
         rom = _make_rom()

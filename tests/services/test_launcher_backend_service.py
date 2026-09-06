@@ -217,6 +217,70 @@ class TestListBackends:
         assert active_installations[0]["installation_id"] == "emudeck"
 
 
+class TestBindBackend:
+    def test_binds_a_registered_detected_backend(self):
+        emudeck_factory = FakeLauncherBackendFactory("emudeck")
+        service, _settings, _persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck"), emudeck_factory],
+        )
+
+        backend = service.bind_backend("emudeck")
+
+        assert backend is not None
+        assert backend.backend_id == "emudeck"
+        assert emudeck_factory.bound == ["emudeck"]
+
+    def test_never_makes_the_bound_backend_active(self):
+        emudeck_factory = FakeLauncherBackendFactory("emudeck")
+        service, settings, persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck"), emudeck_factory],
+        )
+
+        service.bind_backend("emudeck")
+
+        assert service.active_backend_id() == "retrodeck"
+        assert "launcher_backend" not in settings
+        assert persister.save_count == 0
+
+    def test_unregistered_backend_returns_none(self):
+        service, _settings, _persister, _items = _service()
+        assert service.bind_backend("does-not-exist") is None
+
+    def test_registered_but_undetected_backend_returns_none(self):
+        emudeck_factory = FakeLauncherBackendFactory("emudeck", installations=[])
+        service, _settings, _persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck"), emudeck_factory],
+        )
+        assert service.bind_backend("emudeck") is None
+        # detect_installations was consulted; bind() was never reached with an
+        # empty installation list.
+        assert emudeck_factory.bound == []
+
+    def test_binds_the_first_of_several_detected_installations(self):
+        from domain.launcher_backend import DetectedInstallation
+
+        emudeck_factory = FakeLauncherBackendFactory(
+            "emudeck",
+            installations=[
+                DetectedInstallation(
+                    installation_id="emudeck-1", display_name="EmuDeck 1", home="", healthy=True, detail="ok"
+                ),
+                DetectedInstallation(
+                    installation_id="emudeck-2", display_name="EmuDeck 2", home="", healthy=True, detail="ok"
+                ),
+            ],
+        )
+        service, _settings, _persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck"), emudeck_factory],
+        )
+
+        backend = service.bind_backend("emudeck")
+
+        assert backend is not None
+        assert backend.installation_id == "emudeck-1"
+        assert emudeck_factory.bound == ["emudeck-1"]
+
+
 class TestSetActiveBackendFailures:
     def test_unknown_backend_id(self):
         service, settings, persister, _items = _service()

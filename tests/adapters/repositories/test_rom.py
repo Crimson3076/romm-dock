@@ -546,6 +546,82 @@ class TestResyncPreservesOverride:
         assert loaded.name == "Renamed Game"
 
 
+class TestCrossBackendPin:
+    def test_round_trips_via_get(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_cross_backend_pin(1, {"backend_id": "emudeck", "label": "DuckStation"})
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.cross_backend_pin == {"backend_id": "emudeck", "label": "DuckStation"}
+
+    def test_defaults_to_none_when_never_pinned(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.cross_backend_pin is None
+
+    def test_setting_none_writes_sql_null(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_cross_backend_pin(1, {"backend_id": "emudeck", "label": "DuckStation"})
+        uow.roms.set_cross_backend_pin(1, None)
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.cross_backend_pin is None
+        assert uow._conn is not None
+        stored = uow._conn.execute("SELECT cross_backend_pin FROM roms WHERE rom_id = 1").fetchone()[0]
+        assert stored is None
+
+    def test_re_pinning_replaces_the_previous_pin(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_cross_backend_pin(1, {"backend_id": "emudeck", "label": "DuckStation"})
+        uow.roms.set_cross_backend_pin(1, {"backend_id": "retrodeck", "label": "PCSX ReARMed"})
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.cross_backend_pin == {"backend_id": "retrodeck", "label": "PCSX ReARMed"}
+
+
+class TestResyncPreservesCrossBackendPin:
+    """A re-sync builds a fresh ``Rom`` with ``cross_backend_pin=None``; the sync
+    UPSERT must NOT wipe a pin the user set via ``set_cross_backend_pin``."""
+
+    def test_pin_survives_resync_and_identity_still_updates(self, uow: SqliteUnitOfWork):
+        rom_id = 1
+        uow.roms.save(_rom(rom_id, app_id=100))
+        uow.roms.set_cross_backend_pin(rom_id, {"backend_id": "emudeck", "label": "DuckStation"})
+
+        # A normal library re-sync: fresh Rom, no pin, changed identity.
+        resynced = _rom(rom_id, app_id=200)
+        resynced.name = "Renamed Game"
+        assert resynced.cross_backend_pin is None
+        uow.roms.save(resynced)
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        # (a) The pin survives the re-sync.
+        assert loaded.cross_backend_pin == {"backend_id": "emudeck", "label": "DuckStation"}
+        # (b) Identity columns still update on that save.
+        assert loaded.shortcut_app_id == 200
+        assert loaded.name == "Renamed Game"
+
+    def test_resync_preserves_cross_backend_pin_alongside_other_deviations(self, uow: SqliteUnitOfWork):
+        rom_id = 1
+        uow.roms.save(_rom(rom_id))
+        uow.roms.set_emulator_override(rom_id, "retrodeck", "Beetle PSX HW")
+        uow.roms.set_selected_disc(rom_id, "FF7 (Disc 3).cue")
+        uow.roms.set_cross_backend_pin(rom_id, {"backend_id": "emudeck", "label": "DuckStation"})
+
+        uow.roms.save(_rom(rom_id))
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        assert loaded.emulator_override_for("retrodeck") == "Beetle PSX HW"
+        assert loaded.selected_disc == "FF7 (Disc 3).cue"
+        assert loaded.cross_backend_pin == {"backend_id": "emudeck", "label": "DuckStation"}
+
+
 class TestSelectedDisc:
     def test_round_trips_via_get(self, uow: SqliteUnitOfWork):
         uow.roms.save(_rom(1))

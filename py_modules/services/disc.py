@@ -171,15 +171,20 @@ class DiscService:
         """Bake the launch command for the now-selected disc + the ROM's active core.
 
         Resolves the disc-aware bake path over the already-enumerated *discs*
-        (the pin just written, or the default when cleared), then folds it over
-        the ROM's FULL active core so a per-game/per-platform core still bakes its
-        ``-e`` override form rather than a plain launch. Runs after the write UoW
-        has closed: ``active_core_for_rom`` opens its own UoW, so resolving here
-        keeps it from nesting on the same SQLite connection.
+        (the pin just written, or the default when cleared), then checks the
+        ROM's cross-backend pin FIRST (renders through that backend's own
+        instance when set), else folds the path over the ROM's FULL active core
+        so a per-game/per-platform core still bakes its ``-e`` override form
+        rather than a plain launch. Runs after the write UoW has closed:
+        ``active_core_for_rom``/``cross_backend_render_for_rom`` open their own
+        UoW, so resolving here keeps it from nesting on the same SQLite
+        connection.
         """
         bake_path = self._disc_resolver.resolve_bake_path(install, discs, selected_disc)
+        rom_dict = {"id": rom.rom_id, "platform_slug": rom.platform_slug}
+        cross_rendered = self._active_core.cross_backend_render_for_rom(rom.rom_id, rom_dict, bake_path)
+        if cross_rendered is not None:
+            return cross_rendered
         emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
-        invocation = self._launch_renderer.resolve_invocation(
-            {"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator
-        )
+        invocation = self._launch_renderer.resolve_invocation(rom_dict, emulator)
         return self._launch_renderer.build_launch_options(invocation, bake_path)

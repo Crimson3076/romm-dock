@@ -234,6 +234,8 @@ class ActiveCoreReader(Protocol):
 
     def active_emulator_for_rom(self, rom_id: int) -> EmulatorInvocation | None: ...
 
+    def cross_backend_render_for_rom(self, rom_id: int, rom: dict[str, Any], path: str) -> str | None: ...
+
 
 class DiscResolver(Protocol):
     """Per-ROM multi-disc launch-path resolution consumed by the bake sites.

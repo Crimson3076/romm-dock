@@ -93,14 +93,19 @@ def launch_renderer() -> FakeLaunchCommandRenderer:
 
 
 @pytest.fixture
-def service(event_loop, uow_factory, disc_resolver, launch_renderer) -> DiscService:
+def active_core() -> FakeActiveCoreResolver:
+    return FakeActiveCoreResolver(default=(None, None))
+
+
+@pytest.fixture
+def service(event_loop, uow_factory, disc_resolver, launch_renderer, active_core) -> DiscService:
     return DiscService(
         config=DiscServiceConfig(
             loop=event_loop,
             logger=logging.getLogger("test_disc"),
             uow_factory=uow_factory,
             disc_resolver=disc_resolver,
-            active_core=FakeActiveCoreResolver(default=(None, None)),
+            active_core=active_core,
             launch_renderer=launch_renderer,
         ),
     )
@@ -205,6 +210,31 @@ class TestSelectDisc:
         event_loop.run_until_complete(service.select_disc(1, _DISC2))
         [(rom, _emulator)] = launch_renderer.calls
         assert rom["platform_slug"] == "psx"
+
+    def test_cross_backend_pin_wins_over_the_active_backend_render(
+        self, event_loop, service, uow, active_core, launch_renderer
+    ):
+        # A cross-backend pin renders through ActiveCoreResolver's dedicated
+        # seam BEFORE the normal launch_renderer path — the disc-resolved bake
+        # path is still folded in, but the launch_renderer/active-core-based
+        # invocation is never reached.
+        _seed_rom(uow, rom_id=1, selected_disc=None)
+        _seed_install(uow, rom_id=1, rom_dir=_ROM_DIR)
+        active_core.per_rom_cross_backend[1] = "cross-rendered-command"
+        result = event_loop.run_until_complete(service.select_disc(1, _DISC2))
+        assert result["success"] is True
+        assert result["launch_options"] == "cross-rendered-command"
+        assert launch_renderer.calls == []
+
+    def test_no_pin_behaves_exactly_as_before(self, event_loop, service, uow, active_core):
+        # Regression guard: with no cross-backend pin (the default), the bake
+        # is unaffected by the new check.
+        _seed_rom(uow, rom_id=1, selected_disc=None)
+        _seed_install(uow, rom_id=1, rom_dir=_ROM_DIR)
+        result = event_loop.run_until_complete(service.select_disc(1, _DISC2))
+        assert result["success"] is True
+        assert f"{_ROM_DIR}/{_DISC2}" in result["launch_options"]
+        assert 1 in active_core.cross_backend_calls
 
     def test_clear_to_default_persists_null(self, event_loop, service, uow):
         _seed_rom(uow, rom_id=1, selected_disc=_DISC2)

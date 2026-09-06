@@ -53,6 +53,17 @@ export interface CoreInfo {
   active_core_label: string | null;
   platform_core_label: string | null;
   has_game_override: boolean;
+  /** The ROM's cross-backend pin — always launch through a specific OTHER
+   *  installed backend's own emulator, regardless of which backend is
+   *  globally active — or `null` when unset. Optional so existing fixtures
+   *  that predate the cross-backend pin (epic #918 follow-up) still type-check;
+   *  the backend always sends it. */
+  cross_backend_pin?: { backend_id: string; label: string } | null;
+  /** Every OTHER registered launcher backend detected on this machine (the
+   *  active one excluded), each with its own emulator catalogue projected
+   *  through the same `EmulatorOption` shape as `emulators` above. Empty on a
+   *  single-backend install. Optional for the same reason as `cross_backend_pin`. */
+  other_backends?: Array<{ backend_id: string; display_name: string; emulators: EmulatorOption[] }>;
 }
 
 /**

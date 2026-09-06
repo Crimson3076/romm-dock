@@ -302,6 +302,24 @@ Per-game cores work for **any ROM filename**. The plugin bakes the chosen core d
 so it does not rely on RetroDECK's gamelist lookup (which mishandles parentheses and other special characters in
 filenames) and is not affected by that upstream limitation.
 
+### Pinning a Game to a Different Launcher Backend
+
+If you have more than one launcher backend installed (RetroDECK and EmuDeck), the CPU-button menu also lists every
+**other** backend's own emulators below a separator, each prefixed with that backend's name — for example
+`EmuDeck: Dolphin (Standalone)`. Picking one of these pins the game to launch through **that specific backend's
+emulator**, no matter which backend is globally active (set on the [System page](#per-platform-system-page)). This is
+useful when one backend has an emulator the other doesn't, or handles a particular game better — you can keep
+RetroDECK active for everything else and still send one Wii game through EmuDeck's standalone Dolphin, for instance.
+
+A cross-backend pin behaves like any other per-game core: the **✓** moves to it, it takes priority over both the
+per-game core and the per-platform/default core, and the plugin confirms the change landed on the live Steam shortcut
+before reporting success. Picking a normal (non-cross-backend) entry from the active backend's own list, or the
+**Use System Override** item, clears the cross-backend pin the same way it clears a regular per-game core — a game
+never has both a per-game core and a cross-backend pin active at once.
+
+If the entry you want is disabled, that backend either isn't installed on this machine or doesn't offer that emulator
+in a form the plugin can launch from Steam — the same reasons a native entry might be disabled.
+
 ### Core choices are not migrated from ES-DE
 
 The plugin now owns core selection entirely and no longer reads or writes ES-DE's `gamelist.xml`. A few notes for anyone

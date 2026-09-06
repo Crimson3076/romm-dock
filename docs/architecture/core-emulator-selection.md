@@ -262,6 +262,74 @@ A pinned per-game or per-platform label that no longer resolves (the core was re
 fatal**: the resolver logs a WARNING and degrades to the next layer (the per-platform core, then the es_systems
 default). No consumer ever sees a bogus `.so`.
 
+## The cross-backend pin: launch THIS game through a SPECIFIC backend, always
+
+Everything above is scoped to whichever launcher backend is **globally active** — a per-game `emulator_override` pin
+set while EmuDeck is active is invisible while RetroDECK is active, and vice versa (the by-design independence
+`test_per_game_pin_set_under_one_backend_is_invisible_to_another` pins). That is correct for "remember a separate
+preference per backend," but it cannot answer a different question: "always launch THIS game through RetroDECK's
+PCSX ReARMed, even while EmuDeck is the globally active backend for everything else." `roms.cross_backend_pin`
+(migration `026_add_cross_backend_pin.sql`, nullable JSON `{"backend_id": str, "label": str}`) is the additive,
+separate answer — see [ADR-0031](../adr/0031-per-game-cross-backend-emulator-pin.md) for the full design rationale.
+
+**Precedence: checked BEFORE everything above, unconditionally.** `ActiveCoreResolver.cross_backend_render_for_rom
+(rom_id, rom, path)` is a full render (not a fourth layer inside `active_emulator_for_rom`) — when the ROM carries a
+resolving pin, it returns the complete `launch_options` string rendered through the PINNED backend's OWN
+`resolve_invocation`/`build_launch_options`, bypassing `active_emulator_for_rom`'s three-layer chain and the
+currently-active backend's rendering entirely:
+
+```text
+cross_backend_render_for_rom(rom_id, rom, path):
+  db_rom = read roms row (cross_backend_pin)          ── one UoW read; None pin → return None immediately (cheap, common case)
+  backend = backend_binder.bind_backend(pin.backend_id)  ── bind the NAMED backend regardless of which is active
+  if backend is None:
+      warn; return None                                ── pinned backend not installed on this machine
+  system = resolve_system(rom.platform_slug)
+  options = backend.get_emulator_options(system)["options"]  ── the PINNED backend's OWN catalogue
+  invocation = label_to_invocation(options, pin.label)
+  if invocation is None:
+      warn; return None                                ── stale label, degrade like every other layer
+  invocation_str = backend.resolve_invocation(rom, invocation)   ── rendered through the PINNED backend's instance
+  return backend.build_launch_options(invocation_str, path)
+```
+
+The `backend.resolve_invocation`/`backend.build_launch_options` calls are the crux: RetroDECK's
+`flatpak run net.retrodeck.retrodeck -e "..."` wrapping and EmuDeck's directly-resolved host command are fundamentally
+different shapes, so the only way to bake the pinned backend's correct command is to render through that backend's own
+bound instance — never through `LauncherBackendService`/whichever backend is globally active. `BackendBinder.bind_backend`
+(`LauncherBackendService`'s implementation) is what makes this possible: it binds ANY registered, detected backend's
+FIRST installation on demand, without ever touching `self._active` or `settings.json` — the bound instance is used only
+long enough to render, it never becomes the active backend.
+
+**Every render call site checks this layer first.** `RelaunchOptionsResolver._resolve_item`,
+`DiscService._bake_launch_options`, `CoreService._set_system_core_io`/`_launch_options_for`, `RomInstallRecorder
+.do_resolve_launch_bake`, and the sync bake (`ShortcutLaunchResolver.do_build_overrides` builds a
+`cross_backend_launch_options: dict[rom_id, str]` map of already-rendered commands passed into
+`domain.shortcut_data.build_shortcuts_data` as a new parameter, checked before `core_overrides` — the same shape as the
+existing `windows_launch_options` map) all fall through to their unchanged existing render when this layer returns
+`None`, so an absent pin (the overwhelmingly common case) leaves every site byte-for-byte unaffected.
+
+**Mutually exclusive with `emulator_override`, enforced from both directions.** `CoreService
+.set_game_cross_backend_pin(rom_id, backend_id, label)` resolves `label` against `backend_id`'s OWN catalogue FIRST
+(hard-fail, nothing written, on `unknown_backend` or `core_unavailable` — the same discipline as `set_game_core`), then
+on success writes the pin AND clears the CURRENTLY active backend's `emulator_override` entry for that ROM in the same
+write. The reverse direction matters just as much: because `cross_backend_render_for_rom` is checked BEFORE
+`emulator_override` at every bake site, a stale cross-backend pin left in place would silently keep winning over a
+fresh active-backend pick — so `set_game_core` and `clear_game_core` (the picker's one clear-to-default action, "Use
+System Override") each also clear any `cross_backend_pin` on the ROM in the same write. At most one deviation type is
+ever live per ROM. `clear_game_cross_backend_pin(rom_id)` drops the pin so the ROM falls back to the normal
+active-backend precedence chain above.
+
+**Known v1 gaps** (see ADR-0031): per-game only, no per-platform cross-backend pin; `BackendBinder` binds only a
+backend's FIRST detected installation (not a regression for RetroDECK or EmuDeck today, both single-installation in
+practice); no folder-boot `direct`-form rewrite (ADR-0019) for a cross-backend render — a folder-boot title (PS3)
+pinned to a foreign backend bakes the standard form and may fail to launch.
+
+The per-game picker's read payload (`CoreService.get_platform_core_info`) carries the ROM's `cross_backend_pin`
+verbatim and an `other_backends` list — every OTHER registered backend detected on this machine (the active one
+excluded, an undetected one omitted entirely), each with its own catalogue projected through the same
+`options_to_payload` shape the active backend's `emulators` field already uses.
+
 ## Application: baking `-e` into `launch_options`
 
 Per

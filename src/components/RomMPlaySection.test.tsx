@@ -97,6 +97,8 @@ vi.mock("../utils/playSection", () => ({
       has_game_override?: boolean;
       emulator_data_available?: boolean;
       emulators?: unknown[];
+      cross_backend_pin?: { backend_id: string; label: string } | null;
+      other_backends?: Array<{ backend_id: string; display_name: string; emulators: unknown[] }>;
     }) => ({
       activeCoreLabel: c.active_core_label ?? null,
       activeCoreIsDefault: true,
@@ -104,6 +106,14 @@ vi.mock("../utils/playSection", () => ({
       emulatorDataAvailable: c.emulator_data_available ?? true,
       platformCoreLabel: c.platform_core_label ?? null,
       hasGameOverride: c.has_game_override ?? false,
+      crossBackendPin: c.cross_backend_pin
+        ? { backendId: c.cross_backend_pin.backend_id, label: c.cross_backend_pin.label }
+        : null,
+      otherBackends: (c.other_backends ?? []).map((b) => ({
+        backendId: b.backend_id,
+        displayName: b.display_name,
+        emulators: b.emulators,
+      })),
     }),
   ),
   resolveSaveSyncLabel: vi.fn(() => "synced label"),
@@ -329,6 +339,8 @@ describe("RomMPlaySection", () => {
       emulators: [],
       platformCoreLabel: null,
       hasGameOverride: false,
+      crossBackendPin: null,
+      otherBackends: [],
     });
     // refreshCoreInfoInBackground (mocked) merges the current extractCoreInfo
     // mock result into state so the core button / menu render as in production,
@@ -3250,6 +3262,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: null,
         hasGameOverride: false,
+        crossBackendPin: null,
+        otherBackends: [],
       });
     }
 
@@ -3501,6 +3515,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: null,
         hasGameOverride: true,
+        crossBackendPin: null,
+        otherBackends: [],
       });
     }
 
@@ -3650,6 +3666,182 @@ describe("RomMPlaySection", () => {
   });
 
   // ------------------------------------------------------------------
+  // M3. handleChangeCrossBackendPin — the "other backends" foreign entries
+  // (epic #918 follow-up). Mirrors handleChangeGameCore's structure exactly,
+  // against setGameCrossBackendPin instead of setGameCore.
+  // ------------------------------------------------------------------
+
+  describe("handleChangeCrossBackendPin (cross-backend entries)", () => {
+    async function setupCrossBackendAction(crossBackendPin: { backendId: string; label: string } | null = null) {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
+        found: true,
+        rom_id: 42,
+        platform_slug: "wii",
+        rom_file: "game.iso",
+        bios_status: {
+          platform_slug: "wii",
+          server_count: 0,
+          local_count: 0,
+          all_downloaded: true,
+        },
+        bios_level: "ok",
+        bios_label: "OK",
+      });
+      vi.mocked(playSectionUtils.extractBiosInfo).mockReturnValue({
+        biosNeeded: true,
+        biosStatus: "ok",
+        biosLabel: "OK",
+      });
+      const nativeEmulators = [
+        { label: "Dolphin", kind: "libretro" as const, core_so: "dolphin_libretro.so", is_default: true, bakeable: true, reason: null },
+        { label: "Dolphin2x", kind: "libretro" as const, core_so: "dolphin2x_libretro.so", is_default: false, bakeable: true, reason: null },
+      ];
+      const otherBackendsWire = [
+        {
+          backend_id: "emudeck",
+          display_name: "EmuDeck",
+          emulators: [
+            { label: "Dolphin (Standalone)", kind: "standalone" as const, core_so: null, is_default: true, bakeable: true, reason: null },
+          ],
+        },
+      ];
+      vi.mocked(backend.getPlatformCoreInfo).mockResolvedValue({
+        active_core: "dolphin_libretro.so",
+        active_core_label: "Dolphin",
+        platform_core_label: null,
+        has_game_override: false,
+        emulator_data_available: true,
+        emulators: nativeEmulators,
+        cross_backend_pin: crossBackendPin ? { backend_id: crossBackendPin.backendId, label: crossBackendPin.label } : null,
+        other_backends: otherBackendsWire,
+      });
+      vi.mocked(playSectionUtils.extractCoreInfo).mockReturnValue({
+        activeCoreLabel: crossBackendPin ? null : "Dolphin",
+        activeCoreIsDefault: !crossBackendPin,
+        emulatorDataAvailable: true,
+        emulators: nativeEmulators,
+        platformCoreLabel: null,
+        hasGameOverride: false,
+        crossBackendPin,
+        otherBackends: [
+          { backendId: "emudeck", displayName: "EmuDeck", emulators: otherBackendsWire[0]!.emulators },
+        ],
+      });
+    }
+
+    // Menu: [compat(disabled), Use System Override, Dolphin (native, default),
+    // Dolphin2x (native), separator, EmuDeck: Dolphin (Standalone)] —
+    // separators dropped by isMenuItem.
+    const CROSS_BACKEND_IDX = 4;
+
+    it("picking a cross-backend entry calls set_game_cross_backend_pin with the right args, confirms launch options, refreshes", async () => {
+      await setupCrossBackendAction();
+      vi.mocked(backend.setGameCrossBackendPin).mockResolvedValue({
+        success: true,
+        launch_options: 'flatpak run org.emudeck.emudeck dolphin-emu "/roms/game.iso"',
+        app_id: 999,
+      });
+      vi.mocked(backend.getBiosStatus).mockResolvedValue({
+        bios_status: null,
+        bios_level: null,
+        bios_label: null,
+      });
+      render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+      const coreItems = await openCoreMenuAndGetItems(testAppId);
+      expect(coreItems[CROSS_BACKEND_IDX]!.props.children).toBe("EmuDeck: Dolphin (Standalone) (default)");
+      vi.mocked(toaster.toast).mockClear();
+      vi.mocked(backend.getPlatformCoreInfo).mockClear();
+      await act(async () => {
+        await coreItems[CROSS_BACKEND_IDX]!.props.onClick?.();
+      });
+      expect(vi.mocked(backend.setGameCrossBackendPin)).toHaveBeenCalledWith(42, "emudeck", "Dolphin (Standalone)");
+      expect(vi.mocked(setLaunchOptionsConfirmed)).toHaveBeenCalledWith(
+        999,
+        'flatpak run org.emudeck.emudeck dolphin-emu "/roms/game.iso"',
+      );
+      expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
+        expect.objectContaining({ body: "Core set to Dolphin (Standalone) (emudeck)" }),
+      );
+      expect(vi.mocked(backend.getPlatformCoreInfo)).toHaveBeenCalledWith(42);
+      expect(vi.mocked(cachedStore.invalidateCachedGameDetail)).toHaveBeenCalledWith(testAppId);
+    });
+
+    it("core_unavailable failure toasts result.message and writes nothing", async () => {
+      await setupCrossBackendAction();
+      vi.mocked(backend.setGameCrossBackendPin).mockResolvedValue({
+        success: false,
+        reason: "core_unavailable",
+        message: "Emulator 'Dolphin (Standalone)' is not available for wii on emudeck",
+      });
+      render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+      const coreItems = await openCoreMenuAndGetItems(testAppId);
+      vi.mocked(toaster.toast).mockClear();
+      await act(async () => {
+        await coreItems[CROSS_BACKEND_IDX]!.props.onClick?.();
+      });
+      expect(vi.mocked(setLaunchOptionsConfirmed)).not.toHaveBeenCalled();
+      expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
+        expect.objectContaining({ body: "Emulator 'Dolphin (Standalone)' is not available for wii on emudeck" }),
+      );
+    });
+
+    it("unknown_backend failure toasts result.message and writes nothing", async () => {
+      await setupCrossBackendAction();
+      vi.mocked(backend.setGameCrossBackendPin).mockResolvedValue({
+        success: false,
+        reason: "unknown_backend",
+        message: "Launcher backend 'emudeck' is not installed on this machine",
+      });
+      render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+      const coreItems = await openCoreMenuAndGetItems(testAppId);
+      vi.mocked(toaster.toast).mockClear();
+      await act(async () => {
+        await coreItems[CROSS_BACKEND_IDX]!.props.onClick?.();
+      });
+      expect(vi.mocked(setLaunchOptionsConfirmed)).not.toHaveBeenCalled();
+      expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
+        expect.objectContaining({ body: "Launcher backend 'emudeck' is not installed on this machine" }),
+      );
+    });
+
+    it("'Use System Override' after a cross-backend pin was active correctly clears it (re-fetch shows cross_backend_pin: null)", async () => {
+      await setupCrossBackendAction({ backendId: "emudeck", label: "Dolphin (Standalone)" });
+      vi.mocked(backend.clearGameCore).mockResolvedValue({
+        success: true,
+        launch_options: 'flatpak run net.retrodeck.retrodeck -e "...dolphin_libretro.so..." "/roms/game.iso"',
+        app_id: 999,
+      });
+      render(<RomMPlaySection appId={testAppId} />);
+      await flushAsync();
+      const coreItems = await openCoreMenuAndGetItems(testAppId);
+      // Cross-backend entry carries ✓ before the clear.
+      expect(coreItems[CROSS_BACKEND_IDX]!.props.children).toContain("✓");
+      // The FOLLOW_SYSTEM item (index 1) is the clear-to-default action; it
+      // needs no cross-backend-specific handling — clear_game_core already
+      // drops the pin server-side.
+      const FOLLOW_SYSTEM_IDX = 1;
+      // After the clear, re-fetching core info must report no pin — simulate
+      // the server-side clear by flipping the mocked response for the refresh.
+      await setupCrossBackendAction(null);
+      vi.mocked(backend.clearGameCore).mockResolvedValue({
+        success: true,
+        launch_options: 'flatpak run net.retrodeck.retrodeck -e "...dolphin_libretro.so..." "/roms/game.iso"',
+        app_id: 999,
+      });
+      await act(async () => {
+        await coreItems[FOLLOW_SYSTEM_IDX]!.props.onClick?.();
+      });
+      expect(vi.mocked(backend.clearGameCore)).toHaveBeenCalledWith(42);
+      expect(vi.mocked(backend.getPlatformCoreInfo)).toHaveBeenCalledWith(42);
+      const refetched = await backend.getPlatformCoreInfo(42);
+      expect(refetched.cross_backend_pin).toBeNull();
+    });
+  });
+
+  // ------------------------------------------------------------------
   // N. Context menus structure (RomM / Core / Steam)
   // ------------------------------------------------------------------
 
@@ -3714,6 +3906,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: null,
         hasGameOverride: false,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       // 1 disabled compat note + Use System Override + 2 core items (both
       // separators filtered out by isMenuItem).
@@ -3747,6 +3941,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: null,
         hasGameOverride: true,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       expect(items).toHaveLength(4);
       // A per-game core is pinned → the reset item has NO ✓ …
@@ -3778,6 +3974,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: "BlastEm",
         hasGameOverride: false,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       expect(items).toHaveLength(4);
       // The per-platform override core carries (system); a different core does not.
@@ -3807,6 +4005,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: "BlastEm",
         hasGameOverride: false,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       expect(items[1]!.props.children).toBe("Use System Override (BlastEm) ✓");
     });
@@ -3832,6 +4032,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: "BlastEm",
         hasGameOverride: false,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       expect(items[1]!.props.children).toContain("✓");
       expect(items[1]!.props.children).toBe("Use System Override (BlastEm) ✓");
@@ -3861,6 +4063,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: "BlastEm",
         hasGameOverride: true,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       expect(items[1]!.props.children).not.toContain("✓");
       expect(items[1]!.props.children).toBe("Use System Override (BlastEm)");
@@ -4086,6 +4290,8 @@ describe("RomMPlaySection", () => {
         ],
         platformCoreLabel: null,
         hasGameOverride: false,
+        crossBackendPin: null,
+        otherBackends: [],
       });
       const { queryByTitle } = render(<RomMPlaySection appId={testAppId} />);
       await flushAsync();

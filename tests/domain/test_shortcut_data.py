@@ -632,3 +632,51 @@ class TestBuildShortcutsDataWindows:
         roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
         result = build_shortcuts_data(roms, "/plugin", {1: "/roms/win/g/Game.exe"}, {})
         assert result[0]["launch_options"] == ""
+
+
+class TestBuildShortcutsDataCrossBackendPin:
+    """Tests for build_shortcuts_data()'s ``cross_backend_launch_options`` param."""
+
+    def test_present_entry_wins_over_core_overrides(self):
+        roms = [{"id": 1, "name": "N64 Game", "platform_slug": "n64"}]
+        core_overrides = {1: EmulatorInvocation.libretro("mupen64plus_next")}
+        result = build_shortcuts_data(
+            roms,
+            "/plugin",
+            {1: "/roms/n64/game.z64"},
+            core_overrides,
+            None,
+            {1: "cross-rendered-command"},
+        )
+        assert result[0]["launch_options"] == "cross-rendered-command"
+
+    def test_absent_entry_falls_through_to_core_overrides_unchanged(self):
+        roms = [{"id": 1, "name": "N64 Game", "platform_slug": "n64"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: "/roms/n64/game.z64"}, {}, None, {})
+        assert result[0]["launch_options"] == 'flatpak run net.retrodeck.retrodeck "/roms/n64/game.z64"'
+
+    def test_never_applies_to_a_windows_rom(self):
+        # A stray cross_backend_launch_options entry for a native-Windows ROM
+        # must never override its Proton-rendered command (ADR-0030).
+        roms = [{"id": 1, "name": "Win Game", "platform_slug": "win"}]
+        result = build_shortcuts_data(
+            roms,
+            "/plugin",
+            {1: "/roms/win/g/Game.exe"},
+            {},
+            {1: 'env ... "/steam/proton" run "/roms/win/g/Game.exe"'},
+            {1: "cross-rendered-command"},
+        )
+        assert result[0]["launch_options"] == 'env ... "/steam/proton" run "/roms/win/g/Game.exe"'
+
+    def test_uninstalled_rom_unaffected_by_map(self):
+        roms = [{"id": 1, "name": "N64 Game", "platform_slug": "n64"}]
+        result = build_shortcuts_data(roms, "/plugin", {}, {}, None, {1: "cross-rendered-command"})
+        assert result[0]["launch_options"] == ""
+
+    def test_default_none_matches_omitted(self):
+        # The optional 6th parameter must be safely omittable by every existing
+        # caller that predates this feature.
+        roms = [{"id": 1, "name": "N64 Game", "platform_slug": "n64"}]
+        result = build_shortcuts_data(roms, "/plugin", {1: "/roms/n64/game.z64"}, {})
+        assert result[0]["launch_options"] == 'flatpak run net.retrodeck.retrodeck "/roms/n64/game.z64"'

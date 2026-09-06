@@ -341,6 +341,22 @@ class Plugin:
             result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "game_core")
         return result
 
+    @migration_blocked
+    @prune_active_blocked
+    async def set_game_cross_backend_pin(self, rom_id, backend_id, label):
+        result = await self._core_service.set_game_cross_backend_pin(rom_id, backend_id, label)
+        if result.get("success") and result.get("launch_options") is not None and result.get("app_id") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "game_core")
+        return result
+
+    @migration_blocked
+    @prune_active_blocked
+    async def clear_game_cross_backend_pin(self, rom_id):
+        result = await self._core_service.clear_game_cross_backend_pin(rom_id)
+        if result.get("success") and result.get("launch_options") is not None and result.get("app_id") is not None:
+            result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "game_core")
+        return result
+
     async def get_platform_core_info(self, rom_id):
         return await self._core_service.get_platform_core_info(rom_id)
 

@@ -243,3 +243,101 @@ describe("buildEmulatorMenu", () => {
     expect(items(menu).some((i) => i.text.startsWith("Use System Override"))).toBe(false);
   });
 });
+
+describe("buildEmulatorMenu — otherBackends (cross-backend pinning, #918 follow-up)", () => {
+  it("omitted or empty renders identically to the System page's config (regression)", () => {
+    const strip = (its: Item[]) => its.map((i) => ({ text: i.text, disabled: i.disabled }));
+    const withoutField = buildEmulatorMenu(baseConfig());
+    const withEmptyArray = buildEmulatorMenu(baseConfig({ otherBackends: [] }));
+    expect(strip(items(withEmptyArray))).toEqual(strip(items(withoutField)));
+  });
+
+  it("renders each foreign backend's bakeable entries, clickable via onPickCrossBackend", () => {
+    const onPickCrossBackend = vi.fn();
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        otherBackends: [
+          { backendId: "emudeck", displayName: "EmuDeck", emulators: [standaloneEmu("Dolphin (Standalone)", true)] },
+        ],
+        onPickCrossBackend,
+      }),
+    );
+    const its = items(menu);
+    const dolphin = its.find((i) => i.text.startsWith("EmuDeck:"))!;
+    expect(dolphin.text).toBe("EmuDeck: Dolphin (Standalone) (default)");
+    expect(dolphin.disabled).toBe(false);
+    dolphin.onClick!();
+    expect(onPickCrossBackend).toHaveBeenCalledWith("emudeck", "Dolphin (Standalone)");
+  });
+
+  it("renders a non-bakeable foreign entry disabled with its reason copy, prefixed with the backend name", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        otherBackends: [
+          {
+            backendId: "emudeck",
+            displayName: "EmuDeck",
+            emulators: [standaloneEmu("Ryubing (Standalone)", false, { bakeable: false, reason: "not_installed" })],
+          },
+        ],
+        onPickCrossBackend: vi.fn(),
+      }),
+    );
+    const ryubing = items(menu).find((i) => i.text.startsWith("EmuDeck:"))!;
+    expect(ryubing.text).toBe("EmuDeck: Ryubing (Standalone) — emulator not installed");
+    expect(ryubing.disabled).toBe(true);
+    expect(ryubing.onClick).toBeUndefined();
+  });
+
+  it("renders every other backend's entries, each prefixed with its own display name", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        otherBackends: [
+          { backendId: "emudeck", displayName: "EmuDeck", emulators: [standaloneEmu("Dolphin (Standalone)", true)] },
+          { backendId: "retrodeck", displayName: "RetroDECK", emulators: [libretroEmu("dolphin_libretro", "Dolphin")] },
+        ],
+        onPickCrossBackend: vi.fn(),
+      }),
+    );
+    const its = items(menu);
+    expect(its.some((i) => i.text === "EmuDeck: Dolphin (Standalone) (default)")).toBe(true);
+    expect(its.some((i) => i.text === "RetroDECK: Dolphin (RetroArch)")).toBe(true);
+  });
+
+  it("marks the entry matching crossBackendPin with a checkmark, and does NOT also mark the active backend's own entry", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        activeLabel: null, // active backend's own catalogue would otherwise mark its default
+        otherBackends: [
+          { backendId: "emudeck", displayName: "EmuDeck", emulators: [standaloneEmu("Dolphin (Standalone)", true)] },
+        ],
+        crossBackendPin: { backendId: "emudeck", label: "Dolphin (Standalone)" },
+        onPickCrossBackend: vi.fn(),
+      }),
+    );
+    const its = items(menu);
+    const dolphin = its.find((i) => i.text.startsWith("EmuDeck:"))!;
+    expect(dolphin.text).toContain("✓");
+    // The active backend's own default-marked entry (mGBA) must NOT carry ✓ —
+    // a cross-backend pin always wins, so only ONE entry may be checked.
+    const mgba = its.find((i) => i.text.startsWith("mGBA"))!;
+    expect(mgba.text).not.toContain("✓");
+    // Only one checkmark total across the whole menu.
+    expect(its.filter((i) => i.text.includes("✓"))).toHaveLength(1);
+  });
+
+  it("does not mark the follow-system item's checkmark while a cross-backend pin is active", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        followSystem: { hasGameOverride: false, onFollowSystem: vi.fn() },
+        otherBackends: [
+          { backendId: "emudeck", displayName: "EmuDeck", emulators: [standaloneEmu("Dolphin (Standalone)", true)] },
+        ],
+        crossBackendPin: { backendId: "emudeck", label: "Dolphin (Standalone)" },
+        onPickCrossBackend: vi.fn(),
+      }),
+    );
+    const follow = items(menu).find((i) => i.text.startsWith("Use System Override"))!;
+    expect(follow.text).not.toContain("✓");
+  });
+});

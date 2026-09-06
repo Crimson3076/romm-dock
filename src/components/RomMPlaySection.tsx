@@ -47,6 +47,7 @@ import {
   deleteLocalSaves,
   setGameCore,
   clearGameCore,
+  setGameCrossBackendPin,
   reconcilePlaytime,
   debugLog,
 } from "../api/backend";
@@ -782,6 +783,29 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     }
   };
 
+  /** Pin `rom_id` to always launch through `backendId`'s own emulator `label`,
+   *  regardless of which backend is globally active — mirrors
+   *  handleChangeGameCore's structure exactly (same confirm-before-toast flow,
+   *  same prune-lease admission), against the cross-backend callable instead. */
+  const handleChangeCrossBackendPin = async (backendId: string, coreLabel: string) => {
+    const romId = detail.romId;
+    if (!romId || !detail.platformSlug) return;
+    const platformSlug = detail.platformSlug;
+    detach(debugLog(`handleChangeCrossBackendPin: romId=${romId} backendId=${backendId} coreLabel=${coreLabel}`));
+    const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
+    try {
+      const result = await setGameCrossBackendPin(romId, backendId, coreLabel);
+      detach(debugLog(`handleChangeCrossBackendPin: result success=${result.success}`));
+      await applyCoreResult(result, platformSlug, `Core set to ${coreLabel} (${backendId})`, admission);
+    } catch (e) {
+      if (isPruneLeaseCancellation(e, admission)) {
+        detach(debugLog(`handleChangeCrossBackendPin: continuation was cancelled: ${e}`));
+        return;
+      }
+      showToast("Failed to set core");
+    }
+  };
+
   const handleResetGameCore = async () => {
     const romId = detail.romId;
     if (!romId || !detail.platformSlug) return;
@@ -819,6 +843,11 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
         },
         onPick: (label) => {
           detach(handleChangeGameCore(label));
+        },
+        otherBackends: detail.otherBackends,
+        crossBackendPin: detail.crossBackendPin,
+        onPickCrossBackend: (backendId, label) => {
+          detach(handleChangeCrossBackendPin(backendId, label));
         },
       }),
       getEventTarget(e),

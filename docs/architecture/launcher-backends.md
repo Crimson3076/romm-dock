@@ -188,6 +188,33 @@ unchanged, because it is the same write, just triggered by a different setting. 
 shortcut-migration path**: the fan-out re-bake IS the migration, re-baking every existing shortcut's `launch_options`
 (however it got there) to the newly-selected backend's command.
 
+## `BackendBinder`: binding a NON-active backend on demand
+
+Every seam above (`LaunchCommandRenderer`, `LauncherPaths`, `CoreInfoProvider`) answers a question about whichever
+backend is currently active. The per-game cross-backend pin (`roms.cross_backend_pin` — see
+[Core & Emulator Selection](core-emulator-selection.md#the-cross-backend-pin-launch-this-game-through-a-specific-backend-always)
+and [ADR-0031](../adr/0031-per-game-cross-backend-emulator-pin.md)) needs the opposite: render through a SPECIFIC named
+backend regardless of which one is active, without ever switching to it. `BackendBinder.bind_backend(backend_id) ->
+LauncherBackend | None` (`services/protocols/launcher_backend.py`) is that seam, implemented by
+`LauncherBackendService.bind_backend`:
+
+```text
+bind_backend(backend_id):
+  factory = registry.get(backend_id)          ── ANY registered factory, not just the active one
+  if factory is None: return None              ── unregistered backend_id
+  installations = factory.detect_installations()
+  if not installations: return None             ── registered but not actually present on this machine
+  return factory.bind(installations[0].installation_id)   ── FIRST detected installation only (v1 gap)
+```
+
+It never touches `self._active` or `settings.json` — the bound instance is used only long enough to render one
+invocation through its own `resolve_invocation`/`build_launch_options`; it never becomes the active backend and
+`validate()` is deliberately not called (an unhealthy-but-bound backend still has a usable catalogue for picking, and
+validation only matters for making a backend the ACTIVE one). `ActiveCoreResolver.cross_backend_render_for_rom` is the
+sole consumer of this seam in the resolution path; `CoreService` also uses it directly to resolve a pin's label against
+the NAMED backend's catalogue before writing (`set_game_cross_backend_pin`) and to enumerate every other backend's
+catalogue for the picker (`get_platform_core_info`'s `other_backends`).
+
 ## Already-open pages must be told to re-fetch
 
 Every per-game/per-platform core resolution (`ActiveCoreResolver`, `CoreService`) is scoped to whichever backend is
@@ -219,6 +246,8 @@ that already happened underneath it.
 
 - [Core & Emulator Selection](core-emulator-selection.md) — the per-game/per-platform precedence chain, and the
   per-backend storage shape this page's `CoreInfoProvider` section covers.
+- [ADR-0031](../adr/0031-per-game-cross-backend-emulator-pin.md) — the per-game cross-backend pin `BackendBinder`
+  exists for.
 - [Steam Non-Steam Shortcuts](steam-non-steam-shortcuts.md) — `launch_options` writes, appId stability.
 - [ADR-0029](../adr/0029-launcher-backend-seam-and-switch-as-rebake.md) — the decision record.
 - [ADR-0009](../adr/0009-launcher-pure-exec-wrapper-baked-launch-options.md) — the exec-wrapper + baked-command model

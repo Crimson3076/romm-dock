@@ -12,6 +12,7 @@ import pytest
 # conftest.py patches decky before this import; use _make_testable_plugin for test-only attrs
 from _factories import _make_testable_plugin
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
+from fakes.fake_backend_binder import FakeBackendBinder
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
@@ -94,6 +95,7 @@ def plugin(tmp_path, fake_romm_api):
             platform_core_reader=FakePlatformCoreReader(),
             resolve_system=lambda platform_slug, platform_fs_slug=None: platform_slug,
             logger=decky.logger,
+            backend_binder=bound(FakeBackendBinder()),
         ),
     )
     p._firmware_service = FirmwareService(

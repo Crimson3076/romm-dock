@@ -96,6 +96,7 @@ from services.protocols.infra import (
     ResolveUploadConflictFn,
 )
 from services.protocols.launcher_backend import (
+    BackendBinder,
     LaunchCommandRenderer,
     LauncherBackend,
     LauncherBackendFactory,
@@ -162,6 +163,7 @@ __all__ = [
     "AdoptionMoveStore",
     "ArtworkManager",
     "ArtworkRemover",
+    "BackendBinder",
     "BiosChecker",
     "BiosFileRepository",
     "Clock",

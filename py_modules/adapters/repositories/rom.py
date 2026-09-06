@@ -14,11 +14,12 @@ if TYPE_CHECKING:
 
 # The sync-owned columns: written by the library re-sync UPSERT. Driving
 # SELECT/INSERT/VALUES/SET from this ONE tuple keeps them in lockstep so a
-# subset omission is impossible (R10). emulator_override, selected_disc, and
-# selected_exe are deliberately NOT here — they are per-game deviations, not
-# synced identity: each is read in SELECT but written only via its own set_*()
-# method, never by save(), so a re-sync (which builds a fresh Rom with all three
-# = None) cannot wipe a user's pin. The version-metadata columns (sibling_group_key
+# subset omission is impossible (R10). emulator_override, selected_disc,
+# selected_exe, and cross_backend_pin are deliberately NOT here — they are
+# per-game deviations, not synced identity: each is read in SELECT but written
+# only via its own set_*() method, never by save(), so a re-sync (which builds
+# a fresh Rom with all four = None/{}) cannot wipe a user's pin. The
+# version-metadata columns (sibling_group_key
 # + the version dimensions) ARE here — they are server-derived facts that must refresh on
 # every sync (ADR-0021), the opposite of the user pins. cover_source (the
 # cover-cache fingerprint, #1386) rides the UPSERT like cover_path: the commit
@@ -59,7 +60,14 @@ _SYNC_COLUMNS = (
 # #1383). Like the other pins, selected_exe is read here but written only by its
 # own set_*() method, never by save(), so a re-sync never wipes the pin.
 _SELECT_COLUMNS = ", ".join(
-    (*_SYNC_COLUMNS, "emulator_override", "selected_disc", "selected_exe", "applied_launch_options")
+    (
+        *_SYNC_COLUMNS,
+        "emulator_override",
+        "selected_disc",
+        "selected_exe",
+        "applied_launch_options",
+        "cross_backend_pin",
+    )
 )
 _INSERT_COLUMNS = ", ".join(_SYNC_COLUMNS)
 _INSERT_PLACEHOLDERS = ", ".join("?" for _ in _SYNC_COLUMNS)
@@ -88,6 +96,7 @@ def _row_to_rom(row: sqlite3.Row) -> Rom:
         selected_disc=row["selected_disc"],
         selected_exe=row["selected_exe"],
         applied_launch_options=row["applied_launch_options"],
+        cross_backend_pin=json.loads(row["cross_backend_pin"]) if row["cross_backend_pin"] is not None else None,
         sibling_group_key=row["sibling_group_key"],
         regions=tuple(json.loads(row["regions"])),
         languages=tuple(json.loads(row["languages"])),
@@ -191,6 +200,19 @@ class SqliteRomRepository(BaseRepository):
         self._conn.execute(
             "UPDATE roms SET emulator_override = ? WHERE rom_id = ?",
             (json.dumps(overrides) if overrides else None, rom_id),
+        )
+
+    def set_cross_backend_pin(self, rom_id: int, pin: dict[str, str] | None) -> None:
+        """Write (or clear) the cross-backend emulator pin for ``rom_id``.
+
+        ``pin`` is ``{"backend_id": str, "label": str}`` to pin, or ``None`` to
+        clear (follow the normal active-backend resolution). This is the only
+        write path for the column — the sync UPSERT in :meth:`save` never
+        touches it, mirroring :meth:`set_emulator_override`/:meth:`set_selected_disc`.
+        """
+        self._conn.execute(
+            "UPDATE roms SET cross_backend_pin = ? WHERE rom_id = ?",
+            (json.dumps(pin) if pin is not None else None, rom_id),
         )
 
     def set_selected_disc(self, rom_id: int, filename: str | None) -> None:

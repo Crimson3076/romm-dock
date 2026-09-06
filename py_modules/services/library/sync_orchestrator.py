@@ -282,9 +282,6 @@ class SyncOrchestrator:
             installed_paths = await self._loop.run_in_executor(
                 None, self._shortcut_launch_resolver.do_scan_installed_paths
             )
-            core_overrides = await self._loop.run_in_executor(
-                None, self._shortcut_launch_resolver.do_build_core_overrides, all_roms
-            )
             windows_launch_options = await self._loop.run_in_executor(
                 None, self._shortcut_launch_resolver.do_scan_windows_launch_options
             )
@@ -296,15 +293,7 @@ class SyncOrchestrator:
                 None, self._local_library_reader.do_read_resident_group_keys
             )
             self._stamp_component_group_keys(all_roms, resident_keys)
-            shortcuts_data = build_shortcuts_data(
-                all_roms,
-                self._plugin_dir,
-                installed_paths,
-                core_overrides,
-                windows_launch_options,
-                resolve_invocation=self._launch_renderer.resolve_invocation,
-                render_launch_options=self._launch_renderer.build_launch_options,
-            )
+            shortcuts_data = await self._build_shortcuts_data(all_roms, installed_paths, windows_launch_options)
             platform_name_set = {u.name for u in work_queue if u.type == "platform"}
             slug_to_name = {u.slug: u.name for u in work_queue if u.type == "platform" and u.slug}
             registry, last_synced_platforms, last_synced_collections = await self._loop.run_in_executor(
@@ -917,6 +906,30 @@ class SyncOrchestrator:
             if key is not None:
                 rom["sibling_group_key"] = key
 
+    async def _build_shortcuts_data(
+        self,
+        roms: list[dict[str, Any]],
+        installed_paths: dict[int, str],
+        windows_launch_options: dict[int, str],
+    ) -> list[dict[str, Any]]:
+        """Resolve both override maps and build *roms*' shortcut data — the shared body
+        of preview's and the per-unit apply's bake sites (they differ only in how
+        *roms*/*installed_paths*/*windows_launch_options* were read, not in this step).
+        """
+        core_overrides, cross_backend_launch_options = await self._loop.run_in_executor(
+            None, self._shortcut_launch_resolver.do_build_overrides, roms, installed_paths
+        )
+        return build_shortcuts_data(
+            roms,
+            self._plugin_dir,
+            installed_paths,
+            core_overrides,
+            windows_launch_options,
+            cross_backend_launch_options,
+            resolve_invocation=self._launch_renderer.resolve_invocation,
+            render_launch_options=self._launch_renderer.build_launch_options,
+        )
+
     def _clear_platform_stamp_io(self, platform_slug: str) -> None:
         """Delete *platform_slug*'s completion stamp in one short write UoW.
 
@@ -1015,9 +1028,6 @@ class SyncOrchestrator:
         installed_paths = await self._loop.run_in_executor(
             None, self._shortcut_launch_resolver.do_read_installed_paths, {rom["id"] for rom in unit_roms}
         )
-        core_overrides = await self._loop.run_in_executor(
-            None, self._shortcut_launch_resolver.do_build_core_overrides, unit_roms
-        )
         windows_launch_options = await self._loop.run_in_executor(
             None, self._shortcut_launch_resolver.do_read_windows_launch_options, {rom["id"] for rom in unit_roms}
         )
@@ -1030,15 +1040,7 @@ class SyncOrchestrator:
             int(rom_id): entry["sibling_group_key"] for rom_id, entry in registry.items() if entry["sibling_group_key"]
         }
         self._stamp_component_group_keys(unit_roms, resident_keys)
-        shortcuts_data = build_shortcuts_data(
-            unit_roms,
-            self._plugin_dir,
-            installed_paths,
-            core_overrides,
-            windows_launch_options,
-            resolve_invocation=self._launch_renderer.resolve_invocation,
-            render_launch_options=self._launch_renderer.build_launch_options,
-        )
+        shortcuts_data = await self._build_shortcuts_data(unit_roms, installed_paths, windows_launch_options)
 
         # Collapse to one Steam shortcut per sibling group (ADR-0021): only the
         # representative (plus any grandfathered bound siblings) is emitted; a

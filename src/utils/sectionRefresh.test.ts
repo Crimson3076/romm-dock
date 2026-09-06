@@ -24,6 +24,8 @@ interface CoreState {
   emulatorDataAvailable: boolean;
   platformCoreLabel: string | null;
   hasGameOverride: boolean;
+  crossBackendPin: { backendId: string; label: string } | null;
+  otherBackends: Array<{ backendId: string; displayName: string; emulators: EmulatorOption[] }>;
   unrelated: string;
 }
 
@@ -219,6 +221,8 @@ describe("refreshCoreInfoInBackground", () => {
       emulatorDataAvailable: true,
       platformCoreLabel: null,
       hasGameOverride: false,
+      crossBackendPin: null,
+      otherBackends: [],
       unrelated: "keep",
     });
     expect(next.activeCoreLabel).toBe("ParaLLEl N64");

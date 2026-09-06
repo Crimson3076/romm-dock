@@ -112,6 +112,25 @@ class LauncherPaths(Protocol):
     def states_path(self) -> str: ...
 
 
+class BackendBinder(Protocol):
+    """Bind ANY registered launcher backend on demand, not just the active one.
+
+    Every other seam in this module answers questions about the currently
+    ACTIVE backend (:class:`LaunchCommandRenderer`, :class:`LauncherPaths`) or
+    detects/binds a candidate to make it active
+    (:class:`LauncherBackendFactory`). This is the third, narrower thing: the
+    per-game cross-backend pin (``roms.cross_backend_pin``) needs to render
+    through a SPECIFIC named backend regardless of which one is globally
+    active, so :class:`~services.active_core_resolver.ActiveCoreResolver`
+    needs a way to reach a backend by id without switching to it. The
+    composition root satisfies this with ``LauncherBackendService``, which
+    implements it by looking the id up in its own registry and binding the
+    first detected installation — it never touches ``self._active``.
+    """
+
+    def bind_backend(self, backend_id: str) -> LauncherBackend | None: ...
+
+
 class LauncherBackendFactory(Protocol):
     """Detects installations of one launcher and binds a backend to one of them.
 

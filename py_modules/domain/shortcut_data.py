@@ -272,6 +272,7 @@ def _resolve_launch_options(
     bake_path: str,
     core_overrides: dict[int, EmulatorInvocation],
     windows_launch_options: dict[int, str],
+    cross_backend_launch_options: dict[int, str],
     resolve_invocation: Callable[[dict[str, Any], EmulatorInvocation | None], str],
     render_launch_options: Callable[[str, str], str],
 ) -> str:
@@ -286,11 +287,21 @@ def _resolve_launch_options(
     renders as the same empty launch command every other unlaunchable install
     does. There is no per-backend concept for a native-Windows ROM (ADR-0030):
     it always launches through Proton (or, for a bundled ``.sh``, directly),
-    never through RetroDECK/EmuDeck. Every other platform renders through the
-    injected callables, so a launcher-backend switch is reflected here too.
+    never through RetroDECK/EmuDeck.
+
+    Every other platform checks *cross_backend_launch_options* NEXT — the
+    caller's ALREADY-RENDERED command for a ROM pinned to a specific backend
+    regardless of which one is active (the cross-backend pin, checked before
+    the normal per-game/per-platform/default precedence at every other bake
+    site too). A ROM present there wins outright; a ROM absent (no pin, or a
+    pin that no longer resolves) falls through to the injected
+    *resolve_invocation*/*render_launch_options* callables exactly as before,
+    so a launcher-backend switch is reflected here too.
     """
     if rom.get("platform_slug") == WINDOWS_PLATFORM_SLUG:
         return windows_launch_options.get(rom["id"], "")
+    if rom["id"] in cross_backend_launch_options:
+        return cross_backend_launch_options[rom["id"]]
     return render_launch_options(resolve_invocation(rom, core_overrides.get(rom["id"])), bake_path)
 
 
@@ -325,6 +336,7 @@ def build_shortcuts_data(
     installed_paths: dict[int, str],
     core_overrides: dict[int, EmulatorInvocation],
     windows_launch_options: dict[int, str] | None = None,
+    cross_backend_launch_options: dict[int, str] | None = None,
     *,
     resolve_invocation: Callable[[dict[str, Any], EmulatorInvocation | None], str] = resolve_emulator_invocation,
     render_launch_options: Callable[[str, str], str] = build_launch_options,
@@ -366,6 +378,16 @@ def build_shortcuts_data(
     bakes the same empty launch command an uninstalled ROM does. Ignored for
     every other platform.
 
+    *cross_backend_launch_options* maps ``rom_id`` to the **already-rendered**
+    launch command for a ROM pinned to a SPECIFIC backend regardless of which
+    one is globally active (the cross-backend pin) — rendered by
+    ``ActiveCoreResolver.cross_backend_render_for_rom`` through that backend's
+    own instance, never the caller's injected *resolve_invocation*/
+    *render_launch_options*. Checked BEFORE *core_overrides* for every
+    non-Windows ROM; a ROM absent from it (no pin, or a stale one) falls
+    through to the normal *core_overrides* rendering unchanged. Defaults to
+    empty so every existing caller is unaffected.
+
     The sibling-group key (ADR-0021) and RomM's version dimensions (``regions`` /
     ``languages`` / ``revision`` / ``tags`` / ``is_main_sibling``) are derived
     from each raw ROM dict here and carried through so the commit persists them
@@ -375,6 +397,7 @@ def build_shortcuts_data(
     exe = os.path.join(plugin_dir, "bin", "rom-launcher")
     start_dir = os.path.join(plugin_dir, "bin")
     windows_launch_options = windows_launch_options or {}
+    cross_backend_launch_options = cross_backend_launch_options or {}
     return [
         {
             "rom_id": rom["id"],
@@ -393,6 +416,7 @@ def build_shortcuts_data(
                     installed_paths[rom["id"]],
                     core_overrides,
                     windows_launch_options,
+                    cross_backend_launch_options,
                     resolve_invocation,
                     render_launch_options,
                 )

@@ -173,6 +173,42 @@ def test_core_override_bakes_e_form():
     assert active_core.emulator_calls == [1]
 
 
+def test_cross_backend_pin_wins_over_the_normal_render():
+    """A ROM with a resolving cross-backend pin bakes the pin's rendering, never
+    the injected launch_renderer's — the pin's render is already the FULL command."""
+    uow = FakeUnitOfWork()
+    file_path = "/roms/n64/mario.z64"
+    _seed_install(uow, 1, file_path=file_path, shortcut_app_id=7)
+    active_core = FakeActiveCoreResolver(per_rom_cross_backend={1: "cross-rendered-command"})
+    launch_renderer = FakeLaunchCommandRenderer()
+    resolver = _make_resolver(uow=uow, active_core=active_core, launch_renderer=launch_renderer)
+
+    assert resolver.installed_relaunch_items() == [{"app_id": 7, "launch_options": "cross-rendered-command"}]
+    assert launch_renderer.calls == []
+    assert active_core.emulator_calls == []
+
+
+def test_no_cross_backend_pin_behaves_exactly_as_before():
+    """Regression guard: the new check is a no-op when no pin exists (the default)."""
+    uow = FakeUnitOfWork()
+    file_path = "/roms/n64/mario.z64"
+    _seed_install(uow, 1, file_path=file_path, shortcut_app_id=7)
+    active_core = FakeActiveCoreResolver(per_rom={1: ("mupen64plus_next", "Mupen64Plus-Next")})
+    resolver = _make_resolver(uow=uow, active_core=active_core)
+
+    assert resolver.installed_relaunch_items() == [
+        {
+            "app_id": 7,
+            "launch_options": (
+                "flatpak run net.retrodeck.retrodeck -e "
+                '"%EMULATOR_RETROARCH% -L /var/config/retroarch/cores/mupen64plus_next.so %ROM%" '
+                f'"{file_path}"'
+            ),
+        }
+    ]
+    assert 1 in active_core.cross_backend_calls
+
+
 def test_multiple_installs_yield_multiple_items():
     """Every installed+bound ROM contributes one item, in iteration order."""
     uow = FakeUnitOfWork()

@@ -143,6 +143,8 @@ async def test_get_platform_core_info_payload_shape(harness):
         "active_core_label",
         "platform_core_label",
         "has_game_override",
+        "cross_backend_pin",
+        "other_backends",
     }
     assert result["emulator_data_available"] is True
     assert result["emulators"] == [_MGBA_ENTRY, _VBA_NEXT_ENTRY]
@@ -150,6 +152,9 @@ async def test_get_platform_core_info_payload_shape(harness):
     assert result["active_core_label"] == "mGBA"
     assert result["platform_core_label"] is None
     assert result["has_game_override"] is False
+    assert result["cross_backend_pin"] is None
+    # Only one backend (RetroDECK) is installed in this harness — no others to list.
+    assert result["other_backends"] == []
 
 
 async def test_get_platform_core_info_unavailable_when_no_es_systems(harness):

@@ -34,6 +34,7 @@ class FakeActiveCoreResolver:
         per_rom: dict[int, tuple[str | None, str | None]] | None = None,
         default_emulator: EmulatorInvocation | None = None,
         per_rom_emulator: dict[int, EmulatorInvocation | None] | None = None,
+        per_rom_cross_backend: dict[int, str | None] | None = None,
     ) -> None:
         self.default = default
         self.per_rom: dict[int, tuple[str | None, str | None]] = per_rom if per_rom is not None else {}
@@ -41,8 +42,15 @@ class FakeActiveCoreResolver:
         self.per_rom_emulator: dict[int, EmulatorInvocation | None] = (
             per_rom_emulator if per_rom_emulator is not None else {}
         )
+        # Per-``rom_id`` canned answer for ``cross_backend_render_for_rom``; a
+        # ``rom_id`` absent from the map has no cross-backend pin (``None``),
+        # matching the overwhelmingly common case.
+        self.per_rom_cross_backend: dict[int, str | None] = (
+            per_rom_cross_backend if per_rom_cross_backend is not None else {}
+        )
         self.calls: list[int] = []
         self.emulator_calls: list[int] = []
+        self.cross_backend_calls: list[int] = []
 
     def active_core_for_rom(self, rom_id: int) -> tuple[str | None, str | None]:
         self.calls.append(rom_id)
@@ -58,3 +66,7 @@ class FakeActiveCoreResolver:
         if core_so is not None:
             return EmulatorInvocation.libretro(core_so, label)
         return None
+
+    def cross_backend_render_for_rom(self, rom_id: int, rom: dict, path: str) -> str | None:
+        self.cross_backend_calls.append(rom_id)
+        return self.per_rom_cross_backend.get(rom_id)

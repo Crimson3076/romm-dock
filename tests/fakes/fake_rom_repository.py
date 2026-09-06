@@ -57,6 +57,7 @@ class FakeRomRepository:
             stored.selected_disc = existing.selected_disc
             stored.selected_exe = existing.selected_exe
             stored.applied_launch_options = existing.applied_launch_options
+            stored.cross_backend_pin = copy.deepcopy(existing.cross_backend_pin)
         self._roms[rom.rom_id] = stored
 
     def delete(self, rom_id: int) -> None:
@@ -83,6 +84,11 @@ class FakeRomRepository:
                 rom.emulator_overrides.pop(backend_id, None)
             else:
                 rom.emulator_overrides[backend_id] = label
+
+    def set_cross_backend_pin(self, rom_id: int, pin: dict[str, str] | None) -> None:
+        rom = self._roms.get(rom_id)
+        if rom is not None:
+            rom.cross_backend_pin = copy.deepcopy(pin)
 
     def set_selected_disc(self, rom_id: int, filename: str | None) -> None:
         rom = self._roms.get(rom_id)

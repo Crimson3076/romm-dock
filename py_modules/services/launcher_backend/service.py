@@ -186,6 +186,37 @@ class LauncherBackendService:
 
         return {"success": True, "rebake_items": self._relaunch_items.installed_relaunch_items()}
 
+    def bind_backend(self, backend_id: str) -> LauncherBackend | None:
+        """Bind *backend_id*'s FIRST detected installation, regardless of the active backend.
+
+        The :class:`~services.protocols.launcher_backend.BackendBinder` seam
+        behind the per-game cross-backend pin: it never touches ``self._active``
+        or ``settings.json`` — this backend does not become the ACTIVE one, it
+        is only bound long enough to render a pinned invocation through its own
+        ``resolve_invocation``/``build_launch_options``. Returns ``None`` when
+        *backend_id* is not registered, or when it is registered but detects no
+        installation at all on this machine (not actually present).
+
+        **Known v1 limitation**: when a backend reports more than one detected
+        installation, only the first is ever bound here — there is no way to
+        pin a game to a SPECIFIC one of several installations of the same
+        backend. Both backends this plugin ships today (RetroDECK, EmuDeck)
+        only ever detect at most one installation in practice, so this is not a
+        regression for anyone today.
+
+        Deliberately skips :meth:`LauncherBackend.validate` — an unhealthy-but-
+        bound backend still has a usable catalogue for PICKING an emulator;
+        validation only matters for making a backend the ACTIVE one (a switch
+        actually launches through it), which this method never does.
+        """
+        factory = self._registry.get(backend_id)
+        if factory is None:
+            return None
+        installations = factory.detect_installations()
+        if not installations:
+            return None
+        return factory.bind(installations[0].installation_id)
+
     def _bind(self, backend_id: str, installation_id: str) -> LauncherBackend | None:
         """Bind the persisted (backend_id, installation_id) pair, falling back to RetroDECK.
 

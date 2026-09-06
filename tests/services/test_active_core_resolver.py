@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from fakes.fake_backend_binder import FakeBackendBinder
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, libretro_option, standalone_option
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
@@ -96,9 +97,11 @@ def _make_resolver(
     resolve_system: FakeSystemResolver | None = None,
     platform_core_reader: FakePlatformCoreReader | None = None,
     active_backend_id: str = "retrodeck",
+    backend_binder: FakeBackendBinder | None = None,
 ) -> tuple[ActiveCoreResolver, FakeSystemResolver]:
     resolver_fn = resolve_system if resolve_system is not None else FakeSystemResolver()
     platform_reader = platform_core_reader if platform_core_reader is not None else FakePlatformCoreReader()
+    binder = backend_binder if backend_binder is not None else FakeBackendBinder()
     resolver = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=FakeUnitOfWorkFactory(uow=uow),
@@ -107,6 +110,7 @@ def _make_resolver(
             platform_core_reader=platform_reader,
             resolve_system=resolver_fn,
             logger=logging.getLogger("test"),
+            backend_binder=bound(binder),
         ),
     )
     return resolver, resolver_fn
@@ -590,6 +594,98 @@ def test_per_game_pin_set_under_one_backend_is_invisible_to_another() -> None:
     # RetroDECK never pinned anything for this ROM — falls through to the system default,
     # never EmuDeck's "ParaLLEl N64" pin.
     assert resolver.active_core_for_rom(80) == ("mupen64plus_next_libretro", "Mupen64Plus-Next")
+
+
+# --- cross_backend_render_for_rom: the additive cross-backend pin layer -------
+
+
+class _FakeCrossBackend:
+    """A ``LauncherBackend``-shaped fake that tags its own rendering distinctly."""
+
+    def __init__(self, backend_id: str, *, options: list | None = None) -> None:
+        self.backend_id = backend_id
+        self.options = options if options is not None else []
+        self.resolve_calls: list[tuple[dict, object]] = []
+        self.build_calls: list[tuple[str, str]] = []
+
+    def get_emulator_options(self, system_name: str) -> dict:
+        return {"available": True, "options": self.options}
+
+    def resolve_invocation(self, rom: dict, emulator: object) -> str:
+        self.resolve_calls.append((rom, emulator))
+        return f"invocation-from-{self.backend_id}"
+
+    def build_launch_options(self, invocation: str, path: str) -> str:
+        self.build_calls.append((invocation, path))
+        return f"{invocation}::{path}"
+
+
+def test_no_pin_returns_none_immediately() -> None:
+    uow = FakeUnitOfWork()
+    _seed_rom(uow, rom_id=90, platform_slug="snes")
+    binder = FakeBackendBinder()
+    resolver, _ = _make_resolver(uow=uow, core_info=FakeCoreInfoProvider(), backend_binder=binder)
+
+    result = resolver.cross_backend_render_for_rom(90, {"id": 90, "platform_slug": "snes"}, "/roms/snes/g.sfc")
+
+    assert result is None
+    # Never even reaches the binder when there is no pin at all.
+    assert binder.calls == []
+
+
+def test_resolving_pin_renders_through_the_named_backend_not_the_active_one() -> None:
+    uow = FakeUnitOfWork()
+    _seed_rom(uow, rom_id=91, platform_slug="snes")
+    rom = uow.roms.get(91)
+    rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+    uow.roms.set_cross_backend_pin(91, rom.cross_backend_pin)
+    emudeck = _FakeCrossBackend("emudeck", options=[libretro_option("snes9x_libretro", "Snes9x")])
+    binder = FakeBackendBinder({"emudeck": emudeck})
+    resolver, _ = _make_resolver(
+        uow=uow, core_info=FakeCoreInfoProvider(), backend_binder=binder, active_backend_id="retrodeck"
+    )
+
+    result = resolver.cross_backend_render_for_rom(91, {"id": 91, "platform_slug": "snes"}, "/roms/snes/g.sfc")
+
+    assert result == "invocation-from-emudeck::/roms/snes/g.sfc"
+    assert binder.calls == ["emudeck"]
+    # Rendered through EmuDeck's OWN instance methods, never the active backend's.
+    assert emudeck.resolve_calls
+    assert emudeck.build_calls
+
+
+def test_pin_naming_an_uninstalled_backend_degrades_to_none_with_warning(caplog: pytest.LogCaptureFixture) -> None:
+    uow = FakeUnitOfWork()
+    _seed_rom(uow, rom_id=92, platform_slug="snes")
+    rom = uow.roms.get(92)
+    rom.pin_cross_backend_emulator("emudeck", "Snes9x")
+    uow.roms.set_cross_backend_pin(92, rom.cross_backend_pin)
+    binder = FakeBackendBinder({})  # emudeck not installed
+    resolver, _ = _make_resolver(uow=uow, core_info=FakeCoreInfoProvider(), backend_binder=binder)
+
+    with caplog.at_level(logging.WARNING, logger="test"):
+        result = resolver.cross_backend_render_for_rom(92, {"id": 92, "platform_slug": "snes"}, "/roms/snes/g.sfc")
+
+    assert result is None
+    assert any("emudeck" in r.message and "not installed" in r.message for r in caplog.records)
+
+
+def test_pin_with_stale_label_degrades_to_none_with_warning(caplog: pytest.LogCaptureFixture) -> None:
+    uow = FakeUnitOfWork()
+    _seed_rom(uow, rom_id=93, platform_slug="snes")
+    rom = uow.roms.get(93)
+    rom.pin_cross_backend_emulator("emudeck", "Removed Core")
+    uow.roms.set_cross_backend_pin(93, rom.cross_backend_pin)
+    emudeck = _FakeCrossBackend("emudeck", options=[libretro_option("snes9x_libretro", "Snes9x")])
+    binder = FakeBackendBinder({"emudeck": emudeck})
+    resolver, _ = _make_resolver(uow=uow, core_info=FakeCoreInfoProvider(), backend_binder=binder)
+
+    with caplog.at_level(logging.WARNING, logger="test"):
+        result = resolver.cross_backend_render_for_rom(93, {"id": 93, "platform_slug": "snes"}, "/roms/snes/g.sfc")
+
+    assert result is None
+    assert any("Removed Core" in r.message for r in caplog.records)
+    assert emudeck.resolve_calls == []
 
 
 def test_per_platform_pin_is_scoped_to_its_own_backend() -> None:

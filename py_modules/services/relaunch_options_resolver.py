@@ -112,12 +112,17 @@ class RelaunchOptionsResolver:
                 "app_id": rom.shortcut_app_id,
                 "launch_options": self._windows_resolver.resolve_launch_options(install, rom.selected_exe),
             }
+        bake_path = self._resolve_bake_path(rom, install)
+        rom_dict = {"id": rom.rom_id, "platform_slug": rom.platform_slug}
+        cross_rendered = self._active_core.cross_backend_render_for_rom(rom.rom_id, rom_dict, bake_path)
+        if cross_rendered is not None:
+            return {"app_id": rom.shortcut_app_id, "launch_options": cross_rendered}
         emulator = self._active_core.active_emulator_for_rom(rom.rom_id)
         renderer = self._launch_renderer.get()
-        invocation = renderer.resolve_invocation({"id": rom.rom_id, "platform_slug": rom.platform_slug}, emulator)
+        invocation = renderer.resolve_invocation(rom_dict, emulator)
         return {
             "app_id": rom.shortcut_app_id,
-            "launch_options": renderer.build_launch_options(invocation, self._resolve_bake_path(rom, install)),
+            "launch_options": renderer.build_launch_options(invocation, bake_path),
         }
 
     def _bound_install(self, rom_id: int) -> tuple[Rom, RomInstall] | None:
