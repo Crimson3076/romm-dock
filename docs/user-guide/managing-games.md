@@ -417,6 +417,13 @@ writing a command that would fail the first time you press Play. Pressing Play s
 because installing the package by hand in the emulator is exactly what you would do next. See
 [the troubleshooting entry](troubleshooting.md#the-download-has-no-launchable-file) for how.
 
+### When the emulator or core isn't installed
+
+Some systems' default emulator — a RetroArch core or a standalone emulator — isn't bundled by default and has to be
+downloaded separately. The plugin checks whether the resolved emulator/core actually exists on disk before it lets you
+press Play; if it doesn't, the game's detail page says so instead of launching a shortcut that fails immediately.
+Install the missing core or emulator, then reopen the game's detail page.
+
 ## Picking a Disc for Multi-Disc Games
 
 When an installed game has more than one disc, a small **disc dropdown** appears on the game detail page, right next to

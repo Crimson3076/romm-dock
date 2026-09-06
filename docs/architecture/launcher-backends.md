@@ -161,10 +161,11 @@ No `eval`, no shell-string concatenation beyond the same trusted-invocation + es
   implement; `_PROTON_ROM_SUFFIX_RE` recognizes and refuses it, degrading to the next catalogue option or the empty "no
   launch target" command (never a broken one). Native-Linux standalone emulators (Cemu via `cemu.sh`'s native branch,
   RPCS3, DuckStation, PCSX2-Qt, Azahar, MelonDS, Vita3K, …) and libretro cores are unaffected.
-- **No standalone-existence probe.** RetroDECK's `downgrade_if_not_installed` walks its sandboxed `es_find_rules.xml` to
-  downgrade a bakeable standalone entry whose emulator is not actually installed (ADR-0020) — EmuDeck's unsandboxed
-  layout has no equivalent probe yet, so a bakeable EmuDeck entry whose emulator the user has not installed bakes
-  anyway; the launcher script itself reports the failure at launch rather than the picker disabling it up front.
+- **Existence probe verifies presence, not exact identity.** `get_emulator_options` downgrades a bakeable standalone or
+  libretro entry whose emulator/core cannot be resolved on disk (via `EmuDeckFindRulesAdapter.resolve_emulator` /
+  `resolve_core_dir`, mirroring RetroDECK's `downgrade_if_not_installed`, ADR-0020) — but a resolved cores directory or
+  emulator token that resolves to *something* is not proof the exact core/binary the ROM needs is present; the launcher
+  script is still the final word on that at launch time.
 - **Savestates have no flat root on EmuDeck.** `states_path()` returns `""` for the EmuDeck backend (atlas resolves
   savestate location per-core/per-content, not as a single directory) — save-sync flows that need a savestate base
   directory degrade the same way they already do for an unresolved RetroDECK root.

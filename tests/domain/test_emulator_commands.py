@@ -152,7 +152,7 @@ class TestXemuInjectUnwrap:
 
 
 class TestDowngradeIfNotInstalled:
-    """The pure half of the standalone existence probe (ADR-0020)."""
+    """The pure half of the existence probe (standalone AND libretro, ADR-0020)."""
 
     def test_bakeable_standalone_missing_becomes_needs_setup(self):
         option = classify_command("Ryubing (Standalone)", "%EMULATOR_RYUBING% %ROM%")
@@ -168,11 +168,19 @@ class TestDowngradeIfNotInstalled:
         option = classify_command("PCSX2 (Standalone)", PS2_PCSX2_BATCH)
         assert downgrade_if_not_installed(option, emulator_installed=True) == option
 
-    def test_libretro_never_downgraded_even_when_flagged_missing(self):
-        # RetroArch ships with RetroDECK — a libretro option is always installed,
-        # and the kind guard means the missing flag is ignored regardless.
+    def test_libretro_downgraded_when_core_missing(self):
+        # RetroArch shipping with RetroDECK says nothing about which cores are
+        # actually downloaded inside it — a missing core downgrades exactly
+        # like a missing standalone emulator.
         option = classify_command("SwanStation", PSX_SWANSTATION)
-        assert downgrade_if_not_installed(option, emulator_installed=False) == option
+        result = downgrade_if_not_installed(option, emulator_installed=False)
+        assert result.status == "needs_setup"
+        assert result.reason == "not_installed"
+        assert result.kind == "libretro"
+
+    def test_libretro_installed_unchanged(self):
+        option = classify_command("SwanStation", PSX_SWANSTATION)
+        assert downgrade_if_not_installed(option, emulator_installed=True) == option
 
     def test_already_needs_setup_unchanged(self):
         option = classify_command("Vita3K", VITA3K_INJECT_NO_ROM)

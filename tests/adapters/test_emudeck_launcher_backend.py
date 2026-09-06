@@ -159,6 +159,12 @@ def _backend(
     )
 
 
+def _touch_core(cores_dir, core_so: str) -> None:
+    os.makedirs(cores_dir, exist_ok=True)
+    with open(os.path.join(cores_dir, f"{core_so}.so"), "w") as f:
+        f.write("")
+
+
 class TestResolveInvocationLibretro:
     def test_libretro_command_renders_resolved_paths(self, tmp_path):
         tools = tmp_path / "tools" / "launchers"
@@ -166,6 +172,7 @@ class TestResolveInvocationLibretro:
         retroarch_sh = tools / "retroarch.sh"
         retroarch_sh.write_text("#!/bin/sh\n")
         cores_dir = str(tmp_path / "cores")
+        _touch_core(cores_dir, "snes9x_libretro")
 
         xml_path = _write_find_rules(tmp_path, retroarch=str(retroarch_sh), cores_dir=cores_dir)
         installation = _FakeInstallation(
@@ -185,6 +192,34 @@ class TestResolveInvocationLibretro:
         options = backend.build_launch_options(invocation, "/roms/snes/Game.sfc")
         assert options == build_launch_options(invocation, "/roms/snes/Game.sfc")
         assert options == f'{retroarch_sh} -L {cores_dir}/snes9x_libretro.so "/roms/snes/Game.sfc"'
+
+    def test_libretro_core_missing_from_resolved_cores_dir_falls_through(self, tmp_path):
+        # %CORE_RETROARCH% resolves to a real, existing cores dir, but this
+        # core's .so was never downloaded there — the existence probe now
+        # downgrades the option (the bug this closes: a Wii Dolphin libretro
+        # shortcut baked without ever downloading dolphin_libretro.so inside
+        # RetroArch), so resolve_invocation falls through to "" rather than
+        # baking a command RetroArch cannot run.
+        tools = tmp_path / "tools" / "launchers"
+        tools.mkdir(parents=True)
+        retroarch_sh = tools / "retroarch.sh"
+        retroarch_sh.write_text("#!/bin/sh\n")
+        cores_dir = tmp_path / "cores"
+        cores_dir.mkdir()
+
+        xml_path = _write_find_rules(tmp_path, retroarch=str(retroarch_sh), cores_dir=str(cores_dir))
+        installation = _FakeInstallation(
+            entries_by_system={
+                "snes": [
+                    _FakeEntry(
+                        label="Snes9x", command="%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/snes9x_libretro.so %ROM%"
+                    )
+                ]
+            }
+        )
+        backend = _backend(tmp_path, installation, find_rules_path=xml_path)
+
+        assert backend.resolve_invocation(_ROM, None) == ""
 
 
 class TestResolveInvocationStandalone:
@@ -248,8 +283,11 @@ class TestUnresolvablePlaceholder:
         assert backend.resolve_invocation(_ROM, None) == ""
 
     def test_unresolvable_core_path_falls_through(self, tmp_path):
-        # %CORE_RETROARCH% resolves fine (no existence check), but the
-        # emulator token file is missing -> still falls through empty.
+        # No <core name="RETROARCH"> rule at all: resolve_core_dir can't name a
+        # directory, so the existence probe has nothing to check against and
+        # assumes installed (cannot verify != verified absent) — but bake-time
+        # rendering still can't substitute %CORE_RETROARCH% and falls through
+        # empty regardless.
         tools = tmp_path / "tools" / "launchers"
         tools.mkdir(parents=True)
         retroarch_sh = tools / "retroarch.sh"
@@ -379,6 +417,8 @@ class TestPerGamePin:
         retroarch_sh = tools / "retroarch.sh"
         retroarch_sh.write_text("#!/bin/sh\n")
         cores_dir = str(tmp_path / "cores")
+        _touch_core(cores_dir, "mgba_libretro")
+        _touch_core(cores_dir, "snes9x_libretro")
         xml_path = _write_find_rules(tmp_path, retroarch=str(retroarch_sh), cores_dir=cores_dir)
 
         installation = _FakeInstallation(entries_by_system=self._two_libretro_entries())
@@ -394,6 +434,8 @@ class TestPerGamePin:
         retroarch_sh = tools / "retroarch.sh"
         retroarch_sh.write_text("#!/bin/sh\n")
         cores_dir = str(tmp_path / "cores")
+        _touch_core(cores_dir, "mgba_libretro")
+        _touch_core(cores_dir, "snes9x_libretro")
         xml_path = _write_find_rules(tmp_path, retroarch=str(retroarch_sh), cores_dir=cores_dir)
 
         installation = _FakeInstallation(entries_by_system=self._two_libretro_entries())
@@ -495,9 +537,64 @@ class TestCoreInfoProvider:
         backend = _backend(tmp_path, installation)
         assert backend.get_emulator_options("snes") == {"available": True, "options": []}
 
+    def test_libretro_option_downgraded_when_core_missing_from_resolved_dir(self, tmp_path):
+        cores_dir = str(tmp_path / "cores")
+        os.makedirs(cores_dir)  # dir exists, but no core .so inside it
+        xml_path = _write_find_rules(tmp_path, cores_dir=cores_dir)
+
+        installation = _FakeInstallation(
+            entries_by_system={
+                "snes": [
+                    _FakeEntry(
+                        label="Snes9x", command="%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/snes9x_libretro.so %ROM%"
+                    )
+                ]
+            }
+        )
+        backend = _backend(tmp_path, installation, find_rules_path=xml_path)
+        result = backend.get_emulator_options("snes")
+        assert result["options"][0].status == "needs_setup"
+        assert result["options"][0].reason == "not_installed"
+
+    def test_libretro_option_assumed_installed_when_cores_dir_unresolvable(self, tmp_path):
+        # No <core name="RETROARCH"> rule at all: resolve_core_dir can't name a
+        # directory, so the probe cannot verify absence and assumes installed.
+        xml_path_no_core = tmp_path / "es_find_rules_no_core.xml"
+        xml_path_no_core.write_text('<ruleList><emulator name="RETROARCH"></emulator></ruleList>')
+
+        installation = _FakeInstallation(
+            entries_by_system={
+                "snes": [
+                    _FakeEntry(
+                        label="Snes9x", command="%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/snes9x_libretro.so %ROM%"
+                    )
+                ]
+            }
+        )
+        backend = _backend(tmp_path, installation, find_rules_path=str(xml_path_no_core))
+        result = backend.get_emulator_options("snes")
+        assert result["options"][0].status == "bakeable"
+
+    def test_standalone_option_downgraded_when_binary_missing(self, tmp_path):
+        # A named-but-nonexistent path: the token resolves to a known entry,
+        # but nothing on disk matches it — the probe can verify absence.
+        xml_path = _write_find_rules(tmp_path, azahar=str(tmp_path / "does-not-exist.sh"))
+        installation = _FakeInstallation(
+            entries_by_system={"n3ds": [_FakeEntry(label="Azahar", command="%EMULATOR_AZAHAR% %ROM%")]}
+        )
+        backend = _backend(tmp_path, installation, find_rules_path=xml_path, system="n3ds")
+        result = backend.get_emulator_options("n3ds")
+        assert result["options"][0].status == "needs_setup"
+        assert result["options"][0].reason == "not_installed"
+
     def test_get_default_emulator_is_first_bakeable_entry(self, tmp_path):
+        cores_dir = str(tmp_path / "cores")
+        _touch_core(cores_dir, "mgba_libretro")
+        _touch_core(cores_dir, "snes9x_libretro")
+        xml_path = _write_find_rules(tmp_path, cores_dir=cores_dir)
+
         installation = _FakeInstallation(entries_by_system=self._two_libretro_entries())
-        backend = _backend(tmp_path, installation)
+        backend = _backend(tmp_path, installation, find_rules_path=xml_path)
         assert backend.get_default_emulator("snes") == EmulatorInvocation.libretro("mgba_libretro", "Mgba")
 
     def test_get_default_emulator_none_when_unavailable(self, tmp_path):

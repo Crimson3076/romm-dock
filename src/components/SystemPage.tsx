@@ -17,6 +17,7 @@ import {
   setSystemCore,
   debugLog,
   checkXemuConfigAlignment,
+  getLauncherBackends,
 } from "../api/backend";
 import type { FirmwarePlatformExt } from "../types";
 import { scrollToTop } from "../utils/scrollHelpers";
@@ -32,6 +33,7 @@ import {
   withPruneLease,
 } from "../utils/pruneLease";
 import { batchConfirmLaunchOptions } from "../utils/launchOptionsReconcile";
+import { LauncherBackendSection } from "./settings/LauncherBackendSection";
 
 /**
  * Build the per-platform summary label/description from the backend BIOS
@@ -130,6 +132,11 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
   const [biosStatus, setBiosStatus] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [xemuBanner, setXemuBanner] = useState<XemuAlignmentBanner | null>(null);
+  // The active launcher backend's display name (RetroDECK / EmuDeck), threaded
+  // into the per-platform emulator picker so a "not_installed" entry names the
+  // backend it wasn't found in. Null until the fetch resolves (generic fallback
+  // copy stands until then).
+  const [activeBackendDisplayName, setActiveBackendDisplayName] = useState<string | null>(null);
 
   async function refreshSystem() {
     setBiosLoading(true);
@@ -159,6 +166,9 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
     checkXemuConfigAlignment()
       .then((r) => setXemuBanner(xemuAlignmentBanner(r.status, r.config_path)))
       .catch((e) => detach(debugLog(`Failed to check xemu config alignment: ${e}`)));
+    getLauncherBackends()
+      .then((backends) => setActiveBackendDisplayName(backends.find((b) => b.is_active)?.display_name ?? null))
+      .catch((e) => detach(debugLog(`Failed to fetch launcher backends for picker copy: ${e}`)));
     return () => {
       detach(releasePruneLeasesByOwner(leaseOwner));
     };
@@ -279,6 +289,7 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
         emulatorDataAvailable: platform.emulator_data_available ?? true,
         activeLabel: platform.active_core_label ?? null,
         platformCoreLabel: null,
+        activeBackendDisplayName,
         onPick: (label) => {
           detach(handleSystemCoreChange(platform, label));
         },
@@ -330,7 +341,10 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
     const hasRequiredMissing = requiredCount > 0 && !requiredReady;
     const hasOptionalMissing = optionalMissing > 0;
 
-    const hasMultipleCores = !!platform.emulators && platform.emulators.length > 1;
+    // Show the picker whenever there's at least one classified option — even a
+    // single command should render its own (possibly greyed-out) entry rather
+    // than a bare static label, so a not_installed reason is never hidden.
+    const hasCores = !!platform.emulators && platform.emulators.length >= 1;
 
     return (
       <PanelSection
@@ -342,14 +356,14 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
             context menu so libretro AND standalone emulators (and disabled
             un-bakeable entries with their reason) render identically to the
             game-detail menu (#1210). */}
-        {hasMultipleCores && (
+        {hasCores && (
           <PanelSectionRow>
             <ButtonItem layout="below" bottomSeparator="none" onClick={(e: Event) => showSystemCoreMenu(platform, e)}>
               {`Emulator Core: ${platform.active_core_label ?? "Default"}`}
             </ButtonItem>
           </PanelSectionRow>
         )}
-        {platform.active_core_label && !hasMultipleCores && (
+        {platform.active_core_label && !hasCores && (
           <PanelSectionRow>
             <Field label="Emulator Core" description={platform.active_core_label} bottomSeparator="none" />
           </PanelSectionRow>
@@ -515,6 +529,8 @@ export const SystemPage: FC<SystemPageProps> = ({ onBack }) => {
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
+
+      <LauncherBackendSection />
 
       <PanelSection title="System">
         <PanelSectionRow>

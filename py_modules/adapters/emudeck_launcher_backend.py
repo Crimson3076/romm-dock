@@ -36,7 +36,12 @@ from typing import TYPE_CHECKING, Any
 from _vendor import atlas
 
 from adapters.emudeck_find_rules import EmuDeckFindRulesAdapter
-from domain.emulator_commands import classify_command, option_to_invocation, select_default_option
+from domain.emulator_commands import (
+    classify_command,
+    downgrade_if_not_installed,
+    option_to_invocation,
+    select_default_option,
+)
 from domain.launcher_backend import EMUDECK_BACKEND_ID, BackendValidation, DetectedInstallation
 from domain.shortcut_data import build_launch_options
 
@@ -190,19 +195,45 @@ class EmuDeckLauncherBackend:
         catalogue source at all for this arrangement (``answer.sources`` is
         empty) — an unknown system on a readable catalogue yields
         ``available: True`` with an empty list, the same distinction
-        RetroDECK's reader makes. Does not run RetroDECK's ``not_installed``
-        existence probe (``downgrade_if_not_installed``) — that probe walks
-        RetroDECK's sandboxed ``es_find_rules.xml`` staticpaths, which do not
-        apply to EmuDeck's unsandboxed layout. A bakeable EmuDeck entry whose
-        emulator the user has not actually installed is a known v1 gap: it
-        bakes, and the launcher script itself reports the failure (each one
-        already checks for its own binary before running, per
-        ``Emulation/tools/launchers/*.sh``) rather than the picker disabling
-        it up front.
+        RetroDECK's reader makes.
+
+        Every bakeable option is existence-probed via ``downgrade_if_not_installed``
+        (mirrors RetroDECK's ``CoreResolver``): a libretro option's
+        ``%CORE_RETROARCH%`` cores dir is resolved through
+        ``EmuDeckFindRulesAdapter.resolve_core_dir`` and its ``<core_so>.so``
+        checked for existence there; a standalone option's
+        ``%EMULATOR_<NAME>%`` token (the same match ``_render_option`` uses at
+        bake time) is resolved through ``resolve_emulator``. Either probe that
+        cannot resolve a directory/token at all (find rules absent or the entry
+        unknown) assumes installed rather than falsely downgrading — the same
+        honest, absence-only discipline RetroDECK's probe follows. What is
+        **not** verified: whether a resolved directory/token actually contains
+        the exact core/binary the user needs — the launcher script itself is
+        still the final word on that at launch time.
         """
         answer = self._installation.emulators_for(system_name)
-        options = [classify_command(entry.label, entry.command) for entry in answer.entries]
+        classified = (classify_command(entry.label, entry.command) for entry in answer.entries)
+        options = [downgrade_if_not_installed(option, self._is_installed(option)) for option in classified]
         return {"available": bool(answer.sources), "options": options}
+
+    def _is_installed(self, option: EmulatorOption) -> bool:
+        """Whether *option*'s emulator/core is verifiably present, for the existence probe.
+
+        Returns ``True`` (assume installed) for anything not bakeable, or when
+        the relevant directory/token cannot be resolved at all — the probe only
+        ever downgrades on positive evidence of absence.
+        """
+        if option.status != "bakeable":
+            return True
+        if option.kind == "libretro" and option.core_so:
+            cores_dir = self._find_rules.resolve_core_dir("RETROARCH")
+            if cores_dir is None:
+                return True
+            return os.path.exists(os.path.join(cores_dir, f"{option.core_so}.so"))
+        token_match = _EMULATOR_TOKEN_RE.search(option.command)
+        if token_match is None:
+            return True
+        return self._find_rules.resolve_emulator(token_match.group(1)) is not None
 
     def get_default_emulator(self, system_name: str) -> EmulatorInvocation | None:
         """Resolve the system-layer default emulator (libretro OR standalone).

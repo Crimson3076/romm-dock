@@ -290,8 +290,18 @@ class GameDetailService:
         # A cold firmware cache answers None — this payload then carries no BIOS
         # answer at all, which is not the same as "the active core needs none".
         bios_status_unknown = False
+        # No platform to resolve a system/core against → nothing disproves an
+        # emulator is available, so this stays fail-open (True) rather than
+        # blocking Play on an edge case that isn't really about emulators.
+        emulator_available = True
         if platform_slug:
-            active_core_so, _ = self._active_core.active_core_for_rom(rom_id)
+            # One resolution feeds both the BIOS filter's core and this flag —
+            # active_core_for_rom's (None, label) for a resolved STANDALONE
+            # emulator would read as "no emulator" if used for emulator_available,
+            # so the full EmulatorInvocation is read directly instead.
+            active_emulator = self._active_core.active_emulator_for_rom(rom_id)
+            active_core_so = active_emulator.core_so if active_emulator else None
+            emulator_available = active_emulator is not None
             cached_bios = self._bios_checker.check_platform_bios_cached(platform_slug, active_core_so=active_core_so)
             if cached_bios is None:
                 bios_status_unknown = True
@@ -345,6 +355,10 @@ class GameDetailService:
             "fs_size_bytes": rom.fs_size_bytes,
             "target_path_occupied": target_occupied,
             "adoption_candidate_present": candidate_present,
+            # Whether the ROM's active emulator/core actually resolves (genuinely
+            # present on disk, not merely bakeable) — lets the frontend disable
+            # Play with a distinct reason instead of baking a launch that errors.
+            "emulator_available": emulator_available,
         }
 
     def _target_path_occupied(self, rom: Rom) -> bool:

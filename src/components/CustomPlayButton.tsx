@@ -100,7 +100,8 @@ type PlayButtonState =
   | "launching"
   | "dl_complete"
   | "uninstall_pending"
-  | "uninstalling";
+  | "uninstalling"
+  | "emulator_not_found";
 
 interface DownloadProgress {
   bytesDownloaded: number;
@@ -131,6 +132,10 @@ const BLUE_RIGHT: [number, number, number] = [0, 120, 212]; // #0078d4
 // Play button visible green (computed from gradient + backgroundSize 330% + backgroundPosition 25%)
 const GREEN_LEFT: [number, number, number] = [80, 200, 47]; // #50c82f
 const GREEN_RIGHT: [number, number, number] = [24, 177, 78]; // #18b14e
+// Emulator-not-found red gradient stops — same failure red used elsewhere in
+// this codebase for a definitive error state (MainPage's disconnected badge).
+const RED_LEFT: [number, number, number] = [212, 52, 60]; // #d4343c
+const RED_RIGHT: [number, number, number] = [184, 38, 46]; // #b8262e
 
 function formatProgress(downloaded: number, total: number): string {
   // Show "x / y MB" with unit only on the total
@@ -148,7 +153,7 @@ interface CustomPlayButtonProps {
 // S3776 is raised on the declaration line, so its NOSONAR must stay there. prettier-ignore stops
 // Prettier from relocating the trailing comment into the body (which would break the suppression).
 // prettier-ignore
-export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // NOSONAR(typescript:S3776) — remaining cc is the per-state render branching (download/dl_complete/uninstalling/launching/syncing/conflict/play each return a distinct button shape); the gate chain now lives in runLaunchGate, not here.
+export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // NOSONAR(typescript:S3776) — remaining cc is the per-state render branching (download/dl_complete/uninstalling/launching/syncing/conflict/emulator_not_found/play each return a distinct button shape); the gate chain now lives in runLaunchGate, not here.
   const leaseOwner = `custom-play-button:${appId}`;
   const [state, setState] = useState<PlayButtonState>("loading");
   const [romId, setRomId] = useState<number | null>(null);
@@ -290,6 +295,14 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         setIsRunning(isSessionActive(rid) || isAppRunning(appId));
 
         if (cached.installed) {
+          // Missing emulator is checked FIRST and independent of save conflicts:
+          // a game that cannot launch at all is more blocking than one that can
+          // launch but has a save to resolve, so it takes precedence.
+          if (cached.emulator_available === false) {
+            detach(debugLog(`CustomPlayButton: -> emulator_not_found (from cache)`));
+            setState("emulator_not_found");
+            return;
+          }
           // Check for conflicts from cached save status
           const hasConflict = hasAnySaveConflict(cached.save_status);
           if (hasConflict) {
@@ -440,7 +453,13 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       romIdRef.current = rid;
       if (cached.rom_name) setRomName(cached.rom_name);
       if (cached.installed) {
-        setState(hasAnySaveConflict(cached.save_status) ? "conflict" : "play");
+        // Mirrors init()'s precedence: a missing emulator is checked before —
+        // and independent of — a save conflict.
+        if (cached.emulator_available === false) {
+          setState("emulator_not_found");
+        } else {
+          setState(hasAnySaveConflict(cached.save_status) ? "conflict" : "play");
+        }
       } else {
         // Switched to a not-installed version — clear any download progress and
         // drop to the Download button. The occupancy answer comes from the ROM
@@ -484,6 +503,10 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         // `announced` from `lastAnnouncedState` when it ends.
         if (prev === "dl_complete") return prev;
         if (prev === "syncing" || prev === "launching" || prev === "download") return prev;
+        // A missing emulator is genuinely blocking regardless of save state —
+        // an unrelated save-sync broadcast must not bounce this back to a false
+        // "conflict"/"play" while the emulator is still not on disk.
+        if (prev === "emulator_not_found") return prev;
         return announced;
       });
     };
@@ -529,7 +552,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // Programmatically focus our Play/Download button after mount.
   // This beats HLTB and other plugins that also compete for initial focus.
   useEffect(() => {
-    if (state !== "play" && state !== "download" && state !== "conflict") return;
+    if (state !== "play" && state !== "download" && state !== "conflict" && state !== "emulator_not_found") return;
     const timer = setTimeout(() => {
       if (containerRef.current) {
         const btn = containerRef.current.querySelector("button");
@@ -1059,6 +1082,15 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       showToast("Couldn't reach server to resolve conflict");
       setState("conflict");
     }
+  };
+
+  // "emulator_not_found" is not launchable — the resolved emulator/core isn't
+  // installed, so RunGame would just error. Explain instead of launching, the
+  // same shape as "conflict"'s click handling.
+  const handleEmulatorNotFound = () => {
+    showToast(
+      "The emulator or core for this platform isn't installed — check RetroArch/EmuDeck, or the platform's Emulator Core settings",
+    );
   };
 
   const handleDownload = async (
@@ -1834,6 +1866,48 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
           }}
         >
           Resolve Conflict
+        </DialogButton>
+      </Focusable>
+    );
+  }
+
+  if (state === "emulator_not_found") {
+    return (
+      <Focusable
+        ref={containerRef}
+        className={appActionButtonClasses?.PlayButtonContainer}
+        style={btnContainerStyle}
+      >
+        <DialogButton
+          className={[appActionButtonClasses?.PlayButton, "romm-btn-emulator-not-found"].filter(Boolean).join(" ")}
+          style={{
+            ...mainBtnStyle,
+            borderRadius: "2px 0 0 2px",
+            background: `linear-gradient(to right, rgb(${RED_LEFT.join(",")}), rgb(${RED_RIGHT.join(",")}))`,
+          }}
+          onClick={handleEmulatorNotFound}
+        >
+          Emulator Not Found
+        </DialogButton>
+        <DialogButton
+          className="romm-btn-dropdown"
+          aria-label="RomM actions"
+          title="RomM actions"
+          style={{
+            ...dropdownArrowStyle,
+            background: `rgb(${RED_RIGHT.join(",")})`,
+          }}
+          onClick={showDropdownMenu}
+        >
+          <svg width="12" height="8" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M1 1.5L6 6.5L11 1.5"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </DialogButton>
       </Focusable>
     );

@@ -437,9 +437,14 @@ class TestGetDefaultEmulator:
     """The default emulator is the first *safely-bakeable* command (live only)."""
 
     def test_plain_libretro_system_selects_first_core(self, resolver):
+        # Not exercising the existence probe here (see TestStandaloneInstalledProbe)
+        # — assume every core installed so selection order is isolated.
         path = _write_temp_xml(RULE_ES_SYSTEMS_XML)
         try:
-            with mock.patch.object(CoreResolver, "find_es_systems_xml", return_value=path):
+            with (
+                mock.patch.object(CoreResolver, "find_es_systems_xml", return_value=path),
+                mock.patch.object(CoreResolver, "_libretro_core_installed", return_value=True),
+            ):
                 assert resolver.get_default_emulator("gba") == EmulatorInvocation.libretro("mgba_libretro", "mGBA")
         finally:
             os.unlink(path)
@@ -858,6 +863,20 @@ def _external_component_launcher(user_home, component: str) -> str:
     )
 
 
+def _libretro_core_path(user_home: str, core_so: str) -> str:
+    """RetroDECK's sandboxed cores dir, mapped to its host path under *user_home*."""
+    return os.path.join(
+        user_home,
+        ".var",
+        "app",
+        "net.retrodeck.retrodeck",
+        "config",
+        "retroarch",
+        "cores",
+        f"{core_so}.so",
+    )
+
+
 def _touch(path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -878,8 +897,8 @@ class TestStandaloneInstalledProbe:
         with mock.patch("adapters.flatpak_install.SYSTEM_FLATPAK_ROOT", str(tmp_path / "nonexistent_system_root")):
             yield
 
-    def _seed(self, tmp_path, *, installed_components=(), external_components=()):
-        """Lay down es_systems.xml + es_find_rules.xml and the named component launchers."""
+    def _seed(self, tmp_path, *, installed_components=(), external_components=(), installed_cores=()):
+        """Lay down es_systems.xml + es_find_rules.xml and the named component launchers/cores."""
         files_dir = str(_user_files_dir(tmp_path))
         linux_systems = _es_systems_path(files_dir, flavor="linux")
         os.makedirs(os.path.dirname(linux_systems))
@@ -891,6 +910,8 @@ class TestStandaloneInstalledProbe:
             _touch(_component_launcher(files_dir, component))
         for component in external_components:
             _touch(_external_component_launcher(str(tmp_path), component))
+        for core_so in installed_cores:
+            _touch(_libretro_core_path(str(tmp_path), core_so))
         return _make_resolver(user_home=str(tmp_path))
 
     def _status(self, resolver, system, label):
@@ -925,10 +946,18 @@ class TestStandaloneInstalledProbe:
         resolver = self._seed(tmp_path)
         assert self._status(resolver, "atari8", "Atari800 (Standalone)") == ("bakeable", None)
 
-    def test_libretro_option_never_downgraded(self, tmp_path):
-        # psp's libretro command stays bakeable regardless of standalone probing.
-        resolver = self._seed(tmp_path)
+    def test_libretro_core_installed_stays_bakeable(self, tmp_path):
+        # psp's libretro command is unaffected by standalone probing and stays
+        # bakeable once its core .so is present in RetroDECK's cores dir.
+        resolver = self._seed(tmp_path, installed_cores=["ppsspp_libretro"])
         assert self._status(resolver, "psp", "PPSSPP") == ("bakeable", None)
+
+    def test_libretro_core_missing_downgrades_to_not_installed(self, tmp_path):
+        # No core .so laid down for ppsspp_libretro → downgraded exactly like a
+        # missing standalone emulator (issue: Wii Dolphin libretro core baked
+        # without ever being downloaded inside RetroArch).
+        resolver = self._seed(tmp_path)
+        assert self._status(resolver, "psp", "PPSSPP") == ("needs_setup", "not_installed")
 
     def test_absent_find_rules_leaves_everything_installed(self, tmp_path):
         # es_find_rules.xml missing → cannot disprove → no downgrade (additive probe).

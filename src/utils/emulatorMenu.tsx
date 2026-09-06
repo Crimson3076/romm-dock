@@ -13,13 +13,19 @@ import type { ReactNode } from "react";
 import { Menu, MenuItem, MenuSeparator } from "@decky/ui";
 import type { EmulatorOption } from "../types";
 
-/** Map a backend un-bakeable reason slug to short menu copy. */
-export function reasonCopy(reason: string | null): string {
+/**
+ * Map a backend un-bakeable reason slug to short menu copy.
+ *
+ * `activeBackendDisplayName` names the launcher backend (RetroDECK / EmuDeck)
+ * the "not_installed" copy is about, when the caller has it in scope — the
+ * generic fallback stands when it does not.
+ */
+export function reasonCopy(reason: string | null, activeBackendDisplayName?: string | null): string {
   switch (reason) {
     case "inject":
       return "needs setup files (launch via ES-DE once)";
     case "not_installed":
-      return "emulator not installed";
+      return activeBackendDisplayName ? `not provided by ${activeBackendDisplayName}` : "emulator not installed";
     case "shortcut_script":
       return "script/shortcut form";
     default:
@@ -36,6 +42,12 @@ export interface EmulatorMenuConfig {
   activeLabel: string | null;
   /** The per-platform override label — marked "(system)". Null on the System page (redundant there). */
   platformCoreLabel: string | null;
+  /**
+   * The active launcher backend's display name (RetroDECK / EmuDeck), when the
+   * caller has it in scope — threaded into `reasonCopy` so a "not_installed"
+   * entry names the backend it wasn't found in rather than saying so generically.
+   */
+  activeBackendDisplayName?: string | null;
   /**
    * Game-detail only: the "Use System Override" reset item that CLEARS the
    * per-game pin. Omit on the System page, where picking the default entry is
@@ -61,7 +73,8 @@ function emulatorEntryLabel(e: EmulatorOption, isActive: boolean, isPlatformCore
 
 /** Build the `<Menu>` element for `showContextMenu`. */
 export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
-  const { emulators, emulatorDataAvailable, activeLabel, platformCoreLabel, followSystem, onPick } = config;
+  const { emulators, emulatorDataAvailable, activeLabel, platformCoreLabel, activeBackendDisplayName, followSystem, onPick } =
+    config;
 
   if (!emulatorDataAvailable) {
     return (
@@ -104,7 +117,9 @@ export function buildEmulatorMenu(config: EmulatorMenuConfig): ReactNode {
   for (const e of emulators) {
     const key = `emu-${e.label}`;
     if (!e.bakeable) {
-      children.push(<MenuItem key={key} disabled={true}>{`${e.label} — ${reasonCopy(e.reason)}`}</MenuItem>);
+      children.push(
+        <MenuItem key={key} disabled={true}>{`${e.label} — ${reasonCopy(e.reason, activeBackendDisplayName)}`}</MenuItem>,
+      );
       continue;
     }
     // The active marker sits on the ACTIVE emulator: the default-marked entry

@@ -67,8 +67,9 @@ if your RomM server has BIOS files for them.
 
 1. From the main QAM page, tap **System**
 2. Platforms with synced games that still need required BIOS files are marked with "BIOS needed"
-3. For platforms with more than one emulator, an **Emulator Core** button is shown at the top of the platform's section
-   — this is the primary per-system control; it opens a menu of the platform's emulators
+3. Every platform with at least one classified emulator option shows an **Emulator Core** button at the top of its
+   section — this is the primary per-system control; it opens a menu of the platform's emulators. It appears even when
+   the platform has only one option, so a not-installed core or emulator is never hidden
 4. Below the core, each platform shows how many BIOS files are downloaded vs. available (e.g. "3 / 5 files")
 5. Tap **Show Files** to see the individual file list for a platform
 6. Tap **Download All** to download all missing BIOS files for a platform
@@ -210,18 +211,29 @@ directly into each game's Steam shortcut, so your choice applies reliably for an
   on the game, so they survive uninstalling and re-downloading.
 
 Both scopes are stored **per launcher backend**: the menu always lists whichever backend (RetroDECK or EmuDeck) is
-currently active in [Settings](configuration.md), and a core you pick under one backend has no effect on the other —
-switching backends and switching back leaves each one's picks exactly as you left them, no reinstall required.
+currently active on the [System page](#per-platform-system-page), and a core you pick under one backend has no effect
+on the other — switching backends and switching back leaves each one's picks exactly as you left them, no reinstall
+required.
 
 ### Per-Platform (System Page)
 
-On the **System** page, platforms with more than one emulator show an **Emulator Core** button as the first control in
-the platform's section, above the BIOS file list. The button opens a menu listing every emulator ES-DE offers for that
-platform — both RetroArch cores and **standalone emulators** (e.g. PCSX2, RPCS3, Dolphin, PPSSPP). Some entries appear
-**disabled** with a short reason (for example "script/shortcut form" or "needs setup files (launch via ES-DE once)")
-when the plugin can't launch them directly from Steam; those can't be picked. Picking an enabled emulator sets it as the
-default for all games on that platform. A "Switching cores may affect save compatibility" note appears at the top of the
-menu.
+On the **System** page, every platform with at least one classified emulator option shows an **Emulator Core** button
+as the first control in the platform's section, above the BIOS file list — even a platform with only one option gets
+its own button, so a not-installed emulator is never hidden behind a plain static label. The button opens a menu
+listing every emulator ES-DE offers for that platform — both RetroArch cores and **standalone emulators** (e.g. PCSX2,
+RPCS3, Dolphin, PPSSPP). Some entries appear **disabled** with a short reason when the plugin can't launch them
+directly from Steam; those can't be picked:
+
+- **"script/shortcut form"** or **"needs setup files (launch via ES-DE once)"** — a launch shape the plugin can't bake
+  into a Steam shortcut.
+- **"not provided by RetroDECK" / "not provided by EmuDeck"** (or the generic "emulator not installed" when the active
+  backend can't be determined) — the RetroArch core or standalone emulator isn't actually installed, even though it's
+  listed as an option for the system. This applies equally to RetroArch cores and standalone emulators: a libretro core
+  that was never downloaded inside RetroArch is just as unusable as a missing standalone emulator, and the plugin
+  checks both.
+
+Picking an enabled emulator sets it as the default for all games on that platform. A "Switching cores may affect save
+compatibility" note appears at the top of the menu.
 
 1. Open the **System** page from the main QAM page
 2. Find the platform you want to change

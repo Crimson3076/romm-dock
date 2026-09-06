@@ -56,6 +56,21 @@ describe("reasonCopy", () => {
       expect(reasonCopy(r)).toBe("not launchable from Steam");
     }
   });
+
+  it("names the active launcher backend for not_installed when given a display name", () => {
+    expect(reasonCopy("not_installed", "EmuDeck")).toBe("not provided by EmuDeck");
+    expect(reasonCopy("not_installed", "RetroDECK")).toBe("not provided by RetroDECK");
+  });
+
+  it("falls back to the generic not_installed copy when no backend name is given", () => {
+    expect(reasonCopy("not_installed")).toBe("emulator not installed");
+    expect(reasonCopy("not_installed", null)).toBe("emulator not installed");
+  });
+
+  it("does not use the backend name for any other reason slug", () => {
+    expect(reasonCopy("inject", "EmuDeck")).toBe("needs setup files (launch via ES-DE once)");
+    expect(reasonCopy("shortcut_script", "EmuDeck")).toBe("script/shortcut form");
+  });
 });
 
 describe("buildEmulatorMenu", () => {
@@ -111,6 +126,51 @@ describe("buildEmulatorMenu", () => {
     expect(ryubing.disabled).toBe(true);
     expect(ryubing.text).toBe("Ryubing (Standalone) — emulator not installed");
     expect(ryubing.onClick).toBeUndefined();
+  });
+
+  it("renders a not-installed LIBRETRO core disabled with the same reason copy as standalone — the code path is not kind-special-cased", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        emulators: [
+          libretroEmu("mgba_libretro", "mGBA", true),
+          {
+            label: "Dolphin",
+            kind: "libretro" as const,
+            core_so: "dolphin_libretro",
+            is_default: false,
+            bakeable: false,
+            reason: "not_installed",
+          },
+        ],
+      }),
+    );
+    const dolphin = items(menu).find((i) => i.text.startsWith("Dolphin"))!;
+    expect(dolphin.disabled).toBe(true);
+    expect(dolphin.text).toBe("Dolphin — emulator not installed");
+    expect(dolphin.onClick).toBeUndefined();
+  });
+
+  it("threads activeBackendDisplayName through to a not_installed entry's copy, for both libretro and standalone", () => {
+    const menu = buildEmulatorMenu(
+      baseConfig({
+        activeBackendDisplayName: "EmuDeck",
+        emulators: [
+          libretroEmu("mgba_libretro", "mGBA", true),
+          {
+            label: "Dolphin",
+            kind: "libretro" as const,
+            core_so: "dolphin_libretro",
+            is_default: false,
+            bakeable: false,
+            reason: "not_installed",
+          },
+          standaloneEmu("Ryubing (Standalone)", false, { bakeable: false, reason: "not_installed" }),
+        ],
+      }),
+    );
+    const its = items(menu);
+    expect(its.find((i) => i.text.startsWith("Dolphin"))!.text).toBe("Dolphin — not provided by EmuDeck");
+    expect(its.find((i) => i.text.startsWith("Ryubing"))!.text).toBe("Ryubing (Standalone) — not provided by EmuDeck");
   });
 
   it("dispatches a bakeable standalone emulator's label on pick", () => {

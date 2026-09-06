@@ -194,20 +194,33 @@ skips it and bakes the next command (the direct `--no-gui` launch): the shortcut
 standalone invocation. The kind is `libretro` when the command matches the strict RetroArch shape
 (`%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/<core>_libretro.so %ROM%`), else `standalone`.
 
-**Existence probe (a bakeable standalone whose emulator is not installed → `needs_setup` `not_installed`).** RetroDECK
+**Existence probe (a bakeable option whose emulator/core is not installed → `needs_setup` `not_installed`).** RetroDECK
 lists more standalone emulators in `es_systems.xml` than it bundles, so a system's bakeable default could name an
 emulator that is not on disk (Ryubing on `switch`, any un-installed external component) — baking it produces a shortcut
-that dies in ~0.4 s. To prevent that regression the adapter probes existence against the sibling `es_find_rules.xml`: it
-maps a standalone command's `%EMULATOR_<NAME>%` token to the find-rule entry, checks whether any of that entry's
-`staticpath` locations exist on disk (mapping the sandbox `/app` and `/var/{data,config}` prefixes to their host paths,
-glob-aware), and hands the verdict to the pure `downgrade_if_not_installed(option, installed)` rule — which turns a
-bakeable **standalone** whose emulator is absent into `needs_setup` with reason `not_installed`. It then drops out of
-`select_default_option` (the system plain-launches, as it did before #1210) and shows disabled in the picker. The probe
-is **absence-only** — it downgrades only on positive evidence that a RetroDECK component (`retrodeck/components/…` or
-`retrodeck/external_components/…`) is missing; a `systempath`-only emulator (binary on RetroDECK's sandbox `PATH`, not
-visible from outside), an emulator with no find rule, and the whole `es_find_rules.xml`-unreadable case are all assumed
-installed, so it never falsely downgrades. Libretro is always installed (RetroArch ships with RetroDECK), so libretro
-options are never downgraded. See [ADR-0020](../adr/0020-live-es-systems-emulator-resolution.md) §2.
+that dies in ~0.4 s. The same is true of a libretro core: RetroArch shipping with RetroDECK says nothing about which
+cores the user has downloaded inside it, and a missing core's `.so` fails the same way (issue: Wii/Dolphin libretro
+core baked without ever being downloaded). To prevent that regression the adapter probes existence for both kinds. For
+a bakeable **standalone**, it maps the command's `%EMULATOR_<NAME>%` token to the sibling `es_find_rules.xml`'s
+find-rule entry and checks whether any of that entry's `staticpath` locations exist on disk (mapping the sandbox `/app`
+and `/var/{data,config}` prefixes to their host paths, glob-aware). For a bakeable **libretro** option, it checks
+`<core_so>.so` directly under RetroDECK's fixed sandboxed cores directory (`/var/config/retroarch/cores`, the same path
+`domain.shortcut_data` bakes into the `-e` override) — a RetroDECK convention, not something `es_find_rules.xml` names,
+so no find-rule lookup is needed. Either way the on-disk verdict is handed to the pure
+`downgrade_if_not_installed(option, installed)` rule, which turns a bakeable option whose emulator/core is absent into
+`needs_setup` with reason `not_installed`. It then drops out of `select_default_option` (the system plain-launches, as
+it did before #1210) and shows disabled in the picker. The standalone probe is **absence-only** — it downgrades only on
+positive evidence that a RetroDECK component (`retrodeck/components/…` or `retrodeck/external_components/…`) is
+missing; a `systempath`-only emulator (binary on RetroDECK's sandbox `PATH`, not visible from outside), an emulator
+with no find rule, and the whole `es_find_rules.xml`-unreadable case are all assumed installed, so it never falsely
+downgrades. See [ADR-0020](../adr/0020-live-es-systems-emulator-resolution.md) §2.
+
+EmuDeck's own `get_emulator_options` (`adapters/emudeck_launcher_backend.py`) runs the equivalent probe over its own
+unsandboxed layout: a libretro core's cores dir comes from `EmuDeckFindRulesAdapter.resolve_core_dir("RETROARCH")`, a
+standalone's binary from `resolve_emulator` against the same `%EMULATOR_<NAME>%` token `_render_option` resolves at
+bake time. Either lookup that cannot resolve at all (an unknown token, or the corepath rule absent) assumes installed
+rather than falsely downgrading — the same honest, absence-only discipline. Neither probe verifies that a resolved
+directory actually contains the *right* core/binary; the launcher script is still the final word on that at launch
+time.
 
 `get_emulator_options(system)` returns `{"available": bool, "options": [EmulatorOption, ...]}`. **`available` is `False`
 when `es_systems.xml` cannot be found or parsed** — the picker surfaces that as "Emulator list unavailable" rather than
@@ -230,6 +243,16 @@ value:
 | `SyncEngine` (saves) core tag                 | the per-core save-sync identity                             |
 | `StatusService.check_core_change`             | detect a core change since the last save sync               |
 | `GameDetailService` → CPU badge / Active Core | the core shown on the game detail page                      |
+| `GameDetailService` → `emulator_available`    | whether the resolved emulator/core genuinely exists on disk  |
+
+`GameDetailService.get_cached_game_detail` also projects `active_emulator_for_rom(rom_id) is not None` into the
+cached-game-detail payload as `emulator_available: bool` — distinct from `active_core_for_rom`'s `.so`-space tuple
+(which reads `(None, label)` for a resolved **standalone** emulator and would misread that as "unavailable"), so
+`emulator_available` reads the full `EmulatorInvocation` directly. Combined with Task 1's existence probes, `False`
+means every layer of the precedence chain resolved to nothing bakeable AND installed for this platform — the frontend's
+Play button uses it to show a distinct disabled "Emulator Not Found" state instead of baking a launch that will error.
+No platform to resolve a system against (an empty `platform_slug`) fails open to `True` — this signal only ever adds a
+block, never invents one from an unrelated gap.
 
 A pinned per-game or per-platform label that no longer resolves (the core was removed by a RetroDECK update) is **never
 fatal**: the resolver logs a WARNING and degrades to the next layer (the per-platform core, then the es_systems

@@ -209,6 +209,14 @@ export interface CachedGameDetail extends BiosAnswer {
    * of yet — which is why this value is sent back on the press.
    */
   adoption_candidate_present?: boolean;
+  /**
+   * Whether the ROM's fully-resolved active emulator (per-game override →
+   * per-platform override → backend default) is actually installed on disk.
+   * `false` only when a platform was checked and nothing resolved; omitted/
+   * `true` otherwise (fails open when there's no platform to check against,
+   * so an unrelated resolution gap never blocks Play).
+   */
+  emulator_available?: boolean;
 }
 
 // get_cached_game_detail wiring lives in utils/cachedGameDetailStore.ts so the

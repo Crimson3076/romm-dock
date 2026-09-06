@@ -3392,6 +3392,140 @@ describe("CustomPlayButton — version switch (#1298)", () => {
   });
 });
 
+describe("CustomPlayButton — emulator not found (backend-checked libretro/standalone availability)", () => {
+  beforeEach(() => {
+    vi.mocked(getCachedGameDetail).mockReset();
+    vi.mocked(toaster.toast).mockReset();
+    vi.mocked(showContextMenu).mockReset();
+    vi.mocked(backend.removeRom).mockReset();
+    vi.mocked(setLaunchOptionsConfirmed).mockReset();
+    vi.mocked(setLaunchOptionsConfirmed).mockResolvedValue(true);
+    vi.mocked(isSessionActive).mockReturnValue(false);
+    vi.mocked(isAppRunning).mockReturnValue(false);
+    vi.mocked(markLaunchSkipped).mockClear();
+  });
+
+  it("renders 'Emulator Not Found' when installed but the resolved emulator/core isn't on disk", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true, emulator_available: false });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+
+    expect(await findByText("Emulator Not Found")).toBeInTheDocument();
+    expect(queryByText("Play")).toBeNull();
+  });
+
+  it("clicking the disabled button does not launch and surfaces an explanatory toast", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true, emulator_available: false });
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    const btn = await findByText("Emulator Not Found");
+
+    act(() => {
+      btn.click();
+    });
+
+    expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("emulator or core for this platform isn't installed"),
+      }),
+    );
+    expect(vi.mocked(markLaunchSkipped)).not.toHaveBeenCalled();
+  });
+
+  it("Uninstall from the chevron menu removes the ROM, same as from Play (#emulator_available)", async () => {
+    vi.mocked(backend.removeRom).mockResolvedValue({ success: true, message: "" });
+    mockCachedDetail({ rom_id: 42, installed: true, emulator_available: false });
+    const { container, findByText } = render(<CustomPlayButton appId={100} />);
+    await findByText("Emulator Not Found");
+
+    const pressUninstall = await openUninstallMenu(container, 3);
+    await pressUninstall();
+
+    expect(vi.mocked(backend.removeRom)).toHaveBeenCalledWith(42);
+  });
+
+  it("renders 'Play' as before when emulator_available is true", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true, emulator_available: true });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+
+    expect(await findByText("Play")).toBeInTheDocument();
+    expect(queryByText("Emulator Not Found")).toBeNull();
+  });
+
+  it("renders 'Play' as before when emulator_available is undefined (fails open)", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+
+    expect(await findByText("Play")).toBeInTheDocument();
+    expect(queryByText("Emulator Not Found")).toBeNull();
+  });
+
+  it("takes precedence over a save conflict — installed + conflict + emulator_available:false still shows Emulator Not Found", async () => {
+    const conflictStatus: CachedGameDetail["save_status"] = {
+      files: [{ filename: "save.srm", status: "conflict" }],
+      conflicts: [
+        {
+          type: "sync_conflict",
+          rom_id: 42,
+          filename: "save.srm",
+          server_save_id: 7,
+          server_updated_at: "2026-01-01T00:00:00Z",
+          server_size: 1024,
+          local_path: "/local/save.srm",
+          local_hash: "abc",
+          local_mtime: "2026-01-01T00:00:00Z",
+          local_size: 1024,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    };
+    mockCachedDetail({ rom_id: 42, installed: true, emulator_available: false, save_status: conflictStatus });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+
+    expect(await findByText("Emulator Not Found")).toBeInTheDocument();
+    expect(queryByText("Resolve Conflict")).toBeNull();
+  });
+
+  it("version switch to an installed rom with emulator_available:false lands on Emulator Not Found, not Play", async () => {
+    vi.mocked(isSessionActive).mockReturnValue(false);
+    vi.mocked(isAppRunning).mockReturnValue(false);
+    vi.mocked(getCachedGameDetail).mockResolvedValue({ found: true, rom_id: 42, rom_name: "USA", installed: true });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+    await findByText("Play");
+
+    vi.mocked(getCachedGameDetail).mockResolvedValue({
+      found: true,
+      rom_id: 7,
+      rom_name: "JPN",
+      installed: true,
+      emulator_available: false,
+    });
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", { detail: { type: "version_switched", app_id: 100, rom_id: 7 } }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(await findByText("Emulator Not Found")).toBeInTheDocument();
+    expect(queryByText("Play")).toBeNull();
+  });
+
+  it("an unrelated save_sync broadcast does not bounce Emulator Not Found back to conflict/play", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true, emulator_available: false });
+    const { findByText, queryByText } = render(<CustomPlayButton appId={100} />);
+    await findByText("Emulator Not Found");
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", { detail: { type: "save_sync", rom_id: 42, has_conflict: false } }),
+      );
+    });
+
+    expect(await findByText("Emulator Not Found")).toBeInTheDocument();
+    expect(queryByText("Play")).toBeNull();
+    expect(queryByText("Resolve Conflict")).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Rehydrated / active download button keeps its DARK remainder (fix/rehydrated-
 // download-button-colors).

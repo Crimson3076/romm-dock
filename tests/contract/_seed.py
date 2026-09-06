@@ -290,12 +290,20 @@ def seed_es_systems(harness: ContractHarness, xml: str | None = None) -> None:
     per-user flatpak files tree under it (the contract conftest repoints the
     system root away, so this seed is the only source). The file lands at the
     ``…/systems/linux/es_systems.xml`` path ES-DE ships. The default seeds a
-    single ``gba`` system with an mGBA default and a VBA Next alternative.
+    single ``gba`` system with an mGBA default and a VBA Next alternative, and
+    also seeds both cores' ``.so`` files (``seed_libretro_core``) so the
+    existence probe (ADR-0020) leaves both bakeable — these tests exercise
+    core-selection wiring, not the existence probe itself. A caller passing a
+    custom *xml* is responsible for seeding any core files its own libretro
+    commands need.
     """
     dest = os.path.join(_systems_linux_dir(harness), "es_systems.xml")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w") as f:
         f.write(xml if xml is not None else _DEFAULT_ES_SYSTEMS_XML)
+    if xml is None:
+        seed_libretro_core(harness, "mgba_libretro")
+        seed_libretro_core(harness, "vba_next_libretro")
 
 
 def seed_es_find_rules(harness: ContractHarness, xml: str) -> None:
@@ -308,6 +316,31 @@ def seed_es_find_rules(harness: ContractHarness, xml: str) -> None:
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w") as f:
         f.write(xml)
+
+
+def seed_libretro_core(harness: ContractHarness, core_so: str) -> None:
+    """Create a libretro core ``.so`` under RetroDECK's sandboxed cores directory.
+
+    Lays down ``<core_so>.so`` under the flatpak app's per-user
+    ``~/.var/app/net.retrodeck.retrodeck/config/retroarch/cores`` tree so the
+    libretro existence probe (``CoreResolver._libretro_core_installed``) treats
+    the core as installed — the same on-disk convention
+    ``domain.shortcut_data`` bakes into the ``-e`` override.
+    """
+    host = os.path.join(
+        str(harness.tmp_path),
+        "home",
+        ".var",
+        "app",
+        "net.retrodeck.retrodeck",
+        "config",
+        "retroarch",
+        "cores",
+        f"{core_so}.so",
+    )
+    os.makedirs(os.path.dirname(host), exist_ok=True)
+    with open(host, "w") as f:
+        f.write("")
 
 
 def seed_component_launcher(harness: ContractHarness, component: str) -> str:

@@ -178,8 +178,9 @@ picture.
 
 ## Launcher
 
-Two dropdowns in the **Launcher** section on the main page: **Launcher** (which app your games actually run through) and
-**Installation** (which one RomM-Dock manages, when more than one is detected).
+Two dropdowns in the **Launcher** section on the [System page](bios-management.md#per-platform-system-page): **Launcher**
+(which app your games actually run through) and **Installation** (which one RomM-Dock manages, when more than one is
+detected).
 
 | Launcher                | Status                                                                                                                                                                                                                                                                                                              |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

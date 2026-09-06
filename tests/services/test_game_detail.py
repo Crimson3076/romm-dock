@@ -511,6 +511,66 @@ class TestGetCachedGameDetailInstalled:
         assert result["rom_file"] == "game_10.sfc"
 
 
+class TestEmulatorAvailable:
+    """``emulator_available`` reflects whether the resolved active emulator/core
+    genuinely resolves (:meth:`ActiveCoreReader.active_emulator_for_rom`), the
+    signal the Play button uses to distinguish "will launch" from "will error
+    for a missing core/emulator" (post-Task-1 existence probes)."""
+
+    @pytest.mark.asyncio
+    async def test_true_when_active_emulator_resolves(self, plugin, game_detail_service, active_core_resolver):
+        """A libretro core that resolves reports emulator_available=True."""
+        _seed_rom(plugin, 42, app_id=50000, name="Game", platform_slug="gba")
+        _install_rom(plugin, plugin._tmp_path, rom_id=42, system="gba", file_name="game.gba")
+        active_core_resolver.per_rom[42] = ("mgba_libretro", "mGBA")
+
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["emulator_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_false_when_active_emulator_unresolved(self, plugin, game_detail_service, active_core_resolver):
+        """No bakeable emulator anywhere in the precedence chain → emulator_available=False.
+
+        Mirrors a libretro core the user never downloaded inside RetroArch, or a
+        missing standalone emulator (Task 1's existence probes) — the resolver
+        degrades all the way to ``None`` and the Play button must show a
+        distinct disabled state rather than baking a launch that will error.
+        """
+        _seed_rom(plugin, 42, app_id=50000, name="Game", platform_slug="gba")
+        _install_rom(plugin, plugin._tmp_path, rom_id=42, system="gba", file_name="game.gba")
+        # default=(None, None) → active_emulator_for_rom resolves to None.
+
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["emulator_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_true_for_a_resolved_standalone_emulator(self, plugin, game_detail_service, active_core_resolver):
+        """A resolved STANDALONE emulator (core_so=None) still counts as available.
+
+        ``active_core_for_rom``'s ``(None, label)`` projection would read as "no
+        emulator" if used naively — emulator_available must be derived from the
+        full ``EmulatorInvocation``, not the ``.so``-space tuple.
+        """
+        from domain.shortcut_data import EmulatorInvocation
+
+        _seed_rom(plugin, 42, app_id=50000, name="Game", platform_slug="ps3")
+        _install_rom(plugin, plugin._tmp_path, rom_id=42, system="ps3", file_name="game.ps3")
+        active_core_resolver.per_rom_emulator[42] = EmulatorInvocation.standalone(
+            "%EMULATOR_RPCS3% --no-gui %ROM%", "RPCS3 (Standalone)"
+        )
+
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["emulator_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_fail_open_true_when_no_platform_slug(self, plugin, game_detail_service):
+        """No platform_slug → no system to resolve against → fail-open True (never blocks Play)."""
+        _seed_rom(plugin, 42, app_id=50000, name="Game", platform_slug="")
+
+        result = game_detail_service.get_cached_game_detail(50000)
+        assert result["emulator_available"] is True
+
+
 class TestTargetPathOccupied:
     """The single ``stat`` this network-free page runs on an uninstalled ROM (#260).
 

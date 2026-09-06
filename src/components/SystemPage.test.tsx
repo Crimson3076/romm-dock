@@ -82,6 +82,17 @@ vi.mock("../utils/emulatorMenu", () => ({
   }),
 }));
 
+// LauncherBackendSection owns its own data/effects and its own @decky/ui
+// surface (DropdownItem, which this file's local @decky/ui mock omits) —
+// stub it like the sub-sections in SettingsPage.test.tsx so relocating it here
+// doesn't drag that unrelated component's rendering into these tests.
+vi.mock("./settings/LauncherBackendSection", async () => {
+  const { createElement: ce } = await import("react");
+  return {
+    LauncherBackendSection: () => ce("div", { "data-testid": "launcher-backend-section" }),
+  };
+});
+
 // Props of the ConfirmModal element handed to the most recent showModal() call.
 interface ConfirmModalProps {
   strTitle?: string;
@@ -186,6 +197,7 @@ describe("SystemPage", () => {
       files: {},
     });
     vi.mocked(setLaunchOptionsConfirmed).mockResolvedValue(true);
+    vi.mocked(backend.getLauncherBackends).mockResolvedValue([]);
   });
 
   // ------------------------------------------------------------------
@@ -196,6 +208,20 @@ describe("SystemPage", () => {
       render(<SystemPage onBack={vi.fn()} />);
       await flushAsync();
       expect(vi.mocked(backend.getFirmwareStatus)).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders LauncherBackendSection above the per-platform BIOS list (moved here from Settings)", async () => {
+      const { container, getByTestId } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      expect(getByTestId("launcher-backend-section")).toBeInTheDocument();
+      // "above": it precedes the "System" panel section in document order.
+      const systemTitle = [...container.querySelectorAll('[data-testid="panel-title"]')].find(
+        (el) => el.textContent === "System",
+      );
+      expect(systemTitle).toBeDefined();
+      const launcherPos = getByTestId("launcher-backend-section").compareDocumentPosition(systemTitle!);
+      // DOCUMENT_POSITION_FOLLOWING (4): systemTitle comes after the launcher section.
+      expect(launcherPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("renders the loading state before getFirmwareStatus resolves and removes it after", async () => {
@@ -1122,7 +1148,7 @@ describe("SystemPage", () => {
   // N. setSystemCore (core dropdown)
   // ------------------------------------------------------------------
   describe("setSystemCore", () => {
-    it("does NOT render the core button when there is <=1 emulator", async () => {
+    it("renders the core button even with exactly 1 emulator (the length-based gate is removed)", async () => {
       vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
         success: true,
         platforms: [
@@ -1140,6 +1166,24 @@ describe("SystemPage", () => {
                 reason: null,
               },
             ],
+          }),
+        ],
+      });
+      const { container } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      const coreBtn = [...container.querySelectorAll("button")].find((b) => b.textContent.startsWith("Emulator Core:"));
+      expect(coreBtn).toBeDefined();
+    });
+
+    it("does NOT render the core button when there are 0 classified emulator options", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [
+          makeBiosPlatform({
+            platform_slug: "snes",
+            files: [],
+            emulator_data_available: true,
+            emulators: [],
           }),
         ],
       });
@@ -1188,6 +1232,41 @@ describe("SystemPage", () => {
       expect(config.activeLabel).toBe("snes9x");
       expect(config.emulatorDataAvailable).toBe(true);
       expect(config.platformCoreLabel).toBeNull();
+    });
+
+    it("threads the active launcher backend's display name into the picker config, for a not_installed entry's copy", async () => {
+      vi.mocked(backend.getLauncherBackends).mockResolvedValue([
+        {
+          backend_id: "emudeck",
+          display_name: "EmuDeck",
+          is_active: true,
+          installations: [],
+        },
+        {
+          backend_id: "retrodeck",
+          display_name: "RetroDECK",
+          is_active: false,
+          installations: [],
+        },
+      ]);
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [
+          makeBiosPlatform({
+            platform_slug: "snes",
+            files: [],
+            emulator_data_available: true,
+            emulators: [
+              { label: "snes9x", kind: "libretro", core_so: "snes9x.so", is_default: true, bakeable: true, reason: null },
+            ],
+            active_core_label: "snes9x",
+          }),
+        ],
+      });
+      const { container } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
+      const config = openCoreMenu(container);
+      expect(config.activeBackendDisplayName).toBe("EmuDeck");
     });
 
     it("calls setSystemCore with empty label when default core is selected and dispatches romm_data_changed", async () => {
@@ -1603,7 +1682,10 @@ describe("SystemPage", () => {
       expect(vi.mocked(backend.debugLog)).toHaveBeenCalledWith("setSystemCore: error: Error: boom");
     });
 
-    it("renders an inactive Emulator Core Field when active_core_label is set but only 1 available core exists", async () => {
+    it("renders the picker button (not a static Field) even with only 1 available core", async () => {
+      // A single-command platform still gets its own picker, greyed out with a
+      // reason if not_installed — the length-based gate that used to hide it
+      // entirely was removed so that reason is never silently swallowed.
       vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
         success: true,
         platforms: [
@@ -1627,7 +1709,26 @@ describe("SystemPage", () => {
       });
       const { container } = render(<SystemPage onBack={vi.fn()} />);
       await flushAsync();
-      // No core picker button rendered, but the "Emulator Core" Field is.
+      const coreBtn = [...container.querySelectorAll("button")].find((b) => b.textContent.startsWith("Emulator Core:"));
+      expect(coreBtn).toBeDefined();
+      expect(coreBtn?.textContent).toBe("Emulator Core: snes9x");
+    });
+
+    it("renders a static Emulator Core Field only when the platform reports no classified options at all", async () => {
+      vi.mocked(backend.getFirmwareStatus).mockResolvedValue({
+        success: true,
+        platforms: [
+          makeBiosPlatform({
+            platform_slug: "snes",
+            files: [],
+            emulator_data_available: true,
+            emulators: [],
+            active_core_label: "snes9x",
+          }),
+        ],
+      });
+      const { container } = render(<SystemPage onBack={vi.fn()} />);
+      await flushAsync();
       const coreBtn = [...container.querySelectorAll("button")].find((b) => b.textContent.startsWith("Emulator Core:"));
       expect(coreBtn).toBeUndefined();
       expect(container.textContent).toContain("snes9x");

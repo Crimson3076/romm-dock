@@ -10,9 +10,11 @@ is no offline snapshot — RetroDECK is a hard prerequisite, so when
 adapter reports "unavailable" rather than inventing a fallback. Alongside
 ``es_systems.xml`` the adapter parses the sibling ``es_find_rules.xml`` (the same
 systems dir, same mtime-cache discipline) to probe whether a standalone
-emulator's binary is actually installed in RetroDECK — a bakeable standalone
-whose emulator is missing is downgraded to ``needs_setup`` (reason
-``not_installed``) so it never becomes the baked default (ADR-0020). The retired
+emulator's binary is actually installed in RetroDECK, and separately checks a
+libretro option's core ``.so`` under the RetroDECK-sandboxed cores directory —
+a bakeable standalone or libretro option whose emulator/core is missing is
+downgraded to ``needs_setup`` (reason ``not_installed``) so it never becomes
+the baked default (ADR-0020). The retired
 ES-DE gamelist is never read or written; the plugin-owned deviations
 (per-platform core in ``settings.json``, per-game pin in the ``roms`` store) are
 layered on top by :class:`services.active_core_resolver.ActiveCoreResolver`, not
@@ -183,9 +185,11 @@ class CoreResolver:
         ``options`` preserves ES-DE's document order, so the first bakeable entry
         is the system default. A bakeable **standalone** option whose emulator is
         not installed in RetroDECK is downgraded to ``needs_setup`` (reason
-        ``not_installed``) via the ``es_find_rules.xml`` probe, so it neither
-        becomes the default nor bakes into a shortcut. An unknown system on a
-        readable file yields ``available: True`` with an empty list.
+        ``not_installed``) via the ``es_find_rules.xml`` probe, and a bakeable
+        **libretro** option whose core ``.so`` is missing from RetroDECK's cores
+        directory is downgraded the same way, so neither becomes the default nor
+        bakes into a shortcut. An unknown system on a readable file yields
+        ``available: True`` with an empty list.
         """
         es_systems = self._load_es_systems()
         if not es_systems:
@@ -241,20 +245,41 @@ class CoreResolver:
         return any(marker in path for marker in _RETRODECK_COMPONENT_MARKERS)
 
     def _probe_installed(self, option: EmulatorOption) -> EmulatorOption:
-        """Downgrade a bakeable standalone whose emulator is not installed.
+        """Downgrade a bakeable option whose emulator/core is not installed.
 
-        Libretro options and already-non-bakeable options pass through untouched
-        (RetroArch ships with RetroDECK; the domain rule guards the kind). For a
-        bakeable standalone, resolve its ``%EMULATOR_*%`` token against
-        ``es_find_rules.xml`` and hand the on-disk verdict to
+        Already-non-bakeable options pass through untouched. A bakeable
+        **standalone** resolves its ``%EMULATOR_*%`` token against
+        ``es_find_rules.xml``; a bakeable **libretro** option checks its core
+        ``.so`` directly under the RetroDECK-sandboxed cores directory (a fixed
+        convention, not an ``es_find_rules.xml``-sourced path). Either way the
+        on-disk verdict is handed to
         :func:`domain.emulator_commands.downgrade_if_not_installed`.
         """
-        if option.status != "bakeable" or option.kind != "standalone":
+        if option.status != "bakeable":
+            return option
+        if option.kind == "libretro":
+            if option.core_so is None:
+                return option
+            return downgrade_if_not_installed(option, self._libretro_core_installed(option.core_so))
+        if option.kind != "standalone":
             return option
         token = _emulator_token(option.command)
         if token is None:
             return option
         return downgrade_if_not_installed(option, self._emulator_installed(token))
+
+    def _libretro_core_installed(self, core_so: str) -> bool:
+        """Whether the libretro core ``<core_so>.so`` exists under RetroDECK's cores dir.
+
+        The RetroDECK sandbox always exposes its RetroArch cores at the fixed
+        ``/var/config/retroarch/cores`` path (mirrored by
+        ``domain.shortcut_data._RETROARCH_CORES_DIR``, which bakes the same
+        path into the ``-e`` override) — a RetroDECK-fixed convention, not an
+        ``es_find_rules.xml``-sourced lookup, so this checks the file directly
+        rather than going through the find-rules probe.
+        """
+        core_path = self._retrodeck_var_dir("config", os.path.join("retroarch", "cores", f"{core_so}.so"))
+        return os.path.exists(core_path)
 
     def system_supports_m3u(self, system_name: str) -> bool:
         """True iff ES-DE lists ``.m3u`` as a supported extension for *system_name*.
