@@ -7,7 +7,6 @@
 
 * **bios:** add Xbox/xemu firmware support with content-based detection ([2951d39](https://github.com/Crimson3076/romm-dock/commit/2951d39be704d086faa5c056d3ca0f005178b77e))
 * **bios:** verify xemu.toml points at the plugin's BIOS directory ([644e57f](https://github.com/Crimson3076/romm-dock/commit/644e57f12fe4c8f5b27a753e4f6d8a57e0ef4ce4))
-* **bios:** Xbox/xemu firmware support + launch-command fix ([8a4f3ea](https://github.com/Crimson3076/romm-dock/commit/8a4f3ea64146abb29aa407a414a4c58bc789c83f))
 
 
 ### Bug Fixes
