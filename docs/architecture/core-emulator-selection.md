@@ -172,13 +172,17 @@ default — no plugin curation, no per-system table.
 A command is `bakeable` only when it is a real emulator invocation the plugin can carry verbatim into a Steam shortcut's
 `-e`. `classify_command` applies these rules in order, first match wins:
 
-1. contains `%INJECT%` → `needs_setup` (`"inject"`) — needs ES-DE to generate a sidecar first (Vita3K), **except**
-   xemu's own `%INJECT%=<sidecar> %EMULATOR_XEMU% …` prefix form, which is unwrapped to the real invocation underneath
-   and classified normally — confirmed by running that invocation directly with no sidecar present: xemu launched the
-   game normally, so the sidecar is an ES-DE-side scraper artifact xemu never reads at runtime. The unwrap is anchored
-   on both the prefix shape and `%EMULATOR_XEMU%` specifically; Vita3K's form is a suffix (`… %INJECT%=…`) and never
-   matches, and no other `%INJECT%` emulator has been verified the same way, so this is not a general "%INJECT% is
-   always safe to strip" rule (`domain/emulator_commands.py`'s `_strip_xemu_inject_prefix`);
+1. contains `%INJECT%` → `needs_setup` (`"inject"`) — needs ES-DE to generate a sidecar first (Vita3K), **except** the
+   ES-DE 2.0.0 `.esprefix` family's own `%INJECT%=<sidecar> %EMULATOR_<NAME>% …` prefix form (Dolphin, PrimeHack,
+   Triforce, Yuzu, xemu — ES-DE's own release notes list these five as the emulators this optional per-game injection
+   applies to), which is unwrapped to the real invocation underneath and classified normally. xemu was confirmed by
+   running that invocation directly with no sidecar present: it launched the game normally, so the sidecar is additive
+   ES-DE-side customization, not something the emulator reads at runtime. Dolphin was confirmed the same way on-device
+   (EmuDeck's `dolphin-emu.sh -b -e <rom>` launched a Wii game with no `.esprefix` on disk). PrimeHack/Triforce/Yuzu
+   share the identical documented mechanism but have not been independently field-verified. The unwrap is anchored on
+   both the prefix shape and one of those five `%EMULATOR_*%` tokens specifically; Vita3K's form is a suffix
+   (`… %INJECT%=…`) and never matches, and it has not been verified at all, so this is not a general "%INJECT% is
+   always safe to strip" rule (`domain/emulator_commands.py`'s `_strip_esprefix_inject_prefix`);
 2. contains `%ENABLESHORTCUTS%` or `%EMULATOR_OS-SHELL%` → `unbakeable` (`"shortcut_script"`);
 3. does not end in `%ROM%` → `unbakeable` (`"no_rom_target"`) — trailing args after `%ROM%` break the bake;
 4. contains `"` or `\;` → `unbakeable` (`"quoting"`);

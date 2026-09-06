@@ -35,6 +35,10 @@ PS3_RPCS3_DIRECTORY = "%EMULATOR_RPCS3% --no-gui %ROM%"
 PS3_RPCS3_SHORTCUT = "%ENABLESHORTCUTS% %EMULATOR_OS-SHELL% %ROM%"
 PS3_RPCS3_GAME_SERIAL = "%EMULATOR_RPCS3% --no-gui %RPCS3_GAMEID%:%INJECT%=%BASENAME%.ps3"
 XEMU_INJECT_WITH_ROM = "%INJECT%=%BASENAME%.esprefix %EMULATOR_XEMU% -dvd_path %ROM%"
+DOLPHIN_INJECT_WITH_ROM = "%INJECT%=%BASENAME%.esprefix %EMULATOR_DOLPHIN% -b -e %ROM%"
+PRIMEHACK_INJECT_WITH_ROM = "%INJECT%=%BASENAME%.esprefix %EMULATOR_PRIMEHACK% -b -e %ROM%"
+TRIFORCE_INJECT_WITH_ROM = "%INJECT%=%BASENAME%.esprefix %EMULATOR_TRIFORCE% -b -e %ROM%"
+YUZU_INJECT_WITH_ROM = "%INJECT%=%BASENAME%.esprefix %EMULATOR_YUZU% -f -g %ROM%"
 VITA3K_INJECT_NO_ROM = "%EMULATOR_VITA3K% -r %INJECT%=%BASENAME%.psvita"
 ARCADE_MAME_STANDALONE = (
     "%EMULATOR_MAME% -inipath /var/config/mame/ini -rompath %GAMEDIR%\\;%ROMPATH%/arcade %BASENAME%"
@@ -110,19 +114,28 @@ class TestClassifyCommand:
         assert option.kind == "standalone"
 
 
-class TestXemuInjectUnwrap:
-    """xemu's %INJECT%=<sidecar> prefix is a real invocation underneath, unlike other %INJECT% forms."""
+class TestEsprefixInjectUnwrap:
+    """The ES-DE 2.0.0 .esprefix %INJECT%=<sidecar> prefix is a real invocation
+    underneath, for the five emulators that document/exhibit this exact shape —
+    unlike other %INJECT% forms."""
 
-    def test_xemu_inject_is_bakeable(self):
-        option = classify_command("xemu (Standalone)", XEMU_INJECT_WITH_ROM)
+    @pytest.mark.parametrize(
+        ("label", "command", "stripped"),
+        [
+            ("xemu (Standalone)", XEMU_INJECT_WITH_ROM, "%EMULATOR_XEMU% -dvd_path %ROM%"),
+            ("Dolphin (Standalone)", DOLPHIN_INJECT_WITH_ROM, "%EMULATOR_DOLPHIN% -b -e %ROM%"),
+            ("PrimeHack (Standalone)", PRIMEHACK_INJECT_WITH_ROM, "%EMULATOR_PRIMEHACK% -b -e %ROM%"),
+            ("Triforce (Standalone)", TRIFORCE_INJECT_WITH_ROM, "%EMULATOR_TRIFORCE% -b -e %ROM%"),
+            ("Yuzu (Standalone)", YUZU_INJECT_WITH_ROM, "%EMULATOR_YUZU% -f -g %ROM%"),
+        ],
+    )
+    def test_esprefix_inject_is_bakeable_with_prefix_stripped(self, label, command, stripped):
+        option = classify_command(label, command)
         assert option.status == "bakeable"
         assert option.reason is None
         assert option.kind == "standalone"
         assert option.core_so is None
-
-    def test_xemu_command_has_inject_prefix_stripped(self):
-        option = classify_command("xemu (Standalone)", XEMU_INJECT_WITH_ROM)
-        assert option.command == "%EMULATOR_XEMU% -dvd_path %ROM%"
+        assert option.command == stripped
         assert "%INJECT%" not in option.command
 
     def test_xemu_option_renders_an_invocation_with_the_stripped_command(self):
@@ -131,22 +144,31 @@ class TestXemuInjectUnwrap:
             "%EMULATOR_XEMU% -dvd_path %ROM%", "xemu (Standalone)"
         )
 
+    def test_dolphin_option_renders_an_invocation_with_the_stripped_command(self):
+        # Field-verified on-device (EmuDeck's dolphin-emu.sh -b -e <rom>
+        # launched a Wii game with no .esprefix on disk) — see the
+        # _ESPREFIX_INJECT_RE comment in domain/emulator_commands.py.
+        option = classify_command("Dolphin (Standalone)", DOLPHIN_INJECT_WITH_ROM)
+        assert option_to_invocation(option) == EmulatorInvocation.standalone(
+            "%EMULATOR_DOLPHIN% -b -e %ROM%", "Dolphin (Standalone)"
+        )
+
     def test_vita3k_suffix_form_is_unaffected(self):
-        """Vita3K's %INJECT% is a suffix, not xemu's prefix shape — stays needs_setup."""
+        """Vita3K's %INJECT% is a suffix, not this family's prefix shape — stays needs_setup."""
         option = classify_command("Vita3K", VITA3K_INJECT_NO_ROM)
         assert option.status == "needs_setup"
         assert option.reason == "inject"
         assert option.command == VITA3K_INJECT_NO_ROM.strip()
 
-    def test_inject_prefix_without_xemu_emulator_token_is_unaffected(self):
-        """The prefix shape alone isn't enough — must specifically be %EMULATOR_XEMU%."""
+    def test_inject_prefix_with_unlisted_emulator_token_is_unaffected(self):
+        """The prefix shape alone isn't enough — must be one of the five listed %EMULATOR_*% tokens."""
         option = classify_command("Other", "%INJECT%=%BASENAME%.sidecar %EMULATOR_OTHER% %ROM%")
         assert option.status == "needs_setup"
         assert option.reason == "inject"
 
-    def test_malformed_xemu_inject_falls_back_to_needs_setup(self):
+    def test_malformed_dolphin_inject_falls_back_to_needs_setup(self):
         """A prefix that doesn't parse as <sidecar-token> <rest> stays needs_setup."""
-        option = classify_command("xemu (Standalone)", "%INJECT%=%EMULATOR_XEMU% -dvd_path %ROM%")
+        option = classify_command("Dolphin (Standalone)", "%INJECT%=%EMULATOR_DOLPHIN% -b -e %ROM%")
         assert option.status == "needs_setup"
         assert option.reason == "inject"
 
@@ -340,6 +362,10 @@ class TestClassificationInvariants:
         PS3_RPCS3_SHORTCUT,
         PS3_RPCS3_GAME_SERIAL,
         XEMU_INJECT_WITH_ROM,
+        DOLPHIN_INJECT_WITH_ROM,
+        PRIMEHACK_INJECT_WITH_ROM,
+        TRIFORCE_INJECT_WITH_ROM,
+        YUZU_INJECT_WITH_ROM,
         VITA3K_INJECT_NO_ROM,
         ARCADE_MAME_STANDALONE,
         APPLE2_MAME_LIBRETRO_QUOTED,

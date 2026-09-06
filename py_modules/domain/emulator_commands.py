@@ -29,16 +29,21 @@ _LIBRETRO_RE = re.compile(r"^%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/([\w-]+_li
 
 _PLACEHOLDER_RE = re.compile(r"%[^%]+%")
 
-# xemu's ES-DE command is `%INJECT%=%BASENAME%.esprefix %EMULATOR_XEMU% -dvd_path
-# %ROM%` — an %INJECT% *prefix* naming an ES-DE-generated per-game sidecar,
-# followed by the real invocation. Confirmed by running the captured group
-# directly with no sidecar present: xemu launched the game normally, so the
-# sidecar is an ES-DE-side scraper artifact, not something xemu reads at
-# runtime. Anchored on the prefix shape AND %EMULATOR_XEMU% specifically —
-# Vita3K's %INJECT% form is a suffix (`%EMULATOR_VITA3K% -r %INJECT%=...`) and
-# never matches this, so it keeps its needs_setup classification; that
-# assumption has not been verified the way xemu's has.
-_XEMU_INJECT_RE = re.compile(r"^%INJECT%=\S+\s+(%EMULATOR_XEMU%.*)$")
+# ES-DE 2.0.0 added an optional per-game ".esprefix" injection to five
+# standalone emulators: Dolphin, PrimeHack, Triforce, Yuzu, and xemu (ES-DE
+# release notes). The command shape is `%INJECT%=%BASENAME%.esprefix
+# %EMULATOR_<NAME>% ...` — an %INJECT% *prefix* naming an ES-DE-generated
+# per-game sidecar, followed by the real invocation. xemu was confirmed by
+# running the captured group directly with no sidecar present: it launched
+# normally, so the sidecar is additive ES-DE-side customization, not something
+# the emulator requires at runtime. Dolphin was confirmed the same way
+# on-device (EmuDeck's `dolphin-emu.sh -b -e <rom>` launched a Wii game with no
+# .esprefix on disk). PrimeHack/Triforce/Yuzu share the identical documented
+# mechanism but have not been independently field-verified — extended here on
+# that documentation, not a guess. Vita3K's %INJECT% form is a *suffix*
+# (`%EMULATOR_VITA3K% -r %INJECT%=...`) and never matches this pattern, so it
+# keeps its needs_setup classification; that form has not been verified at all.
+_ESPREFIX_INJECT_RE = re.compile(r"^%INJECT%=\S+\s+(%EMULATOR_(?:DOLPHIN|PRIMEHACK|TRIFORCE|YUZU|XEMU)%.*)$")
 
 # Placeholders ES-DE's ``run_game.sh`` resolves that a baked ``-e`` override can
 # safely carry verbatim. ``%EMULATOR_*%`` (any emulator binary token, e.g.
@@ -68,9 +73,10 @@ class EmulatorOption:
     ``label`` is ES-DE's display label — the pick key the per-game/per-platform
     override stores. ``kind`` is ``"libretro"`` (a RetroArch core; ``core_so``
     is its bare name) or ``"standalone"`` (``core_so`` is ``None``).
-    ``command`` is the ES-DE command text — for xemu's ``%INJECT%`` form, the
-    real invocation with the sidecar prefix already stripped (see
-    ``_strip_xemu_inject_prefix``), else the raw text — retained so a
+    ``command`` is the ES-DE command text — for the ``.esprefix``-family
+    ``%INJECT%`` form (Dolphin, PrimeHack, Triforce, Yuzu, xemu), the real
+    invocation with the sidecar prefix already stripped (see
+    ``_strip_esprefix_inject_prefix``), else the raw text — retained so a
     standalone option can be rendered into an ``EmulatorInvocation`` (a
     libretro option rebuilds from ``core_so``); it is not exposed on the
     frontend payload.
@@ -79,9 +85,10 @@ class EmulatorOption:
 
     - ``"bakeable"`` — a real emulator invocation ending in ``%ROM%`` the plugin
       can bake into a shortcut ``-e`` override (``reason`` is ``None``). Also
-      reached by xemu's ``%INJECT%`` form once its sidecar prefix is stripped.
+      reached by the ``.esprefix``-family ``%INJECT%`` form once its sidecar
+      prefix is stripped.
     - ``"needs_setup"`` — a command that is well-formed but not yet launchable
-      from Steam as-is: an ``%INJECT%`` form other than xemu's that needs
+      from Steam as-is: an ``%INJECT%`` form outside that family that needs
       ES-DE to generate a sidecar first (reason ``"inject"``), or a standalone
       emulator that is not installed in RetroDECK (reason ``"not_installed"``,
       applied post-hoc by :func:`downgrade_if_not_installed` from the
@@ -108,11 +115,12 @@ def classify_command(label: str, text: str) -> EmulatorOption:
     determines the emulator kind, returning a fully-populated
     :class:`EmulatorOption`. Pure — no I/O, deterministic in its inputs.
 
-    xemu's ``%INJECT%=<sidecar>`` prefix is unwrapped first (see
-    ``_XEMU_INJECT_RE``) — the verdict, kind, and ``command`` are then computed
-    from the real invocation underneath it, not the raw text.
+    The ``.esprefix``-family ``%INJECT%=<sidecar>`` prefix (Dolphin, PrimeHack,
+    Triforce, Yuzu, xemu) is unwrapped first (see ``_ESPREFIX_INJECT_RE``) —
+    the verdict, kind, and ``command`` are then computed from the real
+    invocation underneath it, not the raw text.
     """
-    effective = _strip_xemu_inject_prefix(text) or text.strip()
+    effective = _strip_esprefix_inject_prefix(text) or text.strip()
     status, reason = _bake_verdict(effective)
     kind, core_so = _emulator_kind(effective)
     return EmulatorOption(
@@ -125,9 +133,12 @@ def classify_command(label: str, text: str) -> EmulatorOption:
     )
 
 
-def _strip_xemu_inject_prefix(text: str) -> str | None:
-    """Return the real invocation inside xemu's ``%INJECT%`` form, or ``None`` if *text* isn't that shape."""
-    match = _XEMU_INJECT_RE.match(text.strip())
+def _strip_esprefix_inject_prefix(text: str) -> str | None:
+    """Return the real invocation inside the ``.esprefix``-family ``%INJECT%`` form.
+
+    ``None`` if *text* isn't that shape.
+    """
+    match = _ESPREFIX_INJECT_RE.match(text.strip())
     return match.group(1) if match else None
 
 
