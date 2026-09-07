@@ -256,7 +256,10 @@ cached-game-detail payload as `emulator_available: bool` — distinct from `acti
 means every layer of the precedence chain resolved to nothing bakeable AND installed for this platform — the frontend's
 Play button uses it to show a distinct disabled "Emulator Not Found" state instead of baking a launch that will error.
 No platform to resolve a system against (an empty `platform_slug`) fails open to `True` — this signal only ever adds a
-block, never invents one from an unrelated gap.
+block, never invents one from an unrelated gap. A native-Windows ROM (`platform_slug == "win"`) fails open the same
+way and never queries `active_emulator_for_rom` at all: it launches through Proton/the bundled `.sh` via
+`WindowsLaunchResolver` (ADR-0030), not this precedence chain, so a correct "no core here" `None` from the resolver
+must not read as "emulator missing" and block the Play button for every Windows game.
 
 A pinned per-game or per-platform label that no longer resolves (the core was removed by a RetroDECK update) is **never
 fatal**: the resolver logs a WARNING and degrades to the next layer (the per-platform core, then the es_systems

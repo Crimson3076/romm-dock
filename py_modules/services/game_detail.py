@@ -20,6 +20,7 @@ from models.metadata import AchievementSummary
 from domain.bios import compute_bios_label, compute_bios_level, format_bios_status
 from domain.platform_names import decode_platform_names
 from domain.save_status import compute_save_sync_display
+from domain.shortcut_data import WINDOWS_PLATFORM_SLUG
 from lib.path_safety import PathTraversalError, safe_join
 
 if TYPE_CHECKING:
@@ -295,13 +296,22 @@ class GameDetailService:
         # blocking Play on an edge case that isn't really about emulators.
         emulator_available = True
         if platform_slug:
-            # One resolution feeds both the BIOS filter's core and this flag —
-            # active_core_for_rom's (None, label) for a resolved STANDALONE
-            # emulator would read as "no emulator" if used for emulator_available,
-            # so the full EmulatorInvocation is read directly instead.
-            active_emulator = self._active_core.active_emulator_for_rom(rom_id)
-            active_core_so = active_emulator.core_so if active_emulator else None
-            emulator_available = active_emulator is not None
+            # A native-Windows ROM has no core/emulator-backend concept at all
+            # (ADR-0030) — it launches through Proton/the bundled .sh via
+            # WindowsLaunchResolver, never ActiveCoreResolver's catalogue, so
+            # active_emulator_for_rom correctly resolves to None for it. Reading
+            # that as "emulator unavailable" would block every Windows game's
+            # Play button; stay fail-open here exactly like the bake sites that
+            # already special-case this platform_slug.
+            active_core_so = None
+            if platform_slug != WINDOWS_PLATFORM_SLUG:
+                # One resolution feeds both the BIOS filter's core and this flag —
+                # active_core_for_rom's (None, label) for a resolved STANDALONE
+                # emulator would read as "no emulator" if used for emulator_available,
+                # so the full EmulatorInvocation is read directly instead.
+                active_emulator = self._active_core.active_emulator_for_rom(rom_id)
+                active_core_so = active_emulator.core_so if active_emulator else None
+                emulator_available = active_emulator is not None
             cached_bios = self._bios_checker.check_platform_bios_cached(platform_slug, active_core_so=active_core_so)
             if cached_bios is None:
                 bios_status_unknown = True

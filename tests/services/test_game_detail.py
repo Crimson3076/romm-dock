@@ -570,6 +570,24 @@ class TestEmulatorAvailable:
         result = game_detail_service.get_cached_game_detail(50000)
         assert result["emulator_available"] is True
 
+    @pytest.mark.asyncio
+    async def test_fail_open_true_for_native_windows_rom(self, plugin, game_detail_service, active_core_resolver):
+        """A native-Windows ROM has no core/emulator-backend concept at all (ADR-0030) —
+        it launches through Proton/the bundled .sh via WindowsLaunchResolver, never
+        ActiveCoreResolver's catalogue. Reading the resolver's correct "no core here"
+        None as "emulator missing" would block every Windows game's Play button
+        (the regression this test pins): stay fail-open and never even query the
+        resolver for this platform.
+        """
+        _seed_rom(plugin, 42, app_id=50000, name="Game", platform_slug="win")
+        _install_rom(plugin, plugin._tmp_path, rom_id=42, system="win", file_name="game.exe")
+        # default=(None, None) → would resolve to emulator_available=False if queried.
+
+        result = game_detail_service.get_cached_game_detail(50000)
+
+        assert result["emulator_available"] is True
+        assert active_core_resolver.emulator_calls == []
+
 
 class TestTargetPathOccupied:
     """The single ``stat`` this network-free page runs on an uninstalled ROM (#260).
