@@ -689,24 +689,35 @@ export interface SelectDiscResult {
 export const getDiscSelection = callable<[number], DiscSelection>("get_disc_selection");
 export const selectDisc = callable<[number, string | null], SelectDiscResult>("select_disc");
 
-/** One launchable `.exe` within a native-Windows ROM's install directory. */
+/**
+ * One launchable target within a native-Windows ROM's install directory —
+ * a `.exe` run through Proton (`kind: "exe"`), or a bundled `.sh` run
+ * natively with Proton bypassed entirely (`kind: "native"`, e.g. an extracted
+ * AppImage). `kind` is what `ExeSelector`'s compat-tool auto-apply (ADR-0032)
+ * keys on.
+ */
 export interface WindowsExecutable {
   filename: string;
+  kind: "exe" | "native";
 }
 
 /**
  * Exe-picker state for a ROM. `has_executables` is `false` when the ROM is
  * unknown, not installed, is not a native-Windows ROM, or its install
- * enumerates no `.exe` at all — the frontend renders no picker in any of
- * those cases. When `true` the remaining fields are present: `executables` in
- * enumeration order and `selected` the currently effective pick (down-
- * validated: a stale pin whose file is no longer enumerated reports as
- * `null`, matching what the bake actually launches).
+ * enumerates no launchable target at all — the frontend renders no picker in
+ * any of those cases. When `true` the remaining fields are present:
+ * `executables` in enumeration order, `selected` the currently effective pick
+ * (down-validated: a stale pin whose file is no longer enumerated reports as
+ * `null`, matching what the bake actually launches), and
+ * `compat_tool_override` — the ROM's persisted Steam compat-tool override
+ * (ADR-0032): `null` for no override, `""` to force no compat tool (native
+ * launch), or a `strToolName` to force that specific Proton build.
  */
 export interface WindowsExecutablesAnswer {
   has_executables: boolean;
   executables?: WindowsExecutable[];
   selected?: string | null;
+  compat_tool_override?: string | null;
 }
 
 /**
@@ -736,6 +747,23 @@ export interface SelectExecutableResult {
 // (follow the default — the first enumerated `.exe`).
 export const getWindowsExecutables = callable<[number], WindowsExecutablesAnswer>("get_windows_executables");
 export const selectExecutable = callable<[number, string | null], SelectExecutableResult>("select_executable");
+
+// Per-game Steam compat-tool override (ADR-0032) — persistence only, keyed by
+// rom_id (survives uninstall/reinstall via roms.compat_tool_override). Neither
+// response carries a `launch_options` key: this setting never touches the
+// baked shortcut command, it is a separate Steam-side setting the frontend
+// applies directly via `SteamClient.Apps.SpecifyCompatTool`.
+// setCompatToolOverride(rom_id, "") pins "force no compat tool" (native
+// launch) — a real, distinct state, never a request to clear.
+// clearCompatToolOverride(rom_id) reverts to no override (null): the plugin
+// stops touching this ROM's Steam compat-tool setting going forward.
+export const setCompatToolOverride = callable<
+  [number, string],
+  { success: boolean; reason?: string; message?: string }
+>("set_compat_tool_override");
+export const clearCompatToolOverride = callable<[number], { success: boolean; reason?: string; message?: string }>(
+  "clear_compat_tool_override",
+);
 
 /**
  * One version (RomM sibling) of a game in the version picker (#1297, ADR-0021).

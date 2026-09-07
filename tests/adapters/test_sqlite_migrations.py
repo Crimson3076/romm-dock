@@ -82,8 +82,9 @@ def _set_user_version(db_path: str, version: int) -> None:
 # + 019_add_collection_sync_state + 020_add_fetch_generation
 # + 021_add_rom_fs_size + 022_rename_collection_kind_user_to_standard
 # + 023_add_rom_install_launchable + 024_emulator_override_per_backend
-# + 025_add_selected_exe).
-_SHIPPED_VERSION = 26
+# + 025_add_selected_exe + 026_add_cross_backend_pin
+# + 027_add_compat_tool_override).
+_SHIPPED_VERSION = 27
 
 # Tables after every shipped migration: the v1 set plus 006's play-session outbox,
 # 012's per-platform completion stamp, and 019's per-collection completion stamp,
@@ -1672,6 +1673,44 @@ class Test026AddCrossBackendPin:
         conn = sqlite3.connect(db_path)
         try:
             stored = conn.execute("SELECT cross_backend_pin FROM roms WHERE rom_id = 1").fetchone()[0]
+        finally:
+            conn.close()
+        assert stored is None
+
+
+class Test027AddCompatToolOverride:
+    """027 — adds the nullable compat_tool_override column to roms only, mirroring 024/025/026."""
+
+    def test_adds_compat_tool_override_to_roms_only(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+
+        apply_migrations(db_path)
+
+        assert _user_version(db_path) == _SHIPPED_VERSION
+        assert "compat_tool_override" in _columns(db_path, "roms")
+        assert "compat_tool_override" not in _columns(db_path, "rom_installs")
+
+    def test_compat_tool_override_absent_before_027(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 26)))
+
+        assert _user_version(db_path) == 26
+        assert "compat_tool_override" not in _columns(db_path, "roms")
+
+    def test_existing_row_reads_null_across_the_migration(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 26)))
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            _insert_rom(conn, 1, 5000)
+        finally:
+            conn.close()
+
+        assert apply_migrations(db_path) == _SHIPPED_VERSION
+
+        conn = sqlite3.connect(db_path)
+        try:
+            stored = conn.execute("SELECT compat_tool_override FROM roms WHERE rom_id = 1").fetchone()[0]
         finally:
             conn.close()
         assert stored is None

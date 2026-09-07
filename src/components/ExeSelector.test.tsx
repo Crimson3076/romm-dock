@@ -23,8 +23,21 @@ import type { DownloadCompleteEvent } from "../types";
 const captured: { menu: ReactNode } = { menu: null };
 
 vi.mock("@decky/ui", () => ({
-  DialogButton: (p: { onClick?: (e: unknown) => void; children?: ReactNode; className?: string }) =>
-    createElement("button", { "data-testid": "exe-btn", onClick: p.onClick, className: p.className }, p.children),
+  DialogButton: (p: {
+    onClick?: (e: unknown) => void;
+    children?: ReactNode;
+    className?: string;
+    "aria-label"?: string;
+  }) =>
+    createElement(
+      "button",
+      {
+        "data-testid": p["aria-label"] === "Compatibility Tool" ? "compat-btn" : "exe-btn",
+        onClick: p.onClick,
+        className: p.className,
+      },
+      p.children,
+    ),
   Menu: (p: { children?: ReactNode }) => createElement("div", { "data-testid": "exe-menu" }, p.children),
   MenuItem: (p: { onClick?: () => void; children?: ReactNode }) =>
     createElement("div", { role: "menuitem", onClick: p.onClick }, p.children),
@@ -59,18 +72,28 @@ function mockCachedDetail(overrides: Partial<CachedGameDetail> = {}): void {
 }
 
 // A representative multi-exe answer: two executables, no pin (follows the
-// default — the first enumerated exe).
+// default — the first enumerated exe). Both are `kind: "exe"` (Proton-run) —
+// neither the automatic nor the manual compat-tool paths this file exercises
+// are about the "native" kind, which its own describe block below covers.
 const multiExeAnswer: WindowsExecutablesAnswer = {
   has_executables: true,
-  executables: [{ filename: "Game.exe" }, { filename: "Setup.exe" }],
+  executables: [
+    { filename: "Game.exe", kind: "exe" },
+    { filename: "Setup.exe", kind: "exe" },
+  ],
   selected: null,
+  compat_tool_override: null,
 };
 
 // Same shape, already pinned to the second exe.
 const pinnedExeAnswer: WindowsExecutablesAnswer = {
   has_executables: true,
-  executables: [{ filename: "Game.exe" }, { filename: "Setup.exe" }],
+  executables: [
+    { filename: "Game.exe", kind: "exe" },
+    { filename: "Setup.exe", kind: "exe" },
+  ],
   selected: "Setup.exe",
+  compat_tool_override: null,
 };
 
 // Settles the mount-time init chain (getCachedGameDetail → getWindowsExecutables).
@@ -199,7 +222,13 @@ describe("ExeSelector — selecting an executable", () => {
 
   it("updates the pinned selection after a successful pick", async () => {
     mockCachedDetail();
-    vi.mocked(backend.getWindowsExecutables).mockResolvedValue(multiExeAnswer);
+    // The pick itself re-fetches (so a target-kind switch re-evaluates the
+    // compat-tool auto-apply) — the second fetch must reflect what the
+    // backend would actually report having just persisted, not the same
+    // stale pre-pick answer.
+    vi.mocked(backend.getWindowsExecutables)
+      .mockResolvedValueOnce(multiExeAnswer)
+      .mockResolvedValue({ ...multiExeAnswer, selected: "Setup.exe" });
     vi.mocked(backend.selectExecutable).mockResolvedValue({
       success: true,
       launch_options: "proton run '/roms/win/game-1/Setup.exe'",
@@ -223,6 +252,47 @@ describe("ExeSelector — selecting an executable", () => {
     const items = within(reopened.container).getAllByRole("menuitem");
     const setupRow = items.find((i) => i.textContent.includes("Setup.exe"));
     expect(setupRow?.textContent).toContain("✓");
+  });
+
+  it("re-evaluates the compat-tool auto-apply after switching to a native target (#regression)", async () => {
+    // A ROM offering BOTH an exe (Proton-run, no auto-apply needed) and a
+    // native target: picking the native one must trigger the SAME auto-apply
+    // Force-Native fix a native-only ROM gets on mount — switching WHICH
+    // target is active must not leave the previous target's (non-)decision
+    // standing.
+    const mixedAnswer: WindowsExecutablesAnswer = {
+      has_executables: true,
+      executables: [
+        { filename: "Game.exe", kind: "exe" },
+        { filename: "launch.sh", kind: "native" },
+      ],
+      selected: "Game.exe",
+      compat_tool_override: null,
+    };
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables)
+      .mockResolvedValueOnce(mixedAnswer)
+      .mockResolvedValue({ ...mixedAnswer, selected: "launch.sh" });
+    vi.mocked(backend.selectExecutable).mockResolvedValue({
+      success: true,
+      launch_options: "env -C \"/roms/win/game\" bash \"/roms/win/game/launch.sh\"",
+      selected: "launch.sh",
+    });
+    vi.mocked(backend.setCompatToolOverride).mockResolvedValue({ success: true });
+    const specify = vi.fn().mockResolvedValue(undefined);
+    stubSteamClient({ specifyCompatTool: specify });
+
+    const { menu } = await renderAndOpen();
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByText("launch.sh"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(specify).toHaveBeenCalledWith(100, ""));
+    expect(vi.mocked(backend.setCompatToolOverride)).toHaveBeenCalledWith(42, "");
   });
 
   it("toasts the failure message and does NOT confirm-set launch options when selectExecutable fails", async () => {
@@ -358,5 +428,270 @@ describe("ExeSelector — event-driven re-fetch + cleanup", () => {
 
     unmount();
     expect(deckyEventListenerCount("download_complete")).toBe(0);
+  });
+
+  it("re-fetches on a matching version_switched for this appid", async () => {
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValueOnce({ has_executables: false });
+
+    render(<ExeSelector appId={100} />);
+    await waitFor(() => expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenCalledTimes(1));
+
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValueOnce(multiExeAnswer);
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", { detail: { type: "version_switched", app_id: 100, rom_id: 77 } }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenLastCalledWith(77);
+  });
+
+  it("ignores version_switched for a different appid", async () => {
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValue({ has_executables: false });
+
+    render(<ExeSelector appId={100} />);
+    await waitFor(() => expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("romm_data_changed", { detail: { type: "version_switched", app_id: 999, rom_id: 77 } }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- Compat-tool override (ADR-0032) ----------------------------------------
+
+/** Stub SteamClient.Apps for the compat-tool tests, mirroring how every other
+ *  test file in this codebase (steamShortcuts.test.ts, CustomPlayButton.test.tsx)
+ *  locally re-stubs SteamClient per test rather than relying on the ambient
+ *  test-setup.ts default. */
+function stubSteamClient(overrides: {
+  specifyCompatTool?: ReturnType<typeof vi.fn>;
+  getAvailableCompatTools?: ReturnType<typeof vi.fn>;
+} = {}): void {
+  vi.stubGlobal("SteamClient", {
+    Apps: {
+      SpecifyCompatTool: overrides.specifyCompatTool ?? vi.fn().mockResolvedValue(undefined),
+      GetAvailableCompatTools: overrides.getAvailableCompatTools ?? vi.fn().mockResolvedValue([]),
+    },
+  });
+}
+
+// A single native (Proton-bypassed) launch target, no stored override —
+// exactly the Dusklight bug's shape: the automatic fix must fire for this.
+const nativeAnswer: WindowsExecutablesAnswer = {
+  has_executables: true,
+  executables: [{ filename: "launch.sh", kind: "native" }],
+  selected: null,
+  compat_tool_override: null,
+};
+
+describe("ExeSelector — compat-tool auto-apply", () => {
+  beforeEach(() => {
+    captured.menu = null;
+    vi.mocked(getCachedGameDetail).mockReset();
+    vi.mocked(backend.getWindowsExecutables).mockReset();
+    vi.mocked(backend.setCompatToolOverride).mockReset();
+  });
+
+  it("auto-applies Force Native and persists it, for a native target with no stored override", async () => {
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValue(nativeAnswer);
+    vi.mocked(backend.setCompatToolOverride).mockResolvedValue({ success: true });
+    const specify = vi.fn().mockResolvedValue(undefined);
+    stubSteamClient({ specifyCompatTool: specify });
+
+    render(<ExeSelector appId={100} />);
+
+    await waitFor(() => expect(specify).toHaveBeenCalledWith(100, ""));
+    expect(vi.mocked(backend.setCompatToolOverride)).toHaveBeenCalledWith(42, "");
+  });
+
+  it("does NOT auto-apply for an exe-kind (Proton-run) target", async () => {
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValue(multiExeAnswer);
+    const specify = vi.fn().mockResolvedValue(undefined);
+    stubSteamClient({ specifyCompatTool: specify });
+
+    render(<ExeSelector appId={100} />);
+    await waitFor(() => expect(vi.mocked(backend.getWindowsExecutables)).toHaveBeenCalled());
+
+    expect(specify).not.toHaveBeenCalled();
+    expect(vi.mocked(backend.setCompatToolOverride)).not.toHaveBeenCalled();
+  });
+
+  it("re-applies an already-stored override without re-deciding it a second time", async () => {
+    // compat_tool_override is already "" — auto-apply's job here is DONE; this
+    // fetch (a fresh mount, standing in for a rebind onto a new appid) must
+    // still re-assert "" onto the live Steam appid, but never call back
+    // through setCompatToolOverride, which only the FIRST-TIME decision uses.
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValue({ ...nativeAnswer, compat_tool_override: "" });
+    const specify = vi.fn().mockResolvedValue(undefined);
+    stubSteamClient({ specifyCompatTool: specify });
+
+    render(<ExeSelector appId={100} />);
+
+    await waitFor(() => expect(specify).toHaveBeenCalledWith(100, ""));
+    expect(vi.mocked(backend.setCompatToolOverride)).not.toHaveBeenCalled();
+  });
+});
+
+describe("ExeSelector — compat-tool manual menu", () => {
+  beforeEach(() => {
+    captured.menu = null;
+    vi.mocked(getCachedGameDetail).mockReset();
+    vi.mocked(backend.getWindowsExecutables).mockReset();
+    vi.mocked(backend.setCompatToolOverride).mockReset();
+    vi.mocked(backend.clearCompatToolOverride).mockReset();
+    vi.mocked(toaster.toast).mockReset();
+  });
+
+  async function openCompatMenu(
+    answer: WindowsExecutablesAnswer,
+    overrides: Parameters<typeof stubSteamClient>[0] = {},
+  ) {
+    mockCachedDetail();
+    vi.mocked(backend.getWindowsExecutables).mockResolvedValue(answer);
+    stubSteamClient({
+      getAvailableCompatTools: vi
+        .fn()
+        .mockResolvedValue([{ strToolName: "proton_experimental", strDisplayName: "Proton Experimental" }]),
+      ...overrides,
+    });
+
+    const r = render(<ExeSelector appId={100} />);
+    await r.findByTestId("compat-btn");
+    await act(async () => {
+      fireEvent.click(r.getByTestId("compat-btn"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const menu = render(<>{captured.menu}</>);
+    return { r, menu };
+  }
+
+  it("lists Force Native, Automatic, and every live installed compat tool", async () => {
+    const { menu } = await openCompatMenu(multiExeAnswer);
+
+    const items = within(menu.container).getAllByRole("menuitem");
+    expect(items.map((i) => i.textContent.replace("✓", ""))).toEqual([
+      "Force Native (No Proton)",
+      "Automatic (Steam Default)",
+      "Proton Experimental",
+    ]);
+  });
+
+  it("checkmarks Automatic when compat_tool_override is null", async () => {
+    const { menu } = await openCompatMenu(multiExeAnswer);
+
+    const items = within(menu.container).getAllByRole("menuitem");
+    expect(items.find((i) => i.textContent.includes("Automatic"))?.textContent).toContain("✓");
+    expect(items.find((i) => i.textContent.includes("Force Native"))?.textContent).not.toContain("✓");
+  });
+
+  it("checkmarks Force Native when compat_tool_override is \"\"", async () => {
+    const { menu } = await openCompatMenu({ ...multiExeAnswer, compat_tool_override: "" });
+
+    const items = within(menu.container).getAllByRole("menuitem");
+    expect(items.find((i) => i.textContent.includes("Force Native"))?.textContent).toContain("✓");
+    expect(items.find((i) => i.textContent.includes("Automatic"))?.textContent).not.toContain("✓");
+  });
+
+  it("checkmarks the pinned specific tool when compat_tool_override names it", async () => {
+    const { menu } = await openCompatMenu({ ...multiExeAnswer, compat_tool_override: "proton_experimental" });
+
+    const items = within(menu.container).getAllByRole("menuitem");
+    expect(items.find((i) => i.textContent.includes("Proton Experimental"))?.textContent).toContain("✓");
+    expect(items.find((i) => i.textContent.includes("Automatic"))?.textContent).not.toContain("✓");
+  });
+
+  it("Force Native applies via SteamClient BEFORE persisting via setCompatToolOverride", async () => {
+    const specify = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(backend.setCompatToolOverride).mockResolvedValue({ success: true });
+    const { menu } = await openCompatMenu(multiExeAnswer, { specifyCompatTool: specify });
+
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByText(/Force Native/));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(specify).toHaveBeenCalledWith(100, "");
+    expect(vi.mocked(backend.setCompatToolOverride)).toHaveBeenCalledWith(42, "");
+    const specifyOrder = specify.mock.invocationCallOrder[0] ?? Number.NaN;
+    const persistOrder = vi.mocked(backend.setCompatToolOverride).mock.invocationCallOrder[0] ?? Number.NaN;
+    expect(specifyOrder).toBeLessThan(persistOrder);
+  });
+
+  it("picking a specific tool applies then persists its strToolName", async () => {
+    const specify = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(backend.setCompatToolOverride).mockResolvedValue({ success: true });
+    const { menu } = await openCompatMenu(multiExeAnswer, { specifyCompatTool: specify });
+
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByText("Proton Experimental"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(specify).toHaveBeenCalledWith(100, "proton_experimental");
+    expect(vi.mocked(backend.setCompatToolOverride)).toHaveBeenCalledWith(42, "proton_experimental");
+  });
+
+  it("Automatic calls clearCompatToolOverride and never touches SteamClient", async () => {
+    const specify = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(backend.clearCompatToolOverride).mockResolvedValue({ success: true });
+    const { menu } = await openCompatMenu(multiExeAnswer, { specifyCompatTool: specify });
+
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByText(/Automatic/));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(backend.clearCompatToolOverride)).toHaveBeenCalledWith(42);
+    expect(specify).not.toHaveBeenCalled();
+  });
+
+  it("toasts a failure and does not persist when SpecifyCompatTool rejects (non-vacuous catch)", async () => {
+    const specify = vi.fn().mockRejectedValue(new Error("nope"));
+    const { menu } = await openCompatMenu(multiExeAnswer, { specifyCompatTool: specify });
+
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByText(/Force Native/));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM-Dock", body: "Failed to set compatibility tool" });
+    expect(vi.mocked(backend.setCompatToolOverride)).not.toHaveBeenCalled();
+  });
+
+  it("toasts the backend message and does not update local state when setCompatToolOverride fails", async () => {
+    const specify = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(backend.setCompatToolOverride).mockResolvedValue({
+      success: false,
+      reason: "not_installed",
+      message: "ROM is not installed",
+    });
+    const { menu } = await openCompatMenu(multiExeAnswer, { specifyCompatTool: specify });
+
+    await act(async () => {
+      fireEvent.click(within(menu.container).getByText(/Force Native/));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM-Dock", body: "ROM is not installed" });
   });
 });

@@ -758,6 +758,98 @@ class TestResyncPreservesSelectedExe:
         assert loaded.selected_exe == "Game.exe"
 
 
+class TestCompatToolOverride:
+    def test_round_trips_via_get(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_compat_tool_override(1, "proton_experimental")
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.compat_tool_override == "proton_experimental"
+
+    def test_defaults_to_none_when_never_pinned(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.compat_tool_override is None
+
+    def test_empty_string_round_trips_distinct_from_null(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_compat_tool_override(1, "")
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.compat_tool_override == ""
+        assert loaded.compat_tool_override is not None
+
+    def test_setting_none_writes_sql_null(self, uow: SqliteUnitOfWork):
+        uow.roms.save(_rom(1))
+        uow.roms.set_compat_tool_override(1, "proton_experimental")
+        uow.roms.set_compat_tool_override(1, None)
+
+        loaded = uow.roms.get(1)
+        assert loaded is not None
+        assert loaded.compat_tool_override is None
+        # The column is SQL NULL, not an empty string.
+        assert uow._conn is not None
+        stored = uow._conn.execute("SELECT compat_tool_override FROM roms WHERE rom_id = 1").fetchone()[0]
+        assert stored is None
+
+
+class TestResyncPreservesCompatToolOverride:
+    """A re-sync builds a fresh ``Rom`` with ``compat_tool_override=None``; the sync
+    UPSERT must NOT wipe an override the user (or the plugin's auto-default) pinned
+    via ``set_compat_tool_override``."""
+
+    def test_pin_survives_resync_and_identity_still_updates(self, uow: SqliteUnitOfWork):
+        rom_id = 1
+        uow.roms.save(_rom(rom_id, app_id=100))
+        uow.roms.set_compat_tool_override(rom_id, "proton_experimental")
+
+        # A normal library re-sync: fresh Rom, no override, changed identity.
+        resynced = _rom(rom_id, app_id=200)
+        resynced.name = "Renamed Game"
+        assert resynced.compat_tool_override is None
+        uow.roms.save(resynced)
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        # (a) The override survives the re-sync.
+        assert loaded.compat_tool_override == "proton_experimental"
+        # (b) Identity columns still update on that save.
+        assert loaded.shortcut_app_id == 200
+        assert loaded.name == "Renamed Game"
+
+    def test_empty_string_override_survives_resync(self, uow: SqliteUnitOfWork):
+        rom_id = 1
+        uow.roms.save(_rom(rom_id, app_id=100))
+        uow.roms.set_compat_tool_override(rom_id, "")
+
+        uow.roms.save(_rom(rom_id, app_id=200))
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        assert loaded.compat_tool_override == ""
+
+    def test_resync_preserves_all_deviations_together(self, uow: SqliteUnitOfWork):
+        """All per-game deviations survive a re-sync independently."""
+        rom_id = 1
+        uow.roms.save(_rom(rom_id, app_id=100))
+        uow.roms.set_emulator_override(rom_id, "retrodeck", "Beetle PSX HW")
+        uow.roms.set_selected_disc(rom_id, "FF7 (Disc 3).cue")
+        uow.roms.set_selected_exe(rom_id, "Game.exe")
+        uow.roms.set_compat_tool_override(rom_id, "proton_experimental")
+
+        uow.roms.save(_rom(rom_id, app_id=200))
+
+        loaded = uow.roms.get(rom_id)
+        assert loaded is not None
+        assert loaded.emulator_override_for("retrodeck") == "Beetle PSX HW"
+        assert loaded.selected_disc == "FF7 (Disc 3).cue"
+        assert loaded.selected_exe == "Game.exe"
+        assert loaded.compat_tool_override == "proton_experimental"
+
+
 class TestAppliedLaunchOptions:
     """The recorded applied launch command (#1383) — read-back, SQL-NULL, and the
     sync-UPSERT-preserves contract, mirroring the two pin columns above."""

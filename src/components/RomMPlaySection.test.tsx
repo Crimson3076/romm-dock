@@ -1907,10 +1907,12 @@ describe("RomMPlaySection", () => {
       const before = domListenerCount("romm_data_changed");
       const { unmount } = render(<RomMPlaySection appId={testAppId} />);
       await flushAsync();
-      // Two listeners: the game-detail store's, opened by this section's
-      // subscription, + the child VersionPicker's (it also refreshes on
-      // version_switched, #1297). Both are removed on unmount.
-      expect(domListenerCount("romm_data_changed")).toBe(before + 2);
+      // Three listeners: the game-detail store's, opened by this section's
+      // subscription; the child VersionPicker's (it also refreshes on
+      // version_switched, #1297); and the child ExeSelector's (it re-fetches
+      // the exe/compat-tool picker state on version_switched, ADR-0032). All
+      // three are removed on unmount.
+      expect(domListenerCount("romm_data_changed")).toBe(before + 3);
       unmount();
       expect(domListenerCount("romm_data_changed")).toBe(before);
     });

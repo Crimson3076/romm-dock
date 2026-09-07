@@ -1,0 +1,44 @@
+-- =============================================================================
+-- 027_add_compat_tool_override.sql — per-game Steam compat-tool override
+-- ADR-0032 follow-up: SteamClient.Apps.SpecifyCompatTool forces the launch
+-- Proton-free even when "Enable Steam Play for all other titles" is on
+-- =============================================================================
+--
+-- Adds a nullable TEXT column to roms remembering which Steam compat tool (if
+-- any) should be force-applied to this ROM's shortcut via
+-- ``SteamClient.Apps.SpecifyCompatTool(appId, value)`` — a frontend-only,
+-- SteamClient-scoped setting the backend cannot call itself (see ADR-0032). It
+-- is a 3-STATE field, not a boolean, and the three states are NOT
+-- interchangeable:
+--
+--   * NULL    — no override. The plugin never touches this ROM's compat-tool
+--               setting at all.
+--   * ""      — force NO compat tool (native, Proton-bypassed launch). Written
+--               either by an explicit "Force Native (No Proton)" user pick, or
+--               automatically the first time the ROM's launch target resolves
+--               to ``kind == "native"`` (a bundled Linux script under a "win"
+--               platform ROM) — the fix for the exact bug class ADR-0032
+--               records, applied by default with no user action required.
+--   * anything else — force that specific ``strToolName`` (e.g.
+--               ``"proton_experimental"``, ``"GE-Proton10-28"``), taken
+--               verbatim from ``SteamClient.Apps.GetAvailableCompatTools``.
+--
+-- Unlike every other per-game pin column on this table (``emulator_override``,
+-- ``selected_disc``, ``selected_exe``, ``cross_backend_pin``), an empty string
+-- here is a real, meaningful state ("force native") and must NOT collapse into
+-- "no override" the way a blank value is rejected/treated as invalid for
+-- those columns — NULL alone means unset. The backend never validates or
+-- interprets this string beyond that 3-way distinction; it is opaque,
+-- interpreted only by the frontend against ``SteamClient.Apps``.
+--
+-- Anchored on ``roms`` (not ``rom_installs``), mirroring ``selected_exe``, so
+-- the override survives uninstall/reinstall and can be RE-APPLIED to a new
+-- Steam appId whenever this ROM's shortcut is later rebound (a version
+-- switch, a reinstall — see CLAUDE.md's "shortcut appId is assigned, not
+-- derived" trap). Only pin/clear ever write it; the sync UPSERT deliberately
+-- excludes it so a re-sync never wipes a user's override.
+--
+-- Transaction-safe DDL only — the runner (adapters/sqlite_migrations.py) wraps
+-- BEGIN/COMMIT and stamps PRAGMA user_version = 27.
+-- -----------------------------------------------------------------------------
+ALTER TABLE roms ADD COLUMN compat_tool_override TEXT;  -- NULL=no override, ""=force native, else a strToolName (pin/clear only)

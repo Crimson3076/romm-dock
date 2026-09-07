@@ -118,6 +118,17 @@ class RomRepository(Protocol):
         """
         ...
 
+    def set_compat_tool_override(self, rom_id: int, value: str | None) -> None:
+        """Pin (or clear with ``None``) the per-game Steam compat-tool override for *rom_id* (ADR-0032).
+
+        ``""`` is a distinct, meaningful pin (force no compat tool), not
+        equivalent to ``None`` (no override). Opaque to the backend — the
+        frontend applies it via ``SteamClient.Apps.SpecifyCompatTool``. The
+        only write path for ``compat_tool_override``; the sync upsert in
+        :meth:`save` never touches it, so a re-sync preserves the override.
+        """
+        ...
+
     def set_applied_launch_options(self, rom_id: int, launch_options: str | None) -> None:
         """Record the ``launch_options`` last written to *rom_id*'s shortcut (#1383).
 

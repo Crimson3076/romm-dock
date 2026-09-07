@@ -409,6 +409,14 @@ class Plugin:
             result["prune_lease_token"] = await acquire_prune_conflict_lease(self, "executable_selection")
         return result
 
+    @migration_blocked
+    async def set_compat_tool_override(self, rom_id, value):
+        return await self._windows_game_service.set_compat_tool_override(rom_id, value)
+
+    @migration_blocked
+    async def clear_compat_tool_override(self, rom_id):
+        return await self._windows_game_service.clear_compat_tool_override(rom_id)
+
     # ── Version picker delegation to VersionSwitchService ──────────────
 
     async def get_version_list(self, app_id):

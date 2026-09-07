@@ -532,6 +532,29 @@ picker exactly like any `.exe` would.
 Because a `.sh` script never goes through Proton, it launches even if you have no Proton build installed at all — see
 [When no Proton is found](#when-no-proton-is-found) below, which applies to `.exe` files only.
 
+If Steam's **Enable Steam Play for all other titles** setting (see [Requirements](#requirements) above) is on, Steam
+normally force-wraps a non-Steam shortcut's launch in Proton with no per-shortcut way to turn that off — which would
+otherwise break a bundled Linux launcher script every time. The plugin bypasses this automatically the first time such
+a script launches, with nothing for you to configure.
+
+### Choosing a compatibility tool per game
+
+Next to the `.exe`/script picker, a **gear icon** opens the compatibility-tool menu for the same game. Most people never
+need it — a bundled Linux launcher script gets Proton bypassed automatically (above), and a `.exe` already runs through
+whichever Proton build the plugin picked (see [Requirements](#requirements)). Open this menu when a specific game needs
+something different from that default:
+
+- **Force Native (No Proton)** — for a `.exe` that turns out not to need Proton after all, or to manually force the
+  bypass a launcher script gets automatically.
+- **Automatic (Steam Default)** — stop the plugin from touching this game's compatibility-tool setting at all. Note
+  this does not undo whatever tool is currently set on the shortcut; it just goes back to leaving Steam's own setting
+  alone going forward.
+- One entry per Proton build Steam currently has installed (official or GE-Proton) — force this game to always launch
+  through that specific build, useful when a game needs an older or newer Proton than the plugin's own default pick.
+
+Like the `.exe`/script picker, a choice here is remembered per game — it survives uninstalling and re-downloading — and
+takes effect immediately, no re-sync needed.
+
 ### When no Proton is found
 
 If Steam has no Proton build installed at all, a native-Windows game whose selected launch file is a `.exe` has no way

@@ -15,12 +15,12 @@ if TYPE_CHECKING:
 # The sync-owned columns: written by the library re-sync UPSERT. Driving
 # SELECT/INSERT/VALUES/SET from this ONE tuple keeps them in lockstep so a
 # subset omission is impossible (R10). emulator_override, selected_disc,
-# selected_exe, and cross_backend_pin are deliberately NOT here — they are
-# per-game deviations, not synced identity: each is read in SELECT but written
-# only via its own set_*() method, never by save(), so a re-sync (which builds
-# a fresh Rom with all four = None/{}) cannot wipe a user's pin. The
-# version-metadata columns (sibling_group_key
-# + the version dimensions) ARE here — they are server-derived facts that must refresh on
+# selected_exe, cross_backend_pin, and compat_tool_override are deliberately NOT
+# here — they are per-game deviations, not synced identity: each is read in
+# SELECT but written only via its own set_*() method, never by save(), so a
+# re-sync (which builds a fresh Rom with all five = None/{}) cannot wipe a
+# user's pin. The version-metadata columns (sibling_group_key + the version
+# dimensions) ARE here — they are server-derived facts that must refresh on
 # every sync (ADR-0021), the opposite of the user pins. cover_source (the
 # cover-cache fingerprint, #1386) rides the UPSERT like cover_path: the commit
 # writes the value the artwork layer confirmed this run, else the preserved
@@ -56,9 +56,10 @@ _SYNC_COLUMNS = (
 )
 
 # Read set: the synced columns plus the pin-only emulator_override, selected_disc,
-# selected_exe, and applied_launch_options (the recorded applied launch command,
-# #1383). Like the other pins, selected_exe is read here but written only by its
-# own set_*() method, never by save(), so a re-sync never wipes the pin.
+# selected_exe, applied_launch_options (the recorded applied launch command,
+# #1383), and compat_tool_override (ADR-0032). Like the other pins, each is read
+# here but written only by its own set_*() method, never by save(), so a re-sync
+# never wipes the pin.
 _SELECT_COLUMNS = ", ".join(
     (
         *_SYNC_COLUMNS,
@@ -67,6 +68,7 @@ _SELECT_COLUMNS = ", ".join(
         "selected_exe",
         "applied_launch_options",
         "cross_backend_pin",
+        "compat_tool_override",
     )
 )
 _INSERT_COLUMNS = ", ".join(_SYNC_COLUMNS)
@@ -97,6 +99,7 @@ def _row_to_rom(row: sqlite3.Row) -> Rom:
         selected_exe=row["selected_exe"],
         applied_launch_options=row["applied_launch_options"],
         cross_backend_pin=json.loads(row["cross_backend_pin"]) if row["cross_backend_pin"] is not None else None,
+        compat_tool_override=row["compat_tool_override"],
         sibling_group_key=row["sibling_group_key"],
         regions=tuple(json.loads(row["regions"])),
         languages=tuple(json.loads(row["languages"])),
@@ -239,6 +242,21 @@ class SqliteRomRepository(BaseRepository):
         self._conn.execute(
             "UPDATE roms SET selected_exe = ? WHERE rom_id = ?",
             (filename, rom_id),
+        )
+
+    def set_compat_tool_override(self, rom_id: int, value: str | None) -> None:
+        """Write (or clear) the per-game Steam compat-tool override for ``rom_id`` (ADR-0032).
+
+        ``value`` is the ``strToolName`` to force (``""`` forces no compat
+        tool — a distinct, real state from ``None``, which clears the override
+        entirely and stores SQL NULL). Opaque to the backend either way — the
+        frontend is the sole authority on what a non-``None`` value means. This
+        is the only write path for the column — the sync UPSERT in :meth:`save`
+        never touches it, mirroring :meth:`set_selected_exe`.
+        """
+        self._conn.execute(
+            "UPDATE roms SET compat_tool_override = ? WHERE rom_id = ?",
+            (value, rom_id),
         )
 
     def set_applied_launch_options(self, rom_id: int, launch_options: str | None) -> None:

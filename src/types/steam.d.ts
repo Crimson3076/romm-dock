@@ -8,6 +8,17 @@ declare var SteamClient: {
     SetShortcutIcon(appId: number, path: string): void;
     SetAppLaunchOptions(appId: number, options: string): void;
     OpenAppSettingsDialog(appId: number, section: string): void;
+    // Force a specific compat tool (Proton build) for one non-Steam shortcut, or
+    // force NONE with `strToolName: ""` — the confirmed fix for Steam force-
+    // wrapping an already-native launch in Proton when "Enable Steam Play for
+    // all other titles" is on (ADR-0032). No confirmed "unset" call exists for a
+    // non-Steam shortcut; resolves to `undefined` on this Steam build (confirmed
+    // live via devtools), never a value.
+    SpecifyCompatTool(appId: number, strToolName: string): Promise<void>;
+    // The compat tools installed on this machine, for the per-game override
+    // picker (ADR-0032). `strToolName` is the opaque value `SpecifyCompatTool`
+    // and `roms.compat_tool_override` expect; `strDisplayName` is the label.
+    GetAvailableCompatTools(appId: number): Promise<Array<{ strToolName: string; strDisplayName: string }>>;
     SetCustomArtworkForApp(
       appId: number,
       base64Data: string,

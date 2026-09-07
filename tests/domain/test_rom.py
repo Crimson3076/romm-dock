@@ -414,3 +414,53 @@ class TestClearSelectedExe:
         assert rom.selected_exe is None
         rom.clear_selected_exe()
         assert rom.selected_exe is None
+
+
+class TestPinCompatToolOverride:
+    def test_sets_tool_name(self):
+        rom = _make_rom()
+        rom.pin_compat_tool_override("proton_experimental")
+        assert rom.compat_tool_override == "proton_experimental"
+
+    def test_empty_string_does_not_raise(self):
+        rom = _make_rom()
+        rom.pin_compat_tool_override("")
+        assert rom.compat_tool_override == ""
+
+    def test_empty_string_is_not_equivalent_to_clear(self):
+        rom = _make_rom()
+        rom.pin_compat_tool_override("")
+        assert rom.compat_tool_override == ""
+        assert rom.compat_tool_override is not None
+        rom.clear_compat_tool_override()
+        assert rom.compat_tool_override is None
+
+    def test_defaults_to_none(self):
+        rom = _make_rom()
+        assert rom.compat_tool_override is None
+
+    def test_re_pinning_replaces_the_previous_value(self):
+        rom = _make_rom()
+        rom.pin_compat_tool_override("proton_experimental")
+        rom.pin_compat_tool_override("GE-Proton10-28")
+        assert rom.compat_tool_override == "GE-Proton10-28"
+
+
+class TestClearCompatToolOverride:
+    def test_clear_after_pin_sets_none(self):
+        rom = _make_rom()
+        rom.pin_compat_tool_override("proton_experimental")
+        rom.clear_compat_tool_override()
+        assert rom.compat_tool_override is None
+
+    def test_clear_after_pinning_empty_string_sets_none(self):
+        rom = _make_rom()
+        rom.pin_compat_tool_override("")
+        rom.clear_compat_tool_override()
+        assert rom.compat_tool_override is None
+
+    def test_clear_when_already_none_stays_none(self):
+        rom = _make_rom()
+        assert rom.compat_tool_override is None
+        rom.clear_compat_tool_override()
+        assert rom.compat_tool_override is None

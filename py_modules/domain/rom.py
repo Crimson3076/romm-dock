@@ -58,6 +58,13 @@ class Rom:
     cross_backend_pin: dict[str, str] | None = None
     selected_disc: str | None = None
     selected_exe: str | None = None
+    # Per-game Steam compat-tool override applied via
+    # ``SteamClient.Apps.SpecifyCompatTool`` (frontend-only, ADR-0032). A
+    # 3-state field: ``None`` = no override, ``""`` = force no compat tool
+    # (native launch), any other string = force that ``strToolName``. Unlike
+    # every other pin below, an empty string here is a real state, not a
+    # rejected/blank input — see :meth:`pin_compat_tool_override`.
+    compat_tool_override: str | None = None
     applied_launch_options: str | None = None
     last_fetch_id: str | None = None
     sibling_group_key: str | None = None
@@ -277,6 +284,27 @@ class Rom:
     def clear_selected_exe(self) -> None:
         """Drop the exe pin so the ROM follows the default (first enumerated exe)."""
         self.selected_exe = None
+
+    def pin_compat_tool_override(self, value: str) -> None:
+        """Force this ROM's Steam shortcut onto compat tool *value* (ADR-0032).
+
+        Unlike :meth:`pin_emulator_override`/:meth:`pin_selected_exe`, an empty
+        string is a MEANINGFUL, valid value here — "force no compat tool"
+        (native launch) — not a blank input to reject. There is nothing else to
+        validate: *value* is opaque to the backend, interpreted only by the
+        frontend against ``SteamClient.Apps.GetAvailableCompatTools``. Stored
+        verbatim, whitespace included. Use :meth:`clear_compat_tool_override`
+        to remove the override entirely (a distinct, ``None`` state).
+        """
+        self.compat_tool_override = value
+
+    def clear_compat_tool_override(self) -> None:
+        """Drop the compat-tool override entirely so Steam's own setting applies.
+
+        Distinct from pinning ``""`` (which forces no compat tool, a real,
+        held state) — this sets the field back to ``None`` ("no override").
+        """
+        self.compat_tool_override = None
 
     def record_applied_launch_options(self, launch_options: str) -> None:
         """Record the ``launch_options`` last written to this ROM's Steam shortcut.

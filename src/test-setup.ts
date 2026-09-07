@@ -75,6 +75,8 @@ vi.stubGlobal("SteamClient", {
     SetShortcutStartDir: vi.fn(),
     SetAppLaunchOptions: vi.fn(),
     RemoveShortcut: vi.fn(),
+    SpecifyCompatTool: vi.fn().mockResolvedValue(undefined),
+    GetAvailableCompatTools: vi.fn().mockResolvedValue([]),
   },
   GameSessions: {
     RegisterForAppLifetimeNotifications: vi.fn(() => ({ unregister: vi.fn() })),

@@ -64,6 +64,7 @@ _EXPECTED_WRITES = frozenset(
         "save",
         "set",
         "set_applied_launch_options",
+        "set_compat_tool_override",
         "set_cross_backend_pin",
         "set_emulator_override",
         "set_fs_size_bytes",

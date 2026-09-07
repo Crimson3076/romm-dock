@@ -229,6 +229,64 @@ The flow, mirroring the multi-disc picker:
 There is no "reset to default" menu entry, matching the disc picker's own non-`.m3u` case: a native-Windows install has
 no playlist concept to fall back to, only "the first target enumerated," which the enumeration order already supplies.
 
+## The Steam compat-tool override (`compat_tool_override`, ADR-0032)
+
+Baking a Proton-free `launch_options` string is not, on its own, enough for a native launch to actually run under
+Steam. Steam's own "Enable Steam Play for all other titles" global setting has no per-shortcut opt-out for a
+non-Steam shortcut — Steam has no store metadata proving a non-Steam shortcut is native, so its own Properties →
+Compatibility UI only lets a non-Steam shortcut pick which Proton build, never "none." With that global setting on,
+Steam force-wraps the shortcut's launch in Proton regardless of what `launch_options` already says, so an
+already-correct `.sh` (`kind == "native"`) or bare `.exe` invocation the resolver built can still fail to launch from
+Steam specifically, even though the identical command runs correctly from a terminal. See
+[ADR-0032](../adr/0032-per-game-steam-compat-tool-override.md) for the full incident and reasoning.
+
+The confirmed fix is `SteamClient.Apps.SpecifyCompatTool(appId, value)` — frontend-only, since `SteamClient` is a
+browser-context global this backend cannot reach. `value = ""` forces no compat tool (a native launch, Proton
+bypassed regardless of the global setting); any other string forces that specific `strToolName` from
+`SteamClient.Apps.GetAvailableCompatTools`. Because `SpecifyCompatTool` is scoped to a Steam appId, and this plugin's
+own appIds are assigned by Steam and can change over a ROM's lifetime (a version switch, an uninstall/reinstall — see
+CLAUDE.md's "shortcut appId is assigned, not derived" trap), the plugin's job is to remember which override a ROM
+wants and re-apply it every time that ROM's shortcut is rebound, not to be a one-time devtools fix.
+
+`roms.compat_tool_override` (migration `027_add_compat_tool_override.sql`) is the persisted memory of that decision.
+Anchored on `roms`, not `rom_installs`, mirroring `selected_exe`, so it survives uninstall/reinstall — exactly what
+lets it be re-applied to a new appId later. It is a **3-state** column, not a boolean:
+
+| Value                    | Meaning                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `NULL`                   | No override — the plugin never touches this ROM's Steam compat-tool setting.      |
+| `""`                     | Force NO compat tool (native launch). Set explicitly by the user, or written automatically the first time this ROM's launch target resolves to `kind == "native"` — no user action required. |
+| any other string         | Force that `strToolName` verbatim, exactly as `GetAvailableCompatTools` returned it. |
+
+Unlike `emulator_override` / `selected_disc` / `selected_exe` / `cross_backend_pin` — every one of which treats a
+blank/empty pin as meaningless input and raises — `""` is the single most load-bearing state this column has.
+`Rom.pin_compat_tool_override(value)` therefore accepts any string unconditionally, `""` included; it does not reuse
+the other pins' blank-rejection validation. `Rom.clear_compat_tool_override()` is the distinct verb that returns to
+`NULL`. Like every other per-game pin, the column is excluded from the sync UPSERT (`_SYNC_COLUMNS` in
+`adapters/repositories/rom.py`), and `SqliteRomRepository.set_compat_tool_override` is its only write path, so a
+re-sync never wipes it.
+
+**The backend never calls `SpecifyCompatTool` — it only stores intent and exposes it for the frontend to act on.**
+`get_windows_executables`'s response carries both the plumbing the frontend needs to decide when to act:
+
+- each `executables[]` entry now reports `kind` (`"exe"` | `"native"`) alongside `filename`, so the frontend can tell
+  a native-Linux target apart from a Proton-run one without a second call;
+- the top-level response carries `compat_tool_override` — the ROM's current value, verbatim (`""` renders as `""`,
+  never dropped or nulled).
+
+Two callables persist a decision, both guarded exactly like `select_executable` (`not_installed` for an
+unknown/uninstalled ROM, `unsupported` for a non-`"win"` platform) and — because this setting never touches the baked
+`launch_options` at all — neither response carries a `launch_options` key:
+
+- **`set_compat_tool_override(rom_id, value)`** — pins `value`, which may legitimately be `""` (that is "force
+  native," not "clear"). `value` is opaque to the backend: never validated or resolved against any known Proton
+  build, since the backend has no way to know what compat tools exist on the user's machine.
+- **`clear_compat_tool_override(rom_id)`** — drops the override back to `NULL`.
+
+The frontend is the one that recognizes when to write through these — an explicit user pick, or automatically at
+bake-confirm time when it observes `kind == "native"` — and pairs that write with the live `SpecifyCompatTool` call in
+the same action, so the persisted intent and Steam's actual setting move together.
+
 ## `CoreService` refuses a native-Windows ROM outright
 
 `services/cores.py` (`set_game_core`, `clear_game_core`, `set_system_core`, `get_platform_core_info`) is the one launch
@@ -262,4 +320,5 @@ accident of today's data.
 | `py_modules/services/library/shortcut_launch_resolver.py` | `do_scan_windows_launch_options` / `do_read_windows_launch_options`, the bake sites' entry points |
 | `py_modules/services/cores.py`                            | `CoreService` — refuses `platform_slug == "win"` outright (no emulator/core concept applies)      |
 | `py_modules/db/migrations/024_add_selected_exe.sql`       | Adds `roms.selected_exe`                                                                          |
+| `py_modules/db/migrations/027_add_compat_tool_override.sql` | Adds `roms.compat_tool_override` (ADR-0032)                                                     |
 | `src/components/ExeSelector.tsx`                          | The picker UI, structural twin of `DiscSelector`                                                  |

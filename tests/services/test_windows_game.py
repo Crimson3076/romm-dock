@@ -29,7 +29,14 @@ def uow_unwrap(uow):
         yield u
 
 
-def _seed_rom(uow: FakeUnitOfWork, *, rom_id: int, platform_slug: str = "win", selected_exe: str | None = None) -> None:
+def _seed_rom(
+    uow: FakeUnitOfWork,
+    *,
+    rom_id: int,
+    platform_slug: str = "win",
+    selected_exe: str | None = None,
+    compat_tool_override: str | None = None,
+) -> None:
     uow.roms.save(
         Rom(
             rom_id=rom_id,
@@ -39,6 +46,7 @@ def _seed_rom(uow: FakeUnitOfWork, *, rom_id: int, platform_slug: str = "win", s
             shortcut_app_id=42,
             last_synced_at="2026-01-01T00:00:00+00:00",
             selected_exe=selected_exe,
+            compat_tool_override=compat_tool_override,
         )
     )
 
@@ -104,14 +112,43 @@ def service(event_loop, uow_factory, windows_resolver) -> WindowsGameService:
 
 class TestGetWindowsExecutables:
     def test_returns_full_descriptor(self, event_loop, service, uow):
-        _seed_rom(uow, rom_id=1, selected_exe=_EXE2)
+        _seed_rom(uow, rom_id=1, selected_exe=_EXE2, compat_tool_override="proton_experimental")
         _seed_install(uow, rom_id=1)
         result = event_loop.run_until_complete(service.get_windows_executables(1))
         assert result == {
             "has_executables": True,
-            "executables": [{"filename": _EXE1}, {"filename": _EXE2}],
+            "executables": [{"filename": _EXE1, "kind": "exe"}, {"filename": _EXE2, "kind": "exe"}],
             "selected": _EXE2,
+            "compat_tool_override": "proton_experimental",
         }
+
+    def test_compat_tool_override_none_when_unset(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1)
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.get_windows_executables(1))
+        assert result["compat_tool_override"] is None
+
+    def test_compat_tool_override_empty_string_reports_verbatim(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1, compat_tool_override="")
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.get_windows_executables(1))
+        assert result["compat_tool_override"] == ""
+
+    def test_executables_carry_kind(self, event_loop, service, uow, windows_resolver):
+        windows_resolver.set_executables(
+            _ROM_DIR,
+            [
+                WindowsExecutable(filename=_EXE1, path=_EXE1_PATH, kind="exe"),
+                WindowsExecutable(filename="patcher-start.sh", path=f"{_ROM_DIR}/patcher-start.sh", kind="native"),
+            ],
+        )
+        _seed_rom(uow, rom_id=1)
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.get_windows_executables(1))
+        assert result["executables"] == [
+            {"filename": _EXE1, "kind": "exe"},
+            {"filename": "patcher-start.sh", "kind": "native"},
+        ]
 
     def test_unpinned_selected_is_none(self, event_loop, service, uow):
         _seed_rom(uow, rom_id=1, selected_exe=None)
@@ -218,3 +255,84 @@ class TestSelectExecutable:
         result = event_loop.run_until_complete(service.select_executable(1, "New.exe"))
         assert result["success"] is True
         assert result["selected"] == "New.exe"
+
+
+# ── set_compat_tool_override / clear_compat_tool_override ──────────────────
+
+
+class TestSetCompatToolOverride:
+    def test_happy_path_persists_a_tool_name(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1)
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.set_compat_tool_override(1, "proton_experimental"))
+        assert result == {"success": True}
+        assert "launch_options" not in result
+        with uow_unwrap(uow) as u:
+            assert u.roms.get(1).compat_tool_override == "proton_experimental"
+
+    def test_empty_string_forces_native_and_is_not_a_clear(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1)
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.set_compat_tool_override(1, ""))
+        assert result == {"success": True}
+        with uow_unwrap(uow) as u:
+            rom = u.roms.get(1)
+            assert rom.compat_tool_override == ""
+            assert rom.compat_tool_override is not None
+
+    def test_not_installed_fails(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1)  # no install record
+        result = event_loop.run_until_complete(service.set_compat_tool_override(1, "proton_experimental"))
+        assert result["success"] is False
+        assert result["reason"] == "not_installed"
+        assert "message" in result
+
+    def test_unknown_rom_fails(self, event_loop, service):
+        result = event_loop.run_until_complete(service.set_compat_tool_override(999, "proton_experimental"))
+        assert result["success"] is False
+        assert result["reason"] == "not_installed"
+
+    def test_non_windows_rom_fails_unsupported(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1, platform_slug="psx")
+        _seed_install(uow, rom_id=1, platform_slug="psx")
+        result = event_loop.run_until_complete(service.set_compat_tool_override(1, "proton_experimental"))
+        assert result["success"] is False
+        assert result["reason"] == "unsupported"
+
+
+class TestClearCompatToolOverride:
+    def test_happy_path_resets_to_none(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1, compat_tool_override="proton_experimental")
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.clear_compat_tool_override(1))
+        assert result == {"success": True}
+        assert "launch_options" not in result
+        with uow_unwrap(uow) as u:
+            assert u.roms.get(1).compat_tool_override is None
+
+    def test_clearing_an_empty_string_override_is_distinct_from_setting_it(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1, compat_tool_override="")
+        _seed_install(uow, rom_id=1)
+        result = event_loop.run_until_complete(service.clear_compat_tool_override(1))
+        assert result["success"] is True
+        with uow_unwrap(uow) as u:
+            assert u.roms.get(1).compat_tool_override is None
+
+    def test_not_installed_fails(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1)  # no install record
+        result = event_loop.run_until_complete(service.clear_compat_tool_override(1))
+        assert result["success"] is False
+        assert result["reason"] == "not_installed"
+        assert "message" in result
+
+    def test_unknown_rom_fails(self, event_loop, service):
+        result = event_loop.run_until_complete(service.clear_compat_tool_override(999))
+        assert result["success"] is False
+        assert result["reason"] == "not_installed"
+
+    def test_non_windows_rom_fails_unsupported(self, event_loop, service, uow):
+        _seed_rom(uow, rom_id=1, platform_slug="psx", compat_tool_override="proton_experimental")
+        _seed_install(uow, rom_id=1, platform_slug="psx")
+        result = event_loop.run_until_complete(service.clear_compat_tool_override(1))
+        assert result["success"] is False
+        assert result["reason"] == "unsupported"
