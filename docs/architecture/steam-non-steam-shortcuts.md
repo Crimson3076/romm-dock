@@ -439,6 +439,15 @@ edits the `shortcuts.vdf` `icon` field — Steam is memory-authoritative and clo
 shortcut must go through `SteamClient` (see
 [shortcuts.vdf is memory-authoritative](#shortcutsvdf-is-memory-authoritative)).
 
+On the first game-detail visit for an `(appId, rom_id)` binding, `RomMPlaySection` calls `get_sgdb_resolution` before
+requesting any artwork. That resolution flow uses RomM's authoritative SteamGridDB id, or persists an unambiguous IGDB
+cross-reference when RomM has no id. Only a `resolved` answer fans out the four hero/logo/grid/icon requests. A missing
+API key and `needs_pick` are silent on this passive path; only the explicit **Refresh Artwork** action opens the
+existing picker. In-flight attempts are deduplicated, and the binding is remembered only after at least one image
+reached Steam, so unavailable artwork and transient failures can retry on a later visit. The remembered value is the
+latest ROM per appId rather than a permanent set of pairs, which preserves the required A → B → A repaint during version
+switching.
+
 Covers are applied per created shortcut through Steam's own artwork API during the apply, so tiles show their real cover
 in-session with no client restart. Right after a newly created shortcut resolves its `appId` in the per-item apply loop
 (`applyCoverArtwork` in `syncManager.ts`), the frontend fetches the cover bytes for that ROM

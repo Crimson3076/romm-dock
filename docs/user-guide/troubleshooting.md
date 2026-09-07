@@ -239,7 +239,8 @@ create an account at steamgriddb.com and copy your API key.
 
 **Explanation**: Automatic matching links your ROM to a SteamGridDB game via its IGDB id, and that cross-reference is
 sometimes missing — especially for obscure ports and regional releases — even when SteamGridDB _does_ have artwork under
-a differently-linked entry.
+a differently-linked entry. The first game-page visit applies only an authoritative RomM or IGDB match; it never picks
+one of the uncertain name-search results for you.
 
 **Fix**: The durable fix is on your RomM server — set the correct SteamGridDB id on the game (or enable the SteamGridDB
 metadata source and rescan). RomM is the source of truth for artwork matching, so the plugin picks up the corrected id

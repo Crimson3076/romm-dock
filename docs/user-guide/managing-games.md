@@ -572,14 +572,17 @@ Tap **Refresh Metadata** in the game detail panel to:
 This is useful if artwork was missing on first sync (SteamGridDB may have added new images since) or if metadata has
 changed on your RomM server.
 
-When you tap **Refresh Artwork**, the plugin asks your RomM server which SteamGridDB game the ROM maps to and applies
-the hero banner, logo, wide grid, and icon for that game. **RomM is the source of truth**: whenever your server has a
-SteamGridDB id for a game, that id wins — on both sync and refresh. If RomM has no id, the plugin tries to derive one
-from the game's IGDB id. Only when neither resolves a SteamGridDB game does a picker open, where you search SteamGridDB
-by name and choose from the results (with thumbnails). A name pick is applied immediately but is **not permanent** —
-once your RomM server has a SteamGridDB id for that game, that id takes over. Because a manual pick isn't stored as the
-resolved id, you can change it any time: just tap **Refresh Artwork** again and the picker reopens. To pin a specific
-match for good, set the SteamGridDB id on the game in RomM.
+With a SteamGridDB API key configured, the first visit to a game's detail page automatically asks RomM which SteamGridDB
+game the ROM maps to and applies its hero banner, logo, wide grid, and icon. **RomM is the source of truth**: whenever
+your server has a SteamGridDB id for a game, that id wins. If RomM has no id, the plugin tries to derive one from the
+game's IGDB id. A missing key is skipped silently. If neither source resolves an unambiguous match, the plugin leaves
+the existing artwork alone and never chooses a name-search result automatically.
+
+Tap **Refresh Artwork** to run the same resolution again manually. When no authoritative match exists, this action opens
+a picker where you can search SteamGridDB by name and choose from the results (with thumbnails). A name pick is applied
+immediately but is **not permanent** — once your RomM server has a SteamGridDB id for that game, that id takes over.
+Because a manual pick isn't stored as the resolved id, you can change it any time: tap **Refresh Artwork** again and the
+picker reopens. To pin a specific match for good, set the SteamGridDB id on the game in RomM.
 
 The full set of per-game actions — refresh artwork, refresh metadata, sync save files, download BIOS, and uninstall — is
 available from the RomM Actions menu in the game detail panel.

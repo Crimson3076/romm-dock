@@ -43,6 +43,11 @@ if TYPE_CHECKING:
     )
 
 
+def _normalized_exact_title(value: object) -> str:
+    """Normalize case and whitespace without turning fuzzy matches into exact ones."""
+    return " ".join(str(value or "").split()).casefold()
+
+
 @dataclass(frozen=True)
 class SteamGridServiceConfig:
     """Frozen wiring bundle handed to ``SteamGridService.__init__``.
@@ -137,9 +142,8 @@ class SteamGridService:
 
         Checks the persisted ROM row first, then the in-memory
         pending-sync map. Returns ``None`` when neither carries a
-        ``sgdb_id``. RomM re-reads and IGDB cross-refs are gated behind
-        the explicit ``get_sgdb_resolution`` user action, not this
-        passive lookup.
+        ``sgdb_id``. RomM re-reads and IGDB cross-refs belong to the
+        dedicated ``get_sgdb_resolution`` flow, not this per-asset lookup.
         """
         rom_id = int(rom_id)
         with self._uow_factory() as uow:
@@ -204,11 +208,11 @@ class SteamGridService:
     # -- resolution cascade (callable) -------------------------------------
 
     async def get_sgdb_resolution(self, rom_id):
-        """Resolve which SGDB game id to use for *rom_id*, picker-driven.
+        """Resolve which SGDB game id to use for *rom_id*.
 
-        The single explicit user action that may re-read RomM and run the
-        IGDB cross-ref / name-search cascade. RomM's ``sgdb_id`` always
-        wins when present. Returns one of:
+        This is the single flow that may re-read RomM and run the IGDB
+        cross-ref / name-search cascade. RomM's ``sgdb_id`` always wins
+        when present. Returns one of:
 
         - ``{"decision": "no_api_key"}`` — no key configured.
         - ``{"decision": "resolved", "sgdb_id": int}`` — a winning id was
@@ -241,7 +245,24 @@ class SteamGridService:
 
         name = (rom_data or {}).get("name") or ""
         search = await self.search_sgdb_games(name)
-        return {"decision": "needs_pick", "candidates": search.get("games", [])}
+        candidates = search.get("games", [])
+
+        # SGDB's IGDB cross-reference is sparse for many retro titles. Its
+        # autocomplete results still commonly contain one unambiguous title-equal
+        # game. Resolve only that strict case; zero or duplicate exact names stay
+        # manual so passive artwork never guesses between editions/ports.
+        normalized_name = _normalized_exact_title(name)
+        exact_matches = [
+            candidate
+            for candidate in candidates
+            if normalized_name and _normalized_exact_title(candidate.get("name")) == normalized_name
+        ]
+        if len(exact_matches) == 1:
+            resolved = int(exact_matches[0]["id"])
+            self._persist_sgdb_id(rom_id_str, resolved)
+            return {"decision": "resolved", "sgdb_id": resolved}
+
+        return {"decision": "needs_pick", "candidates": candidates}
 
     async def search_sgdb_games(self, term):
         """Search SGDB by name and enrich the top candidates with thumbnails.

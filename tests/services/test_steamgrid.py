@@ -290,7 +290,7 @@ class TestGetSgdbArtworkBase64:
 
         assert result["base64"] is None
         assert result["no_api_key"] is False
-        # No RomM read and no IGDB cross-ref happened on the passive path.
+        # No RomM read and no IGDB cross-ref happened in this per-asset callable.
         assert not any(name == "get_rom" for name, _a, _k in fake_romm_api.call_log)
         assert not any(p.startswith("/games/igdb/") for p in fake_steamgrid_db_api.requested_paths)
 
@@ -365,7 +365,7 @@ class TestGetSgdbArtworkBase64:
 
 
 class TestGetSgdbResolution:
-    """The picker-driven resolution cascade in ``get_sgdb_resolution``.
+    """The dedicated resolution cascade in ``get_sgdb_resolution``.
 
     Exercises every ``classify_resolution`` branch (RomM is the source of
     truth) plus the unresolved fall-through to IGDB cross-ref and the
@@ -453,17 +453,55 @@ class TestGetSgdbResolution:
             assert uow.roms.get(42).sgdb_id == 5555
 
     @pytest.mark.asyncio
-    async def test_unresolved_needs_pick_with_candidates(self, plugin, uow, fake_romm_api, fake_steamgrid_db_api):
+    async def test_unresolved_unique_exact_name_resolves_and_persists(
+        self, plugin, uow, fake_romm_api, fake_steamgrid_db_api
+    ):
         plugin.settings["steamgriddb_api_key"] = "some-key"
         plugin._sgdb_service._loop = asyncio.get_event_loop()
 
         _seed_rom(uow, 42, app_id=1)
-        # No sgdb_id, no igdb_id → name search.
-        fake_romm_api.roms[42] = {"id": 42, "name": "Zelda"}
-
+        # The IGDB cross-reference is absent in SGDB, but autocomplete contains
+        # exactly one title-equal candidate among broader results.
+        fake_romm_api.roms[42] = {"id": 42, "igdb_id": 1234, "name": "Zelda"}
+        fake_steamgrid_db_api.seed_igdb_lookup(igdb_id=1234, sgdb_id=None)
         fake_steamgrid_db_api.seed_raw_response(
             "/search/autocomplete/Zelda",
-            {"success": True, "data": [{"id": 100, "name": "Zelda", "release_date": 1234567890}]},
+            {
+                "success": True,
+                "data": [
+                    {"id": 100, "name": "Zelda", "release_date": 1234567890},
+                    {"id": 101, "name": "Zelda II"},
+                ],
+            },
+        )
+        fake_steamgrid_db_api.seed_raw_response(
+            "/grids/game/100", {"success": True, "data": [{"thumb": "z-thumb.png"}]}
+        )
+
+        result = await plugin.get_sgdb_resolution(42)
+
+        assert result == {"decision": "resolved", "sgdb_id": 100}
+        with uow:
+            assert uow.roms.get(42).sgdb_id == 100
+
+    @pytest.mark.asyncio
+    async def test_unresolved_duplicate_exact_names_still_need_manual_pick(
+        self, plugin, uow, fake_romm_api, fake_steamgrid_db_api
+    ):
+        plugin.settings["steamgriddb_api_key"] = "some-key"
+        plugin._sgdb_service._loop = asyncio.get_event_loop()
+
+        _seed_rom(uow, 42, app_id=1)
+        fake_romm_api.roms[42] = {"id": 42, "name": "Zelda"}
+        fake_steamgrid_db_api.seed_raw_response(
+            "/search/autocomplete/Zelda",
+            {
+                "success": True,
+                "data": [
+                    {"id": 100, "name": "Zelda", "release_date": 1234567890},
+                    {"id": 101, "name": "ZELDA"},
+                ],
+            },
         )
         fake_steamgrid_db_api.seed_raw_response(
             "/grids/game/100", {"success": True, "data": [{"thumb": "z-thumb.png"}]}
@@ -472,7 +510,9 @@ class TestGetSgdbResolution:
         result = await plugin.get_sgdb_resolution(42)
 
         assert result["decision"] == "needs_pick"
-        assert result["candidates"] == [{"id": 100, "name": "Zelda", "release_year": 2009, "thumb_url": "z-thumb.png"}]
+        assert [candidate["id"] for candidate in result["candidates"]] == [100, 101]
+        with uow:
+            assert uow.roms.get(42).sgdb_id is None
 
     @pytest.mark.asyncio
     async def test_unresolved_igdb_lookup_fails_falls_through_to_pick(
