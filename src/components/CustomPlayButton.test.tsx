@@ -2339,6 +2339,33 @@ describe("CustomPlayButton — shared launch gate (ADR-0015)", () => {
     await findByText("Play");
   });
 
+  it("save sync disabled → tracking-setup skipped entirely, launch proceeds", async () => {
+    vi.mocked(backend.probeReachability).mockResolvedValue({ online: true });
+    // Same server-has-slots response that aborts the launch in the previous
+    // test — with save_sync_enabled: false on the cached detail, the gate must
+    // never reach it: the SAVES tab is hidden while the feature is off, so
+    // routing the user there to "configure save sync" would be a dead end.
+    vi.mocked(backend.getSaveSetupInfo).mockResolvedValue({
+      recommended_action: "needs_user_choice",
+      default_slot: "default",
+      server_slots: [{ slot: "default" }],
+    } as unknown as Awaited<ReturnType<typeof backend.getSaveSetupInfo>>);
+
+    mockCachedDetail({ save_sync_enabled: false });
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    const playBtn = await findByText("Play");
+    await act(async () => {
+      playBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(backend.isSaveTrackingConfigured)).not.toHaveBeenCalled();
+    expect(vi.mocked(backend.getSaveSetupInfo)).not.toHaveBeenCalled();
+    await waitFor(() => expect(vi.mocked(SteamClient.Apps.RunGame)).toHaveBeenCalledWith("gid-1", "", -1, 100));
+  });
+
   it("reachability probe rejects → treated as offline; with drift → OfflineDriftModal", async () => {
     vi.mocked(backend.probeReachability).mockRejectedValue(new Error("net"));
     vi.mocked(backend.checkLocalDrift).mockResolvedValue({ drifted: true, rom_id: 42 });

@@ -552,6 +552,13 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // cannot silently flip "abort" → "proceed" — the abort-propagation bug pattern
   // #619 was opened to prevent.
   const ensureTrackingConfigured = async (rid: number): Promise<"proceed" | "abort"> => {
+    // Save-sync master toggle off — nothing to configure, and nowhere to
+    // configure it: the SAVES tab is hidden while the feature is off
+    // (save-file-sync-architecture.md). Skip the whole slot-setup round-trip
+    // rather than routing the user to a tab they can't reach.
+    const cached = await getCachedGameDetail(appId).catch(() => null);
+    if (cached?.save_sync_enabled === false) return "proceed";
+
     const trackingResult = await isSaveTrackingConfigured(rid).catch(() => ({ configured: true }));
     if (trackingResult.configured) return "proceed";
 

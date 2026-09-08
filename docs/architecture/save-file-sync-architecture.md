@@ -1819,6 +1819,14 @@ The save-sync feature toggles (`save_sync_enabled`, `sync_before_launch`, `sync_
 `conflicts` array, so no consumer (the launch gate, the play button, the `save_status_updated` push that `index.tsx`
 forwards) surfaces a conflict the user has no UI to resolve — the SAVES tab where one would resolve it is hidden while
 disabled. A stale server-side conflict (e.g. another device moved the save) therefore can't render a game unplayable.
+The Play button's own slot-tracking gate (`CustomPlayButton.ensureTrackingConfigured`, the frontend half of ADR-0015's
+funnel) honors the same toggle for the identical reason: a ROM whose server slots were never confirmed on this device
+would otherwise abort the launch with "Configure save sync in the Saves tab first" while that toggle is off — the exact
+tab the toast names is the one hidden while disabled, trapping the launch behind UI the user cannot reach. It checks
+the cached game detail's `save_sync_enabled` and short-circuits straight to `"proceed"`, skipping `is_save_tracking_configured`
+/ `get_save_setup_info` entirely, before either round-trip fires. The global watcher's parallel path
+(`ensureTrackingConfiguredWatcher`) never needed this: it already always proceeds regardless of outcome, since a cold
+grid launch has no page to route the user to.
 `sync_before_launch` / `sync_after_exit` gate the automatic pre-launch / post-exit syncs; `default_slot` is the slot new
 games adopt (`"autosave"`, matching the official RomM clients Argosy and Grout); `autocleanup_limit` caps retained save
 versions per slot on the server (10).
