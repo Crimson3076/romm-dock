@@ -79,6 +79,17 @@ SCOPE_DIRS = (
 ALLOWLIST = {
     "py_modules/services/downloads.py": 1119,
     "py_modules/services/library/fetcher.py": 1150,
+    # Ported from upstream (fix(sync): make an empty sibling-group key
+    # impossible, danielcopper/romm-tender#1797) as a 2-line correctness fix.
+    # Upstream stayed under the threshold only because two prior decomposition
+    # refactors (danielcopper/romm-tender#1791, #1792) shrank this module first;
+    # this fork does not have those yet. This is a real exception to "adding it
+    # to ALLOWLIST is not the fix" above, taken because the fix closes a data-
+    # corruption path (an empty sibling_group_key can bucket unrelated ROMs
+    # into one group and delete the wrong installed content) and should not
+    # wait on an unrelated refactor. Follow-up: decompose sync_orchestrator.py
+    # (services/saves/ is the reference shape) and drop this entry.
+    "py_modules/services/library/sync_orchestrator.py": 1002,
 }
 
 
