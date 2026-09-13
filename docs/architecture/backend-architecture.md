@@ -1498,7 +1498,7 @@ answering anything. Selected adapters:
 
 | Module                                                                     | Role                                                                                                                                                                                                                                                                                                                     |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `romm/http.py`                                                             | `RommHttpAdapter` — HTTP transport: auth, SSL, User-Agent, platform map, error translation                                                                                                                                                                                                                               |
+| `romm/http.py`                                                             | `RommHttpAdapter` — HTTP transport: auth, SSL, User-Agent, configured proxy headers, platform map, error translation                                                                                                                                                                                                     |
 | `romm/retry.py`                                                            | `RetryLadder` — the attempt policy behind that transport: retry ladder, backoff, known-unreachable state                                                                                                                                                                                                                 |
 | `romm/romm_api.py`                                                         | `RommApiAdapter` — RomM REST surface (saves, ROMs, platforms, firmware, devices, play-sessions) over the HTTP transport                                                                                                                                                                                                  |
 | `steam_config.py`                                                          | `SteamConfigAdapter` — Steam VDF read/write, grid dir, shortcut icon write, Steam Input config                                                                                                                                                                                                                           |
@@ -1573,6 +1573,53 @@ The state is about the configured RomM server only. `download_external` fetches 
 metadata CDN, so its ladder is entered with `romm_origin=False` and takes no part in either direction: a dead cover CDN
 must not degrade every RomM call, and reaching the CDN is no evidence that RomM came back. It also keeps its full ladder
 while RomM is down, because it is a different host.
+
+#### RommHttpAdapter notes: the headers every RomM-origin request carries
+
+`_apply_origin_headers` is the one place that attaches what a request carries by virtue of its DESTINATION rather than
+its purpose: the plugin `User-Agent` and the user's configured proxy headers (`settings.json` `romm_custom_headers`,
+#1822 — for a RomM server behind Pangolin, Cloudflare Access, Authelia or Authentik forward-auth, which rejects every
+request before RomM sees it). `_apply_default_headers` is that helper plus `Authorization`, and the two sign-in paths
+that deliberately omit the bearer — `unauthenticated_post_json` (the pairing-code exchange) and `basic_auth_request`
+(the Client API Token mint) — call the helper directly. **All three attachment points are deliberate**: an
+authenticating proxy sits in front of sign-in as well, so a plugin that added the headers only to authenticated calls
+would leave a user unable to authenticate in the first place.
+
+The one deliberate exclusion is `download_external`, which fetches a ROM's `url_cover` from a third-party metadata CDN
+and keeps the bare `User-Agent` it always had. A proxy access token is a credential for the user's own front door and
+has no business reaching a foreign host — the same reasoning that keeps the RomM bearer off that request.
+
+A configured header may never displace one the adapter sets itself, and two mechanisms hold that — unevenly.
+
+The first is validation: the names are refused case-insensitively (`domain/custom_headers.py`, `RESERVED_NAMES`), with
+`authorization` carrying a message of its own, because a proxy's own documentation suggests that header and it is
+exactly the one the RomM bearer occupies. It is reached from two places — `resolve_custom_headers` for what arrives over
+the wire, and `stored_custom_headers`, the single reading of the persisted list, which re-runs it on every request so a
+hand-edited `settings.json` cannot put a reserved name on the wire either. Those two gates are **one mechanism read
+twice**, not two: both consult the same frozenset, so removing a name from it opens both in a single edit.
+
+The second is ordering: the configured headers go on FIRST, so a later `req.add_header` wins the same name whatever came
+before it. This one is **partial**, and the gap is worth knowing. It covers only the names the adapter re-adds after
+`_apply_origin_headers` — `User-Agent`, `Authorization`, `Content-Type`, and conditionally `Range`, `If-None-Match` and
+`If-Modified-Since`. It does nothing for `Host` or `Content-Length`, which the adapter never sets: `http.client`
+supplies both itself and skips its own when the caller already did. So for `host` — reserved precisely because
+`http.client._send_request` suppresses its derived `Host` when the caller supplied one, which would retarget every
+request's virtual host — the frozenset is the only defence that exists.
+
+Nothing pins the ordering leg. `test_a_stored_authorization_never_displaces_the_bearer` and
+`test_a_stored_host_never_retargets_the_request` read as though they do, but both pass because `stored_custom_headers`
+has already dropped the entry before `add_header` is reached; reverse the order inside `_apply_default_headers` and both
+stay green.
+
+One thing the attachment rule does not reach at all: what the plugin attaches is not the same as what arrives.
+`_urlopen` uses urllib's default opener, whose redirect handler copies every header except `content-length` /
+`content-type` onto the followed request with no same-origin test, so a 30x from the RomM origin to a foreign host
+delivers the configured header — and the RomM bearer with it. That is the transport's long-standing behaviour rather
+than anything this feature introduced, and it is tracked in #1889.
+
+The values are read from the live settings dict at call time, the way `romm_url` is: a value captured in `__init__`
+would go stale the moment the user edits it. They never reach a log line — `CustomHeader.__repr__` prints the name
+alone, and no refusal message quotes a value.
 
 #### RommHttpAdapter notes: what makes a 404 an entity verdict
 

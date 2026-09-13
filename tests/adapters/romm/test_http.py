@@ -4,6 +4,7 @@ import io
 import json
 import ssl
 import urllib.error
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,7 +75,9 @@ def plugin():
     p.settings = {"romm_url": "", "romm_user": "", "romm_pass": "", "enabled_platforms": {}}
     import decky
 
-    p._http_adapter = RommHttpAdapter(p.settings, decky.DECKY_PLUGIN_DIR, logging.getLogger("test"), _USER_AGENT)
+    p._http_adapter = RommHttpAdapter(
+        p.settings, decky.DECKY_PLUGIN_DIR, logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+    )
     p._romm_api = MagicMock()
     p._prune_service = MagicMock()
     p._prune_service.is_active.return_value = False
@@ -251,6 +254,242 @@ class TestTokenHostMismatchRetry:
     def test_token_host_mismatch_is_not_retryable(self):
         """A wrong-origin token can never succeed by retrying — must stay non-retryable."""
         assert RommHttpAdapter.is_retryable(TokenHostMismatchError("mismatch")) is False
+
+
+class TestCustomProxyHeaders:
+    """#1822: the headers a user configures for an authenticating reverse proxy.
+
+    They ride on every request to the configured RomM origin — the sign-in paths
+    included, because the proxy sits in front of sign-in too — and on nothing
+    else. What they may never do is displace a header the adapter sets itself.
+    """
+
+    _PROXY: ClassVar[list[dict[str, str]]] = [
+        {"name": "P-Access-Token", "value": "tok"},
+        {"name": "P-Access-Token-Id", "value": "tok-id"},
+    ]
+
+    def _staged_resp(self, payload: bytes, status: int = 200):
+        resp = MagicMock()
+        resp.status = status
+        resp.read.return_value = payload
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def _assert_proxy_headers(self, req) -> None:
+        assert req.get_header("P-access-token") == "tok"
+        assert req.get_header("P-access-token-id") == "tok-id"
+
+    def test_they_reach_a_normal_api_request(self, plugin):
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_api_token"] = "rmm_runtime"
+        plugin.settings["romm_custom_headers"] = self._PROXY
+        resp = self._staged_resp(json.dumps({"ok": True}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.request("/api/test")
+
+        req = mock_open.call_args[0][0]
+        self._assert_proxy_headers(req)
+        assert req.get_header("Authorization") == "Bearer rmm_runtime"
+
+    def test_they_reach_the_pairing_code_exchange(self, plugin):
+        """The proxy rejects the exchange too, so an unauthenticated request still carries them."""
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_custom_headers"] = self._PROXY
+        resp = self._staged_resp(json.dumps({"raw_token": "rmm_paired"}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.unauthenticated_post_json("/api/client-tokens/exchange", {"code": "ABCD2345"})
+
+        req = mock_open.call_args[0][0]
+        self._assert_proxy_headers(req)
+        assert req.get_header("Authorization") is None
+
+    def test_they_reach_the_basic_auth_mint(self, plugin):
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_custom_headers"] = self._PROXY
+        resp = self._staged_resp(json.dumps({"id": 7, "raw_token": "rmm_new"}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.basic_auth_request(
+                "/api/client-tokens", "alice", "s3cret", method="POST", data={"name": "x"}
+            )
+
+        req = mock_open.call_args[0][0]
+        self._assert_proxy_headers(req)
+        assert req.get_header("Authorization").startswith("Basic ")
+
+    def test_they_reach_a_json_post(self, plugin):
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_custom_headers"] = self._PROXY
+        resp = self._staged_resp(json.dumps({"ok": True}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.post_json("/api/saves", {"a": 1})
+
+        req = mock_open.call_args[0][0]
+        self._assert_proxy_headers(req)
+        assert req.get_header("Content-type") == "application/json"
+
+    def test_they_never_reach_the_external_cover_cdn(self, tmp_path):
+        """A proxy credential is for the user's own RomM front door — never a third-party host."""
+        import logging
+
+        settings = {
+            "romm_url": "http://romm.local",
+            "romm_custom_headers": self._PROXY,
+        }
+        adapter = RommHttpAdapter(
+            settings,
+            "/fake/plugin_dir",
+            logging.getLogger("test"),
+            "decky-romm-sync/9.9.9",
+            log_debug=lambda _msg: None,
+        )
+        dest = str(tmp_path / "cover.png")
+        resp = _make_resp(200, {"Content-Length": "1"}, b"x")
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            adapter.download_external("https://cdn.example.com/x.png", dest)
+
+        req = mock_open.call_args[0][0]
+        assert req.get_header("P-access-token") is None
+        assert req.get_header("P-access-token-id") is None
+        assert req.get_header("User-agent") == "decky-romm-sync/9.9.9"
+
+    def test_a_stored_authorization_never_displaces_the_bearer(self, plugin):
+        """Unreachable through validation, so it is written straight into the settings dict."""
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_api_token"] = "rmm_runtime"
+        plugin.settings["romm_custom_headers"] = [{"name": "Authorization", "value": "Basic aW1wb3N0ZXI="}]
+        resp = self._staged_resp(json.dumps({"ok": True}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.request("/api/test")
+
+        assert mock_open.call_args[0][0].get_header("Authorization") == "Bearer rmm_runtime"
+
+    def test_a_stored_host_never_retargets_the_request(self, plugin):
+        """``http.client`` skips its own derived Host when the caller supplied one."""
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_custom_headers"] = [{"name": "Host", "value": "evil.example"}]
+        resp = self._staged_resp(json.dumps({"ok": True}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.request("/api/test")
+
+        assert mock_open.call_args[0][0].get_header("Host") is None
+
+    def test_a_stored_value_that_would_inject_a_header_is_never_sent(self, plugin):
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_custom_headers"] = [{"name": "X-Token", "value": "a\r\nX-Injected: yes"}]
+        resp = self._staged_resp(json.dumps({"ok": True}).encode())
+
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.request("/api/test")
+
+        assert mock_open.call_args[0][0].get_header("X-token") is None
+
+    def test_they_are_read_at_call_time_not_at_construction(self, plugin):
+        """The settings dict is live — an edit takes effect on the next request, not the next start."""
+        plugin.settings["romm_url"] = "http://romm.local"
+        plugin.settings["romm_custom_headers"] = [{"name": "X-Token", "value": "old"}]
+        resp = self._staged_resp(json.dumps({"ok": True}).encode())
+
+        plugin.settings["romm_custom_headers"] = [{"name": "X-Token", "value": "new"}]
+        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+            plugin._http_adapter.request("/api/test")
+
+        assert mock_open.call_args[0][0].get_header("X-token") == "new"
+
+
+class TestCustomProxyHeaderLogging:
+    """#1822: the debug line that says which custom headers actually went out.
+
+    The request leaves over TLS, so the plugin is the last reader of its own
+    headers — this line is the only thing that can separate "the plugin sent
+    nothing" from "the proxy rejected what it sent". It carries names only: a
+    value is the credential the proxy checks.
+
+    Asserted against the injected ``log_debug`` seam rather than the logger,
+    because that seam is what the user's ``log_level`` setting gates — a
+    ``logger.debug`` call reaches no log a user reads, which is how the first
+    version of this line shipped invisible.
+    """
+
+    _PROXY: ClassVar[list[dict[str, str]]] = [
+        {"name": "P-Access-Token", "value": "tok"},
+        {"name": "P-Access-Token-Id", "value": "tok-id"},
+    ]
+
+    def _adapter(self, headers: list[dict[str, str]]):
+        log_debug = MagicMock()
+        settings = {"romm_url": "http://romm.local", "romm_custom_headers": headers}
+        adapter = RommHttpAdapter(
+            settings, "/fake/plugin_dir", MagicMock(), "decky-romm-sync/9.9.9", log_debug=log_debug
+        )
+        return adapter, log_debug
+
+    def _request(self, adapter) -> None:
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = json.dumps({"ok": True}).encode()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=resp):
+            adapter.request("/api/test")
+
+    @staticmethod
+    def _debug_text(log_debug) -> str:
+        return " ".join(str(call) for call in log_debug.call_args_list)
+
+    def test_it_names_the_headers_it_attached(self):
+        adapter, log_debug = self._adapter(self._PROXY)
+
+        self._request(adapter)
+
+        text = self._debug_text(log_debug)
+        assert "P-Access-Token" in text
+        assert "P-Access-Token-Id" in text
+
+    def test_it_never_carries_a_value(self):
+        """The whole point of the names-only rule: a proxy credential is not log material."""
+        adapter, log_debug = self._adapter(self._PROXY)
+
+        self._request(adapter)
+
+        text = self._debug_text(log_debug)
+        assert "tok" not in text.replace("P-Access-Token", "").replace("P-Access-Token-Id", "")
+
+    def test_it_says_so_when_nothing_is_configured(self):
+        """Separates a mis-saved setting from a rejected one — both look like a 403 from outside."""
+        adapter, log_debug = self._adapter([])
+
+        self._request(adapter)
+
+        assert "none configured" in self._debug_text(log_debug)
+
+    def test_it_writes_one_line_per_set_not_per_request(self):
+        """This helper runs on every outgoing call — a library sync would drown the log."""
+        adapter, log_debug = self._adapter(self._PROXY)
+
+        self._request(adapter)
+        self._request(adapter)
+        self._request(adapter)
+
+        assert log_debug.call_count == 1
+
+    def test_an_edited_set_is_logged_again(self):
+        adapter, log_debug = self._adapter(self._PROXY)
+
+        self._request(adapter)
+        adapter._settings["romm_custom_headers"] = [{"name": "CF-Access-Client-Id", "value": "cf"}]
+        self._request(adapter)
+
+        assert log_debug.call_count == 2
+        assert "CF-Access-Client-Id" in self._debug_text(log_debug)
 
 
 class TestRommBasicAuthRequest:
@@ -795,7 +1034,9 @@ class TestPlatformMap:
         """
         import logging
 
-        adapter = RommHttpAdapter({}, str(tmp_path), logging.getLogger("test"), _USER_AGENT)
+        adapter = RommHttpAdapter(
+            {}, str(tmp_path), logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+        )
         assert adapter.load_platform_map() == {}
         # resolve_system survives the empty map and passes the slug through unchanged.
         assert adapter.resolve_system("dc") == "dc"
@@ -805,7 +1046,9 @@ class TestPlatformMap:
         import logging
 
         (tmp_path / "config.json").write_text("{ this is not valid json")
-        adapter = RommHttpAdapter({}, str(tmp_path), logging.getLogger("test"), _USER_AGENT)
+        adapter = RommHttpAdapter(
+            {}, str(tmp_path), logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+        )
         assert adapter.load_platform_map() == {}
         assert adapter.resolve_system("dc") == "dc"
 
@@ -1510,6 +1753,7 @@ class TestTranslateHttpStatus:
             "/tmp",
             logging.getLogger("test"),
             _USER_AGENT,
+            log_debug=lambda _msg: None,
         )
 
     def test_400_bad_request(self):
@@ -1663,7 +1907,9 @@ class TestDownloadTimeout:
         import logging
 
         settings = {"romm_url": "http://romm.local", "romm_user": "user", "romm_pass": "pass"}
-        return RommHttpAdapter(settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT)
+        return RommHttpAdapter(
+            settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+        )
 
     # ------------------------------------------------------------------
     # _stream_to_file direct tests
@@ -1924,7 +2170,9 @@ def _resume_adapter():
     import logging
 
     settings = {"romm_url": "http://romm.local", "romm_user": "u", "romm_pass": "p"}
-    return RommHttpAdapter(settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT)
+    return RommHttpAdapter(
+        settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+    )
 
 
 class TestIsCloudflare:
@@ -2119,7 +2367,9 @@ class TestDownloadExternal:
             "romm_api_token": "rmm_secret",
             "romm_api_token_origin": "http://romm.local",
         }
-        return RommHttpAdapter(settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT)
+        return RommHttpAdapter(
+            settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+        )
 
     def test_omits_authorization_even_with_stored_token(self, tmp_path):
         """The host-bound RomM bearer must NEVER reach the external url_cover host."""
@@ -2309,7 +2559,9 @@ class TestDownloadConditional:
             "romm_api_token": "rmm_secret",
             "romm_api_token_origin": "http://romm.local",
         }
-        adapter = RommHttpAdapter(settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT)
+        adapter = RommHttpAdapter(
+            settings, "/fake/plugin_dir", logging.getLogger("test"), _USER_AGENT, log_debug=lambda _msg: None
+        )
         dest = str(tmp_path / "c.png")
         resp = _make_resp(200, {"Content-Length": "1"}, b"x")
         with patch("urllib.request.urlopen", return_value=resp) as mock_open:

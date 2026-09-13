@@ -149,6 +149,19 @@ schema version is **not** a `kv_config` key — it lives in `PRAGMA user_version
 **Not** a dumping ground: anything with its own lifecycle, invariants, or repeat-row potential gets its own aggregate.
 `kv_config` is for the truly small, the truly singleton, and the truly miscellaneous.
 
+### Custom header
+
+An extra HTTP header the user configures for their own RomM front door, so a server behind an authenticating reverse
+proxy (Pangolin, Cloudflare Access, Authelia, Authentik forward-auth) lets the plugin's requests through. It is
+user-intent config (`settings.json` `romm_custom_headers`, a list so the entry order survives), and its value is a
+**credential**: write-only to the frontend, absent from every log line and refusal message.
+
+Bound to the **destination**, not to a request's purpose: the plugin attaches them to every request it issues to the
+configured RomM origin, sign-in included, and to no other request it issues. Attachment is the claim — a redirect the
+server answers with is followed by urllib, which carries them onward whatever the new host is (#1889). A custom header
+never carries a name the transport sets itself — that would not add a header but replace one. _Avoid_: "auth header"
+(that is the RomM bearer), "proxy settings", "header override".
+
 ### Rom (aggregate) vs ROM (file) vs RomM (server)
 
 Three things spell similarly; distinct meanings:
