@@ -953,28 +953,61 @@ it, for the focused platform:
   and the acting pane says `Switching to <emulator>…` in the same status line the outcome lands in — a success takes
   that line back, a refusal replaces it, and a continuation cancelled by leaving the page takes it back too, because
   such a switch either committed or never ran and there is no pane left to report to either way.
-- **BIOS files** — the summary (required, or files, the console's own demand where it has one, and the three shapes that
-  make no readiness claim — `system_image: "absent"` reads "Needs at least one BIOS file" and outranks the counts and
-  the decline alike, tested before either, because the console asks for one of the images and no count can state that;
-  `"unsettled"` and `required_withheld` are declined VERDICTS over rows that answered, so neither reaches
-  `nothingEstablished`, which is the narrowest decline and decides **wording only**), then a table: File, On disk,
-  Contents, and a **Download** button on every row that is missing and in the RomM library (#164) — never on a folder
-  declaration, whatever its state, because the emulator opens that name as a directory — and a **Delete** button on
-  every row a download record of ours still holds. That covers a declared **folder** too, where no record carries the
-  row's name and the button counts the distinct files our records name underneath it (`Delete (N)`): a folder is never a
-  download, which says nothing about the files already inside one. Same authority as `Delete BIOS`, described below.
-  Below the table one row of buttons: Download required (_N_), Download all, Delete BIOS behind a `ConfirmModal`. **All
-  three are always rendered and disable when there is nothing to do**, the ruling the Remove group already had: on PS2
-  all three vanished at once, and a button that disappears is a state the reader has to work out. A disabled
-  `DialogButton` is still a focus stop, so the row stays walkable.
+- **BIOS files** — the summary, which this pane words nowhere: `src/utils/biosSummary.ts` holds all seven states and
+  answers each in two lengths, and the pane takes both — the short `status` as the section's coloured note beside
+  `BIOS FILES`, the `sentence` under it, with the library's own `(d/t files held)` ratio behind the sentence in every
+  one of the seven. The ratio was a description line of its own here, and only in the state that said nothing was
+  required; the shared sentence replaced that line and took the ratio with it, while the game page went on appending it
+  to every sentence — one platform, two surfaces, two different amounts said about it. (`system_image: "absent"`
+  outranks the counts and the decline alike, tested before either inside that module, because the console asks for one
+  of the images and no count can state that; `"unsettled"` and `required_withheld` are declined VERDICTS over rows that
+  answered, so neither reaches `nothingEstablished` — which is now the narrowest decline and decides one extra LINE
+  only, the by-hand route.) Then a table: File, On disk, Contents, and a **Download** button on every row that is
+  missing and in the RomM library (#164) — never on a folder declaration, whatever its state, because the emulator opens
+  that name as a directory — and a **Delete** button on every row a download record of ours still holds. That covers a
+  declared **folder** too, where no record carries the row's name and the button counts the distinct files our records
+  name underneath it (`Delete (N)`): a folder is never a download, which says nothing about the files already inside
+  one. Same authority as `Delete BIOS`, described below. Below the table one row of buttons: Download required (_N_),
+  Download all, Delete BIOS behind a `ConfirmModal`. **All three are always rendered and disable when there is nothing
+  to do**, the ruling the Remove group already had: on PS2 all three vanished at once, and a button that disappears is a
+  state the reader has to work out. A disabled `DialogButton` is still a focus stop, so the row stays walkable.
 
-  **What the two Download buttons and the per-row one read is the fetchable set and nothing else** — one filter, in this
-  file, over `on_server && !downloaded && declared_kind !== "directory"`. Readiness is not an input to it, in any of its
-  shapes: what the resolver could establish is the EMULATOR's demand and what is fetchable is what the RomM library
-  holds, and neither answers the other. Gating on the verdict is what took the buttons off PS2, GameCube and PSP when a
-  BIOS answer was first scoped to the emulator that launches — those three launch standalone emulators the resolver
-  holds no card for, so the verdict declines over a library that still holds their files, and the pane then offered
-  nothing to press on exactly the platforms that need one.
+  **Every sentence names the emulator**, off the firmware payload's own `active_core_label` — the label half of the pick
+  those very counts were filtered by, never the core read beside it on the page. An empty `required_count` is worded
+  "`<emulator>` marks none of its BIOS files as required" and `absent` is "`<emulator>` cannot start this system without
+  a BIOS image", because both are statements about one emulator's declaration while the console's own demand is the
+  separate axis beside them — `not_demanded` for a console nothing is recorded about as readily as for one shown to
+  start with nothing — so a subjectless sentence stated the count's conclusion as though the console had been asked, and
+  the older `absent` wording additionally said no BIOS file was in the folder where what was read is that none of the
+  DECLARED images was. Where the pick has no label the sentences name the role instead ("The launching emulator …"), and
+  the short `status` beside `BIOS FILES` stays subjectless because it is a heading, with the sentence under it where a
+  name fits. "Emulator" and never "core": what a platform launches with can be a STANDALONE emulator, which is not a
+  core, and the whole answer is keyed on the emulator's identity for that reason.
+
+  **The game page's BIOS tab reads the same module** and shows the `sentence` alone, with the same ratio appended in the
+  same words — a third set again, which is why it rides along on both rather than being folded in. Neither surface
+  prints it where the library holds nothing for the platform: `(0/0 files held)` counts a set that does not exist. What
+  stops a surface writing one of these sentences back into itself is `src/utils/biosSummary.test.ts`, which reads both
+  components as SOURCE and fails on any phrase the module builds its answers from. The **Platforms list's row tooltip**
+  (`PlatformsTab.tsx`'s `biosTooltip`) still words these states itself: it has three answers the module has no input for
+  — a row whose read has not arrived, one whose re-read failed, and one with no payload at all — so it is the one
+  surface not yet folded in.
+
+  **What the two Download buttons and the per-row one are built off is the fetchable set, and none of the three reads
+  the verdict** — one predicate, `isFetchable` in `src/utils/biosFetchable.ts`, over
+  `on_server && !downloaded && declared_kind !== "directory"`, and neither `bios_level` nor `required_withheld` nor
+  `system_image` is read anywhere among them. The predicate lives outside this file because the game page's BIOS tab
+  asks it too — there it is one of the answers that earn a row a line at all, since a file no page can fetch, that the
+  launch does not require and that is not there, is nothing that page can act on. What each surface DOES with the answer
+  stays its own: the game page's rule for keeping a row is four further answers wide and belongs to that page, and this
+  one has no such rule. Two further inputs sit beside that filter and are of the same two kinds rather than readiness
+  gates: `Download required` counts `required_by_active`, the launching emulator's own declaration, and `Download all`
+  stops at the library's own finished ratio. Readiness is not an input to any of them, in any of its shapes: what the
+  resolver could establish is the EMULATOR's demand and what is fetchable is what the RomM library holds, and neither
+  answers the other. Gating on the verdict is what took the buttons off PS2, GameCube and PSP when a BIOS answer was
+  first scoped to the emulator that launches — those three launch standalone emulators the resolver holds no card for,
+  so the verdict declines over a library that still holds their files, and the pane then offered nothing to press on
+  exactly the platforms that need one.
 
   **A running download is said by the button that started it.** The pressed button — bulk or per-row — becomes a
   spinner, every other download button on the pane disables, and when it finishes the rows re-read. There is no
@@ -1053,9 +1086,34 @@ it, for the focused platform:
   `biosFileNote`'s caveat wording ("its location could not be read", "a folder is here, where the emulator opens a
   file") appears wherever a destination cannot be read, which no corpus predicts.
 
-  The file name is printed once. The description beside it is **not RomM's** — `_server_files` builds no description at
+  **A declared FILE's note also carries what became of its bytes** — the row's `checked`, the resolver's own word,
+  carried from the same entry `declaration` is. Three of its eight values are three different things behind one withheld
+  verdict and the surfaces worded all of them "could not be checked": `unrecognised` is a file the emulator READ and
+  does not recognise (DuckStation boots such an image and calls it an unknown BIOS), so that sentence was untrue of it;
+  `unread` is bytes that did not come back, which the sentence fitted; and `refused` arrives with the verdict already
+  `false` — the emulator will not open a file of that size at all — so what it needs is the REASON beside a mark that is
+  already red, not a withheld wording. On a stock RetroDECK all three come from DuckStation's standalone route alone,
+  and `refused` needs a per-region BIOS key naming a file, which RetroDECK leaves unset. Mark 1 stays the verdict and
+  says only that nothing was settled either way; the cause is the note's.
+
+  The file name is printed once. The description under it is **not RomM's** — `_server_files` builds no description at
   all and `_wanted_fields` overwrites what came in, so what arrives is the core's own `firmwareN_desc`, or the file name
-  itself for a row no placement covers. Both spell the name into the words, and across the 292 `.info` files a stock
+  itself for a row no placement covers.
+
+  **Only a `read` declaration's prose is shown at all**, which `biosFileDescription` decides first and both surfaces
+  therefore inherit. The row carries the resolver's own word for how the emulator that supplied the description stated
+  what it wants (`declaration`, alongside `declared_kind`), and the two words that can reach a row are two kinds of
+  writing under one field: a libretro `.info`'s is a packager's LABEL for the file, which says what the row's own name
+  does not — `(PS1 JP BIOS)` on `scph5500.bin`, a region the name never states — while a `packaged` card's is atlas
+  explaining the requirement in whole sentences — "a PlayStation BIOS image — the console runs it before any disc, and
+  DuckStation starts nothing without one — found by the search, not named by any setting". That is an essay on a line
+  sized for a label: it broke off mid-sentence in the platform detail's clipped line and filled the row on the game
+  page. The register is read off the declaration and never inferred from the row, because an identity ending in
+  `_libretro.so` is the resolver's spelling to change and because a row several emulators declare carries the prose of
+  exactly one of them — the first, which is also the one whose `declaration` the row states. A row that states none
+  shows none either; its description is the file name, which the rules below take out anyway.
+
+  Those rules apply to what is left. Both spell the name into the words, and across the 292 `.info` files a stock
   RetroDECK ships (695 declared entries) they do it in three shapes: the description IS the name (35%), the name then
   prose (47%), or the name with its directory then prose (17%). The rule is to drop a leading token that names this file
   — as itself or at the end of a path — and keep the rest verbatim, with a first half that strips the name where the
@@ -1063,21 +1121,39 @@ it, for the focused platform:
   (`"7800 BIOS (U).rom (7800 BIOS)"`). Surrounding quotes are stripped before that comparison, which is what reaches the
   corpus's one folder declaration (`"'pcsx2/bios' folder"`, on a row whose name line already shows that path). Together
   they fire on 690 of the 695; of the five printed whole, three name a folder the file sits in and two are upstream
-  misspellings of the file.
+  misspellings of the file. The rule is `biosFileDescription` in `src/utils/biosFileNote.ts` and **both** surfaces apply
+  it, because a rule applied on one is a row reading two ways: the game page's BIOS tab used to head its rows with the
+  raw description, which put the packager's prose where the file's identity belongs — and heading such a row with the
+  declared file instead prints the name a second time under it on every shape that opens with the name, unless this rule
+  takes it back out. There the row's head is the declared path whole rather than a prefix and a name.
 
-  **The description is on its own line under the row**, muted and clipped to one line, not beside the name: at the
-  Deck's scale the `File` column is ~150 px and a fifty-character parenthesis was clipped mid-word on every row that had
-  one. The **declared folder** goes the other way, onto the name line as a muted prefix (`dc/` **`dc_boot.bin`**), where
-  it belongs to the file's identity — `declared_path` carries it, because `file_name` is a basename and `local_path` is
-  joined under a root the frontend does not know. 207 of the 695 declarations name a subdirectory and their descriptions
-  spell it in only 115, so the description was never a substitute. A row can therefore carry two lines under it — the
-  description first, then `biosFileNote`'s note — and neither is in a cell any more. Contents is answered for a folder
-  declaration only: the count of images it holds (the resolver's verbatim strings are listed full-width under the row,
-  `pre-wrap`, because the padding in them is what makes a line matchable against the emulator's own picker), or that it
-  holds none, or that nothing could establish its contents. A file row reads an em dash, and that em dash means the
-  question was never asked — the machine-wide reading is deliberately unverified, #1803 is what will ask it, and until
-  then the dash must not come to mean "asked, and nothing found". The section appears whenever the firmware read speaks
-  for the platform, synced or not — there is nothing to say about one it does not cover.
+  **Where the result GOES is each surface's own, and the two differ because their name lines do.** On the game page's
+  BIOS tab the label follows the name on the SAME line, in the packager's own punctuation — `scph5500.bin (PS1 JP BIOS)`
+  — which is the form it was written in, with our declared path in place of the bare basename. Three parts read left to
+  right there: the name, then what the file IS, then `biosFileNote`'s note behind its em dash, which is how it STANDS.
+  The two marks do the separating themselves — parentheses for an identity, a dash for a state — so the pair does not
+  read as a chain of equals. It is a span of its own inside the name span, muted like the per-core lines rather than
+  coloured like the name (a sibling flex item would take the row's 8px gap where the packager wrote a space), and the
+  block under the row is then what the read found and who wants the file, with nothing in it that is about the file's
+  identity. Under the row is where the label used to be, and against a list of five emulator lines it read as a sixth
+  entry.
+
+  On the **platform detail** it stays a muted line under the row, clipped to one line (`nowrap` + ellipsis). That is a
+  column width and not a difference of opinion: that name sits in a ~202px table cell that clips, and it has already
+  given up its folder prefix to the same shortage, so a label hung off it would take the NAME off the screen — the one
+  thing a reader placing a file by hand needs. The reason is stated at both call sites, because "unify the two surfaces"
+  is the obvious-looking change that breaks it. The **declared folder** goes the other way on both, onto the name line
+  as a muted prefix (`dc/` **`dc_boot.bin`**), where it belongs to the file's identity — `declared_path` carries it,
+  because `file_name` is a basename and `local_path` is joined under a root the frontend does not know. 207 of the 695
+  declarations name a subdirectory and their descriptions spell it in only 115, so the description was never a
+  substitute. On the platform detail a row can therefore carry two lines under it — the description first, then
+  `biosFileNote`'s note — and neither is in a cell any more. Contents is answered for a folder declaration only: the
+  count of images it holds (the resolver's verbatim strings are listed full-width under the row, `pre-wrap`, because the
+  padding in them is what makes a line matchable against the emulator's own picker), or that it holds none, or that
+  nothing could establish its contents. A file row reads an em dash, and that em dash means the question was never asked
+  — the machine-wide reading is deliberately unverified, #1803 is what will ask it, and until then the dash must not
+  come to mean "asked, and nothing found". The section appears whenever the firmware read speaks for the platform,
+  synced or not — there is nothing to say about one it does not cover.
 - **Remove** — Remove _N_ shortcuts and Delete _N_ save files on one row, the actions the Data Management platform modal
   used to offer, without Delete BIOS (it is one group up). Red, last, each behind a confirmation, and with **no heading
   over them**: both buttons name what they remove and are drawn in red, so a title says nothing they do not. **Both

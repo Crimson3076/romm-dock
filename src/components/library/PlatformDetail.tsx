@@ -18,7 +18,10 @@ import { ConfirmModal, DialogButton, Focusable, showContextMenu, showModal, Spin
 import { FaMicrochip } from "react-icons/fa";
 import type { FirmwarePlatformExt, SystemCoreInfo, SystemImage } from "../../types";
 import { biosColorForLevel } from "../../utils/biosColor";
-import { biosFileNote } from "../../utils/biosFileNote";
+import { isFetchable } from "../../utils/biosFetchable";
+import { biosFileDescription, biosFileNote } from "../../utils/biosFileNote";
+import { biosHeldRatio } from "../../utils/biosHeldRatio";
+import { biosSummary } from "../../utils/biosSummary";
 import { buildEmulatorMenu } from "../../utils/emulatorMenu";
 import { getEventTarget } from "../../utils/events";
 import { pluralize } from "../../utils/pluralize";
@@ -81,7 +84,15 @@ const MARK_REQUIRED_MISSING = "required, missing";
 const MARK_REQUIRED_HERE = "required, here";
 const MARK_HERE = "here, not required";
 const MARK_MISSING = "missing, not required";
-const MARK_UNCHECKED = "could not be checked";
+// The `?` glyph's word, and it has to be true of every way a verdict is
+// withheld — which since the `checked` vocabulary arrived includes a file the
+// emulator READ and does not recognise. "could not be checked" was untrue of
+// exactly that one, and it is the reachable case: DuckStation reads such an
+// image, boots it, and calls it an unknown BIOS. So the mark says what the
+// verdict is — nothing settled, in either direction — and WHY is the row's own
+// note beside the name (`biosFileNote`), which is the one place a cause is
+// worded.
+const MARK_UNCHECKED = "nothing could establish this either way";
 const MARK_HERE_NEED_UNKNOWN = "here; nothing could say whether this is wanted";
 const MARK_MISSING_NEED_UNKNOWN = "missing; nothing could say whether this is wanted";
 const MARK_STARTS_THE_SYSTEM = "this starts the system";
@@ -115,117 +126,6 @@ const CORE_BUTTON = {
 /** One row of the firmware overview's per-platform file list. Named off the
  *  payload rather than restated, so a field added to it reaches here. */
 type FirmwareRow = FirmwarePlatformExt["files"][number];
-
-/**
- * Build the per-platform summary label/description from the backend BIOS
- * aggregates. The ok/partial/missing DECISION is the backend's `bios_level`
- * (`compute_bios_level`) — `requiredReady` is `bios_level === "ok"`, so the
- * required-files threshold is no longer re-compared here. `requiredCount` still
- * selects the phrasing axis (required vs. plain file counts), and the
- * optional-missing breakdown stays a local computation passed in by the caller.
- *
- * With nothing required, the library ratio is inventory and is worded as such —
- * the same framing the BIOS tab uses. "0 / 20 files … 20 missing" over twenty
- * files no installed core asks for reads as work outstanding on a system that
- * needs nothing.
- */
-function getBiosSummary(
-  requiredCount: number,
-  requiredDone: number,
-  requiredReady: boolean,
-  optionalMissing: number,
-  done: number,
-  total: number,
-  systemImage: SystemImage,
-) {
-  // The console's own demand comes first, because no count can be relied on to
-  // state it: it asks for ONE of these images, and a libretro declaration marks
-  // each file required or optional and can say nothing else. Which of the two an
-  // author reaches for is their choice, and over one PlayStation the deployed
-  // catalogue goes both ways — SwanStation marks all five of its images
-  // optional, so the required-file phrasing below reads "Nothing required" over
-  // a system that will not boot. Stated as "at least one" and never as a ratio —
-  // the list is many files and the requirement is one. It points at no set
-  // either: the table below holds rows only the launching core's declaration can
-  // answer the demand with, and rows it cannot.
-  if (systemImage === "absent") {
-    return {
-      summaryLabel: "Needs at least one BIOS file",
-      summaryDescription: "This system needs at least one BIOS file and none is in place",
-    };
-  }
-  if (requiredCount > 0 && requiredReady) {
-    return {
-      summaryLabel: `${requiredDone} / ${requiredCount} required`,
-      summaryDescription:
-        optionalMissing > 0 ? `All required ready (${optionalMissing} optional missing)` : "All required ready",
-    };
-  }
-  if (requiredCount > 0) {
-    return {
-      summaryLabel: `${requiredDone} / ${requiredCount} required`,
-      summaryDescription: `${requiredCount - requiredDone} required missing`,
-    };
-  }
-  return {
-    summaryLabel: "Nothing required",
-    summaryDescription: total > 0 ? `${done} / ${total} files held` : "No BIOS files in your library",
-  };
-}
-
-/**
- * The summary for a platform making no readiness claim. Three shapes reach it
- * and they are different sentences.
- *
- * `requiredWithheld` above zero is a platform whose emulators DID answer and one
- * of whose required rows nothing could judge — a declared folder the resolver
- * could not read, say. An unsettled `system_image` is the same kind of gap one
- * axis over: the console's own demand is known and whether it is met is not.
- * Neither is the last shape, which is no installed emulator's answer being
- * established for the platform at all.
- *
- * That last one states no count. The rows nothing could answer for are counted
- * once, under the table where the line that carries them also says where to
- * report the gap — and on this platform they are every row, so a count up here
- * as well is the same sentence twice on one screen.
- *
- * **The first two can hold together, and the withheld row is then the truer
- * sentence.** They co-occur on a console that needs an image whose required
- * folder row the read could not judge — the LRPS2 shape. They are not two gaps
- * over two different file sets there: a row that is `required_by_active` always
- * carries the active core, so it is always one of the rows the console's
- * disjunction is read over (`classify_system_image`). It is always one of the
- * unjudged rows that verdict is read over rather than a finding beside it — the
- * decline needs at least one such row, and this is one — and need not be the only
- * one, since another image the core declares can be unjudged too. It is the only
- * half of the pair that can name a file. Saying both would point twice at one
- * file list, once named and once vague; saying only the console's would drop the
- * pointer into that list, where the row shows the caveat explaining itself. So
- * the withheld count is checked first. The reverse — a console demand unsettled
- * with no withheld required row — is a different platform and keeps its own
- * sentence.
- */
-function getUnknownSummary(requiredWithheld: number, systemImage: SystemImage) {
-  if (requiredWithheld > 0) {
-    return {
-      summaryLabel: "BIOS readiness unknown",
-      summaryDescription:
-        requiredWithheld === 1
-          ? "A required file could not be judged — see the file list"
-          : `${requiredWithheld} required files could not be judged — see the file list`,
-    };
-  }
-  if (systemImage === "unsettled") {
-    return {
-      summaryLabel: "BIOS readiness unknown",
-      summaryDescription: "Whether the BIOS image this system needs is in place could not be established",
-    };
-  }
-  return {
-    summaryLabel: "BIOS requirement unknown",
-    summaryDescription: "Nothing installed could answer for this system",
-  };
-}
 
 /**
  * The first mark in one row's `On disk` cell, as a glyph and a colour.
@@ -417,73 +317,6 @@ const BiosRowLines: FC<{ lines: string[] }> = ({ lines }) =>
   );
 
 /**
- * The description beside a file's name, with the name itself taken back out.
- *
- * **It is not RomM's description** — `_server_files` builds no `description`
- * key at all, and `_wanted_fields` overwrites whatever came in.
- * What arrives is the core's own `firmwareN_desc` out of its `.info` file, or,
- * for a row no placement covers, the file name itself (`build_file_entry`'s
- * `else file_name`). Both spell the name into the words.
- *
- * Measured over the 292 `.info` files a stock RetroDECK ships — 695 declared
- * firmware entries — the description's relation to the row's own `file_name`
- * (which is `os.path.basename` of the declared path) falls into six shapes:
- *
- * | 245 | 35% | it IS the name — `"macventure.dat"`                          |
- * | 328 | 47% | the name, a space, then prose — `"scph5500.bin (PS1 JP BIOS)"` |
- * | 115 | 17% | the same, but the name carries its directory — `"dc/dc_boot.bin (Dreamcast BIOS)"` |
- * |   5 |  1% | the first token names something else — a folder the file sits in (`"'Databases' folder"`), or a misspelling of it (two upstream typos) |
- * |   1 |  0% | it names the file, but the name has a space in it — `"7800 BIOS (U).rom (7800 BIOS)"` |
- * |   1 |  0% | it names the file in quotes — `"'pcsx2/bios' folder"`, the corpus's only folder declaration |
- *
- * So the rule has two halves: strip the name where the description opens with
- * it verbatim (which is the only way a name containing spaces can be seen), and
- * otherwise strip a first token that names this file — as itself or at the end
- * of a path, with surrounding quotes ignored.
- * Together they fire on 690 of the 695 and on the no-placement case; the
- * remaining five say something real and are printed whole. The name half is
- * anchored at the start rather than searched for anywhere, because a rule that
- * scanned the whole string would cut into prose that merely quotes the name.
- * The prose is kept verbatim, parentheses and all, because it is the packager's
- * own words and re-punctuating it is a second way to be wrong.
- *
- * The counts were taken over the deployed flatpak with
- * `grep -o … | wc -l`-style matching per entry rather than per line: the shapes
- * are counted by classifying every `firmwareN_path` / `firmwareN_desc` pair,
- * which is reproducible by re-running that classification over the same tree.
- */
-function fileDescription(file: FirmwareRow): string | null {
-  // A declared FOLDER shows none. Its meaning is its verdict and the images
-  // listed under it — LRPS2 never reads a file name, so what the row says is
-  // "this folder holds something the core will boot", which `✓` and the image
-  // lines already say. The corpus's one folder is described as
-  // `'pcsx2/bios' folder`, which after the name comes out leaves the bare word
-  // "folder": a restatement of `declared_kind`. This is a rule about what a
-  // folder ROW shows, not a prediction about what descriptions exist.
-  if (file.declared_kind === "directory") return null;
-  const description = file.description.trim();
-  if (!description) return null;
-  // A name with a space in it is not one token, so the token rule cannot see it.
-  // Exactly one of the 695 is spelled that way ("7800 BIOS (U).rom"), and it
-  // printed the name twice until this line. Anchored at the start rather than
-  // searched for anywhere, so prose that merely quotes the name is left alone.
-  if (description.startsWith(`${file.file_name} `)) {
-    return description.slice(file.file_name.length).trim() || null;
-  }
-  const [head, ...tail] = description.split(" ");
-  // Quotes are stripped before the comparison, because the corpus's one folder
-  // declaration is described as `'pcsx2/bios' folder` — a token that names the
-  // declaration exactly, which the row's own name line is already showing, and
-  // which nothing else would have removed. Comparing the whole declared path as
-  // well would change no outcome: `file_name` is its basename, so a token
-  // equalling the path always equals the basename after the split too.
-  const token = (head ?? "").replace(/^['"]|['"]$/g, "");
-  if ((token.split("/").pop() ?? "") !== file.file_name) return description;
-  const rest = tail.join(" ").trim();
-  return rest || null;
-}
-
-/**
  * The folder the emulator declared this file in, with its trailing slash, or
  * `null` for a file that belongs at the root of the BIOS directory.
  *
@@ -563,7 +396,7 @@ const BiosFileRow: FC<{ file: FirmwareRow; systemImage: SystemImage; action: Rea
   const { note, lines, fromLibrary } = biosFileNote(file);
   const mark = diskMark(file, systemImage);
   const library = libraryMark(file);
-  const description = fileDescription(file);
+  const description = biosFileDescription(file);
   const folder = declaredFolder(file);
   // The library note is the one sentence the cell's second mark now carries, and
   // on a platform whose library holds little it was the same words under nearly
@@ -619,6 +452,14 @@ const BiosFileRow: FC<{ file: FirmwareRow; systemImage: SystemImage; action: Rea
         { content: action, clip: false },
       ]}
     >
+      {/* A muted line UNDER the row, where the game page's BIOS tab puts the
+          same label beside the file's name. That is a column width rather than
+          a difference of opinion, and it is why the two are not "unified": this
+          name lives in a ~202px table cell that clips, and it already gives up
+          its folder prefix to the same shortage — hanging the label off it would
+          take the NAME off the screen, which is the one thing a reader placing a
+          file by hand needs. Under the row there is a whole width for it, on one
+          clipped line, and no list of emulators below to be mistaken for. */}
       {description && (
         <div
           style={{
@@ -888,49 +729,49 @@ const BiosSection: FC<{ row: PlatformRow; state: PlatformsPageState; firmware: F
   firmware,
 }) => {
   const files = firmware.files;
-  // Display counts come from the backend aggregates (computed from the same
-  // core-aware files); fall back to local derivation only if a payload omits
-  // them. `total` is the LIBRARY's file count, not the row count — the rows
-  // include files no library holds, and a progress ratio over those would
-  // report work the user cannot do. The optional-missing breakdown stays a
-  // local file-level axis — the level doesn't model it.
+  // The library's own progress, read nowhere but `allDone`, which is one of
+  // `showAll`'s conditions. Counted over what the LIBRARY holds, not over the
+  // rows — the rows include files no library holds, and offering to fetch those
+  // is work the user cannot do. What the pane STATES is a separate reader of the
+  // same pair (`utils/biosHeldRatio`), and the optional-missing breakdown below
+  // is a local file-level axis the level doesn't model.
   const total = firmware.server_count ?? files.filter((f) => f.on_server).length;
   const done = firmware.local_count ?? files.filter((f) => f.on_server && f.downloaded).length;
   const allDone = done === total;
-  const requiredFiles = files.filter((f) => f.required_by_active);
-  const requiredCount = firmware.required_count ?? requiredFiles.length;
-  const requiredDone = firmware.required_downloaded ?? requiredFiles.filter((f) => f.downloaded).length;
-  const optionalMissing = files.filter((f) => f.wanted === "optional" && !f.required_by_active && !f.downloaded).length;
-  // The ok/partial/missing DECISION is the backend's bios_level — "ready" means
-  // all required files present. Fall back to the local count comparison only
-  // when the level is absent from the payload.
-  const requiredReady = firmware.bios_level == null ? requiredDone === requiredCount : firmware.bios_level === "ok";
 
   const requiredWithheld = firmware.required_withheld ?? 0;
   const systemImage = firmware.system_image ?? "not_demanded";
-  // The console's own established absence is tested BEFORE the decline, which is
-  // the order the BIOS tab's headline and the platform list's tooltip already
-  // read in. Today all three agree by way of the backend, where `absent` lands
-  // on `missing` and so never arrives with an `unknown` level — but nothing
-  // joins the three surfaces, and a decline added ahead of that test in
-  // `compute_bios_level` would leave this pane alone saying "Nothing installed
-  // could answer for this system" while the other two said the console needs at
-  // least one BIOS file.
-  const declined = firmware.bios_level === "unknown" && systemImage !== "absent";
+  // **The pane words none of the seven states itself** — `utils/biosSummary.ts`
+  // holds them, and this surface takes both halves of one answer: the short
+  // `status` as the section's coloured note, where the title beside it says what
+  // is being counted, and the `sentence` under it. The console's own demand
+  // outranking the level's decline is decided in there too, which is what stops
+  // this pane from reading that order differently from the game page's.
+  const { status: summaryLabel, sentence: summaryDescription } = biosSummary(
+    firmware,
+    files,
+    firmware.bios_level ?? null,
+  );
+  // The library's own ratio rides along behind the sentence, in every one of the
+  // seven states and in the words the game page uses — `utils/biosHeldRatio`
+  // writes it for both, because the two surfaces say one thing about a platform
+  // and a fact one of them carries is a fact the other is missing.
+  const heldRatio = biosHeldRatio(firmware);
   // The narrowest of the declines: not one row on the platform was answered, so
   // the pane has nothing to point the reader at and says where a file can be put
   // instead. A withheld required row and an unsettled console demand are both
   // declined VERDICTS over rows that DID answer, and neither reaches this. It
-  // decides wording only — what the pane offers to fetch is a separate question
-  // with a separate input, below.
-  const nothingEstablished = declined && requiredWithheld === 0 && systemImage !== "unsettled";
-  const { summaryLabel, summaryDescription } = declined
-    ? getUnknownSummary(requiredWithheld, systemImage)
-    : getBiosSummary(requiredCount, requiredDone, requiredReady, optionalMissing, done, total, systemImage);
+  // decides one extra LINE only — what the pane offers to fetch is a separate
+  // question with a separate input, below.
+  const nothingEstablished =
+    firmware.bios_level === "unknown" &&
+    systemImage !== "absent" &&
+    requiredWithheld === 0 &&
+    systemImage !== "unsettled";
 
-  // The download affordances key off what is missing AND fetchable, and off
-  // nothing else — not on readiness, and not on whether a verdict could be
-  // reached. They are two independent questions: what the RESOLVER could
+  // The download affordances key off what is missing AND fetchable, and read
+  // the VERDICT nowhere — not `bios_level`, not `required_withheld`, not
+  // `system_image`. They are two independent questions: what the RESOLVER could
   // establish is the emulator's demand, what is FETCHABLE is what the RomM
   // library holds, and neither answers the other. A required file the library
   // does not hold leaves the platform not ready and still gives the user
@@ -938,16 +779,20 @@ const BiosSection: FC<{ row: PlatformRow; state: PlatformsPageState; firmware: F
   // library behind it, and fetching from it is the one action that moves the
   // platform along at all.
   //
+  // The two further inputs below are of those same two kinds, and neither is a
+  // readiness gate either: `required_by_active` is the launching emulator's own
+  // declaration, and `allDone` is the library's own finished ratio.
+  //
   // Reading readiness here is what took the buttons off PS2, GameCube and PSP
   // the moment a BIOS answer was scoped to the emulator that actually launches:
-  // those launch standalone emulators the resolver holds no card for, so their
-  // verdict is withheld — which says nothing whatever about the files their
+  // those launch standalone emulators the resolver holds no card for, so the
+  // verdict declines — which says nothing whatever about the files their
   // library offers.
   //
-  // A folder declaration is out whatever its state: the emulator lists that
-  // name, so there is no file to fetch into it — what would satisfy it is a
-  // BIOS image inside the folder, which is a different row.
-  const fetchableMissing = files.filter((f) => f.on_server && !f.downloaded && f.declared_kind !== "directory");
+  // Which rows are fetchable at all — the library's side of it, including why a
+  // declared folder is out — is `isFetchable`, shared with the game page's BIOS
+  // tab so the two surfaces cannot disagree about what can be downloaded.
+  const fetchableMissing = files.filter(isFetchable);
   const requiredMissing = fetchableMissing.filter((f) => f.required_by_active).length;
   const hasOptionalMissing = fetchableMissing.some((f) => !f.required_by_active);
   const showRequired = requiredMissing > 0 && !state.serverOffline;
@@ -977,7 +822,7 @@ const BiosSection: FC<{ row: PlatformRow; state: PlatformsPageState; firmware: F
           pass, and its width was what wrapped that line three times. Two places
           state a platform's BIOS state and they now agree by construction. */}
       <SectionTitle title="BIOS files" note={summaryLabel} noteColor={biosColorForLevel(firmware.bios_level ?? null)} />
-      <Muted>{summaryDescription}</Muted>
+      <Muted>{`${summaryDescription}${heldRatio}`}</Muted>
       {/* The route the summary above cannot name: nothing here could say which
           files this system wants, so the reader has to be told that placing one
           by hand still works. The line used to open "BIOS management is not

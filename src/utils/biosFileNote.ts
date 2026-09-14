@@ -1,6 +1,6 @@
 /**
- * The note beside one BIOS file row — what the row IS, rather than a
- * download nobody has started.
+ * What one BIOS file row says about itself — its note, which rides beside the
+ * name, and its description, which goes on the line under it.
  *
  * Two surfaces render a firmware row (the game detail panel's BIOS tab and the
  * Library page's platform detail) and they used to word the same facts
@@ -8,8 +8,17 @@
  * This is the one place that decides; each surface still frames the result its
  * own way, because the BIOS tab leaves plain absence to its status dot while the
  * platform detail states it in the row's On-disk cell. What it hands over is a
- * sentence and a list of lines ({@link BiosFileWords}); where those go on the
- * page is each surface's own business, what they SAY is decided only here.
+ * sentence and a list of lines ({@link BiosFileWords}), plus the row's
+ * description ({@link biosFileDescription}); where those go on the page is each
+ * surface's own business, what they SAY is decided only here.
+ *
+ * **A row is headed by the file the emulator DECLARED on both surfaces, never
+ * by its description** — `declared_path`, folder and all, which the platform
+ * detail splits into a muted prefix and a name and the BIOS tab prints whole.
+ * The description is the packager's prose out of a core's `.info`, deliberately
+ * outside the resolver's contract, so it is not a field to render as a row's
+ * identity — and it routinely spells the name into its own words besides, which
+ * is what {@link biosFileDescription} takes back out.
  *
  * Precedence is deliberate. A file the distribution itself put there is not a
  * gap in the RomM library — it is not the library's file at all, and telling
@@ -33,8 +42,11 @@ import type { BiosFileStatus } from "../types";
  *  satisfy it, so neither has to be converted into the other's. */
 export type BiosNoteRow = Pick<
   BiosFileStatus,
-  "downloaded" | "on_server" | "supplied_by" | "satisfied" | "declared_kind" | "caveats" | "images"
+  "downloaded" | "on_server" | "supplied_by" | "satisfied" | "declared_kind" | "caveats" | "images" | "checked"
 >;
+
+/** The subset {@link biosFileDescription} reads — the same both-surfaces rule. */
+export type BiosDescriptionRow = Pick<BiosFileStatus, "file_name" | "description" | "declared_kind" | "declaration">;
 
 /**
  * Everything a row says about itself: one sentence, and the lines under it.
@@ -117,7 +129,7 @@ const PATH_INACCESSIBLE = "firmware-path-inaccessible";
  */
 function verdictNote(row: BiosNoteRow): BiosFileWords {
   const has = (code: string) => (row.caveats ?? []).includes(code);
-  if (row.declared_kind !== "directory") return fileAtItsDestination(has);
+  if (row.declared_kind !== "directory") return fileAtItsDestination(has, row.checked);
   if (row.satisfied === true) return folderHolding(row.images ?? []);
   if (row.satisfied === false) return folderUnmet(has);
   return folderWithheld(row.satisfied, has);
@@ -126,10 +138,45 @@ function verdictNote(row: BiosNoteRow): BiosFileWords {
 /** One line and nothing under it — every group but a satisfied folder's. */
 const said = (note: string): BiosFileWords => ({ note, lines: [], fromLibrary: false });
 
-/** A declared FILE: what the reading found at the place the emulator opens. */
-function fileAtItsDestination(has: (code: string) => boolean): BiosFileWords {
+/**
+ * A declared FILE: what the reading found at the place the emulator opens.
+ *
+ * The shape of the destination comes first — a folder standing where a file is
+ * opened says nothing about bytes, because there were none to read. Then what
+ * became of the bytes, which is `checked` and is three distinct things the row's
+ * verdict cannot tell apart:
+ *
+ * - **`unrecognised`** — the emulator read the file and no table it keeps knows
+ *   these bytes. It WAS checked, which is why it may not be worded as a read
+ *   that failed; and it is no failure either — DuckStation boots such an image
+ *   and says it is using an unknown BIOS — so the verdict stays withheld and the
+ *   note says what was established rather than what was not.
+ * - **`unread`** — the bytes were asked for and did not come back. This is the
+ *   one the old single sentence was right about, and it is a statement about the
+ *   PLUGIN's read rather than about the emulator's: that this process could not
+ *   read the file is no evidence the launch cannot.
+ * - **`refused`** — the emulator will not open the file at all, on its size,
+ *   before reading a byte. It arrives with the verdict already `false`, so the
+ *   row is red with or without this note; what the note adds is the reason, and
+ *   without it the row says a file that is sitting right there is missing. **It
+ *   is not reachable on an unmodified RetroDECK**: the resolver reaches that
+ *   size gate only for a file one of DuckStation's per-region BIOS keys NAMES
+ *   (`PathNTSCU` / `PathNTSCJ` / `PathPAL`), and RetroDECK sets `SearchDirectory`
+ *   alone and leaves all three empty — cited, with the upstream line numbers, on
+ *   the DuckStation card in `py_modules/_vendor/atlas/data/standalone_firmware.json`.
+ *   A user who fills one of those keys in reaches it.
+ *
+ * `verified` and `mismatch` get no note: the first is the ordinary met row and
+ * the second is an unmet one whose surfaces already say so. Every other value,
+ * and the absent field, leave the note to the library half below.
+ */
+function fileAtItsDestination(has: (code: string) => boolean, checked: BiosNoteRow["checked"]): BiosFileWords {
   if (has(PATH_OBSTRUCTED)) return said("a folder is here, where the emulator opens a file");
-  return said(has(PATH_INACCESSIBLE) ? "its location could not be read" : "");
+  if (has(PATH_INACCESSIBLE)) return said("its location could not be read");
+  if (checked === "unrecognised") return said("the emulator does not recognise this file");
+  if (checked === "unread") return said("its bytes could not be read");
+  if (checked === "refused") return said("the emulator refuses a file of this size");
+  return said("");
 }
 
 /**
@@ -154,6 +201,99 @@ function folderWithheld(satisfied: boolean | null | undefined, has: (code: strin
   if (has(IMAGE_CONTRADICTED)) return said("holds an image that could not be confirmed");
   if (READ_INCOMPLETE.some(has)) return said("its contents could not be read in full");
   return said(satisfied === null ? "its contents could not be checked" : "");
+}
+
+/**
+ * The description on the line under a file's name, with the name itself taken
+ * back out.
+ *
+ * Both surfaces head the row with the declared file, so the rule for what the
+ * description still adds has to be ONE rule — otherwise the same row prints the
+ * name twice on one surface and once on the other. Where the result GOES is each
+ * surface's own: the game page's BIOS tab sets it beside the name, the platform
+ * detail on a muted line under the row, because that name sits in a clipping
+ * table cell narrow enough that a label beside it would cut the name itself.
+ *
+ * **It is not RomM's description** — `_server_files` builds no `description`
+ * key at all, and `_wanted_fields` overwrites whatever came in.
+ * What arrives is the core's own `firmwareN_desc` out of its `.info` file, or,
+ * for a row no placement covers, the file name itself (`build_file_entry`'s
+ * `else file_name`). Both spell the name into the words.
+ *
+ * **Only a `read` declaration's prose is shown at all**, which is the first
+ * thing decided here. That prose is a packager's LABEL for the file and says
+ * what the row's own name does not — `(PS1 JP BIOS)` on `scph5500.bin`, a
+ * region the name never states. A `packaged` row's is a different
+ * kind of writing under the same field: atlas explaining the requirement in
+ * whole sentences ("a PlayStation BIOS image — the console runs it before any
+ * disc, and DuckStation starts nothing without one — found by the search, not
+ * named by any setting"), which is an essay on a line sized for a label. Neither
+ * surface has room for it: on the platform detail it broke off mid-sentence, on
+ * the game page it filled the row. So the register is read off the DECLARATION
+ * and never guessed from the row — an identity ending in `_libretro.so` is a
+ * libretro core today and is the resolver's spelling to change, and a row is
+ * declared by several emulators while this prose comes from exactly one of them
+ * ({@link FirmwareDeclarationState}). A row that states no declaration shows
+ * none either: its description is the file name (above), which the rules below
+ * take out anyway.
+ *
+ * Measured over the 292 `.info` files a stock RetroDECK ships — 695 declared
+ * firmware entries — the description's relation to the row's own `file_name`
+ * (which is `os.path.basename` of the declared path) falls into six shapes:
+ *
+ * | 245 | 35% | it IS the name — `"macventure.dat"`                          |
+ * | 328 | 47% | the name, a space, then prose — `"scph5500.bin (PS1 JP BIOS)"` |
+ * | 115 | 17% | the same, but the name carries its directory — `"dc/dc_boot.bin (Dreamcast BIOS)"` |
+ * |   5 |  1% | the first token names something else — a folder the file sits in (`"'Databases' folder"`), or a misspelling of it (two upstream typos) |
+ * |   1 |  0% | it names the file, but the name has a space in it — `"7800 BIOS (U).rom (7800 BIOS)"` |
+ * |   1 |  0% | it names the file in quotes — `"'pcsx2/bios' folder"`, the corpus's only folder declaration |
+ *
+ * So the rule has two halves: strip the name where the description opens with
+ * it verbatim (which is the only way a name containing spaces can be seen), and
+ * otherwise strip a first token that names this file — as itself or at the end
+ * of a path, with surrounding quotes ignored.
+ * Together they fire on 690 of the 695 and on the no-placement case; the
+ * remaining five say something real and are printed whole. The name half is
+ * anchored at the start rather than searched for anywhere, because a rule that
+ * scanned the whole string would cut into prose that merely quotes the name.
+ * The prose is kept verbatim, parentheses and all, because it is the packager's
+ * own words and re-punctuating it is a second way to be wrong.
+ *
+ * The counts were taken over the deployed flatpak with
+ * `grep -o … | wc -l`-style matching per entry rather than per line: the shapes
+ * are counted by classifying every `firmwareN_path` / `firmwareN_desc` pair,
+ * which is reproducible by re-running that classification over the same tree.
+ */
+export function biosFileDescription(file: BiosDescriptionRow): string | null {
+  // A declared FOLDER shows none. Its meaning is its verdict and the images
+  // listed under it — LRPS2 never reads a file name, so what the row says is
+  // "this folder holds something the core will boot", which `✓` and the image
+  // lines already say. The corpus's one folder is described as
+  // `'pcsx2/bios' folder`, which after the name comes out leaves the bare word
+  // "folder": a restatement of `declared_kind`. This is a rule about what a
+  // folder ROW shows, not a prediction about what descriptions exist.
+  if (file.declared_kind === "directory") return null;
+  if (file.declaration !== "read") return null;
+  const description = file.description.trim();
+  if (!description) return null;
+  // A name with a space in it is not one token, so the token rule cannot see it.
+  // Exactly one of the 695 is spelled that way ("7800 BIOS (U).rom"), and it
+  // printed the name twice until this line. Anchored at the start rather than
+  // searched for anywhere, so prose that merely quotes the name is left alone.
+  if (description.startsWith(`${file.file_name} `)) {
+    return description.slice(file.file_name.length).trim() || null;
+  }
+  const [head, ...tail] = description.split(" ");
+  // Quotes are stripped before the comparison, because the corpus's one folder
+  // declaration is described as `'pcsx2/bios' folder` — a token that names the
+  // declaration exactly, which the row's own name line is already showing, and
+  // which nothing else would have removed. Comparing the whole declared path as
+  // well would change no outcome: `file_name` is its basename, so a token
+  // equalling the path always equals the basename after the split too.
+  const token = (head ?? "").replace(/^['"]|['"]$/g, "");
+  if ((token.split("/").pop() ?? "") !== file.file_name) return description;
+  const rest = tail.join(" ").trim();
+  return rest || null;
 }
 
 /**

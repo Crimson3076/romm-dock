@@ -26,28 +26,63 @@ When you open a game whose platform has BIOS files — on your RomM server, or a
 — the game detail panel's **BIOS** tab shows the readiness line. Its dot color reflects the same
 unknown/ok/partial/missing verdict used everywhere in the plugin:
 
-- **Green** — nothing required is missing: "All required ready (2/2)", or "Nothing required (3/5 files held)" when the
-  core you launch with requires none of the system's files
-- **Orange** — some required files present: "1/2 required files ready"
-- **Red** — no required files present yet, or "Needs at least one BIOS file" where the console itself will not start
-  without one of them (see [When the console needs a BIOS image](#when-the-console-needs-a-bios-image))
-- **Grey** — no readiness claim, in one of two wordings: "BIOS requirement unknown", where the plugin could not work the
-  requirement out at all (see [When the requirement is unknown](#when-the-requirement-is-unknown)), or "BIOS readiness
-  unknown", where it knows the requirement and could not settle whether you have it (see
+- **Green** — nothing required is missing: "All 2 files mGBA requires are in place", or "mGBA marks none of its BIOS
+  files as required (3/5 files held)" when the emulator you launch with lists no file it needs. An emulator that asks
+  for exactly one file — DuckStation, on a stock RetroDECK — reads "The one file DuckStation requires is in place"
+- **Orange** — some required files present: "1 of 2 files mGBA requires are in place"
+- **Red** — no required files present yet ("The one file DuckStation requires is not in place" where there is only the
+  one), or "mGBA cannot start this system without a BIOS image" where the console itself will not start without one of
+  them (see [When the console needs a BIOS image](#when-the-console-needs-a-bios-image))
+- **Grey** — no readiness claim, in one of two wordings: "Nothing could be established about what mGBA needs", where the
+  plugin could not work the requirement out at all (see
+  [When the requirement is unknown](#when-the-requirement-is-unknown)), or "One file mGBA requires could not be
+  checked", where it knows the requirement and could not settle whether you have it (see
   [When readiness cannot be stated](#when-readiness-cannot-be-stated))
 
+Every one of those sentences is written in one place and both surfaces read it, so the game page and the Library page's
+platform pane can never word the same state differently. The pane has a heading to hang a short form on, so it shows
+that short form beside **BIOS FILES** — "Nothing required", "Readiness unknown", "1 / 2 required" — with the sentence
+under it. Both pages put the same library ratio behind the sentence, whichever state it is in, and neither prints one
+where your library holds nothing for the platform.
+
 The sentence says what the dot says, and both are about the **required** files. Where the system has none, the dot is
-green because nothing required is missing — so the line leads with "Nothing required" and the ratio beside it is
-inventory, counting the files your RomM library holds and how many of them you have. It is not a readiness score, and
-those files are not "optional" either: a core you are not launching with may well require one.
+green because nothing required is missing — so the line says that the emulator you launch with requires none of the
+files it names, and the ratio beside it is inventory, counting the files your RomM library holds and how many of them
+you have. It is not a readiness score, and those files are not "optional" either: an emulator you are not launching with
+may well require one.
+
+The line says whose requirement it is on purpose, and it is a statement about the **emulator**, not about the console.
+It names that emulator, and the name is the one the rest of the line was worked out for — the same pick the counts
+beside it were filtered by, so the sentence and the numbers can never be about two different emulators. Where the plugin
+could not settle on one, the line says "The launching emulator marks none of its BIOS files as required" instead.
+Whether the console itself starts without a BIOS image is a separate question with a line of its own (see
+[When the console needs a BIOS image](#when-the-console-needs-a-bios-image)), and where nothing is recorded about the
+console the plugin says nothing about it either — so a line reading only "nothing required" would have claimed an
+all-clear nobody gave.
 
 Both numbers on the line count the same thing. Where the system has required files the ratio is of those; where it has
-none, the ratio is of the files your RomM library holds — never one of each. Files your emulator asks for that are not
-in your library are listed, but they are not part of that ratio: it tracks what you can still download, and those you
-cannot.
+none, the ratio is of the files your RomM library holds — never one of each. A file your emulator asks for that your
+library does not hold is never part of that ratio: it tracks what you can still download, and that one you cannot. It
+still gets its own row wherever it matters — a file this game requires, or one the console itself needs, is listed
+whether your library holds it or not.
 
 The readiness line is computed against the **active core** for that game — so switching to a core that needs no BIOS (or
 that treats a file as optional) clears the warning, while switching to a core that requires a missing file surfaces it.
+
+Under the line the tab lists, one per row, the files an installed emulator asks for that this game gives you something
+to do or to know about. The rest are counted on lines of their own below them rather than listed — one line for the
+files an installed emulator asks for that this game does not need and no page can fetch, one for the files nothing
+installed asks for, one for the files nothing installed could answer about. A row is headed by the file the emulator
+declares, with its folder where it asks for one (`dc/dc_boot.bin`) — that is where the file has to go, and it is the one
+thing you need when placing one by hand. Whatever the emulator's packager wrote about the file follows the name on the
+same line, in the packager's own wording and punctuation — `scph5500.bin (PS1 JP BIOS)` — and only where it says
+something the name does not: those descriptions usually repeat the file name, and many are nothing else. Where the file
+also has something to say about its state, that comes last, behind a dash:
+`scph5500.bin (PS1 JP BIOS) — missing, not in
+your RomM library`. It is the **emulator's own** wording — a RetroArch
+core's description file — and it is shown for no other source. Where the plugin's own card stands in for an emulator
+that ships no description of its own, that card explains the requirement in full sentences, which is a paragraph on a
+line meant for a few words; the row shows the file and its state instead.
 
 Beside the Play button there is also a short **BIOS** badge, which is a shortcut into this tab. Two things raise it, and
 nothing else does. The first: a file the active core **requires** is shown to be absent from your BIOS folder. If that
@@ -59,7 +94,7 @@ a folder the plugin could not read, say — since it has not shown anything to b
 but not worth a warning next to Play, so they live in the tab.
 
 The second: the **console itself** does not start without one of the images the core declares, and none of them is in
-place — the state the tab words "Needs at least one BIOS file" (see
+place — the state the tab words "SwanStation cannot start this system without a BIOS image" (see
 [When the console needs a BIOS image](#when-the-console-needs-a-bios-image)). No count can express that one, because the
 core marks every such image optional, so without it the badge stayed silent on a PlayStation where nothing would launch.
 It follows the same rule as the first: shown to be absent raises it, not-yet-established does not.
@@ -76,9 +111,9 @@ reporting "no BIOS needed". So a check that could not be completed never quietly
 the game launch without its files; it leaves the warning where it was.
 
 "The requirement is unknown" is itself an answer, and a different one. A check that ran and could not establish what the
-system needs says so on the page — grey dot, "BIOS requirement unknown" — instead of hiding the BIOS tab. Hiding it
-would say the system needs nothing, which is exactly the claim that could not be made. Every PS3 game is in that
-position, since RPCS3 is not a RetroArch core and cannot be asked.
+system needs says so on the page — grey dot, "Nothing could be established about what mGBA needs" — instead of hiding
+the BIOS tab. Hiding it would say the system needs nothing, which is exactly the claim that could not be made. Every PS3
+game is in that position, since RPCS3 is not a RetroArch core and cannot be asked.
 
 It does not leave it there indefinitely, though. Whenever the game detail page is shown a BIOS state it could not work
 out — when the page opens, after switching the emulator core, after switching to another version of the game — it asks
@@ -92,9 +127,21 @@ emulator itself, and what you already have comes from your BIOS folder. Your ser
 while it is unreachable you still see what is needed and what is missing, you just cannot fetch anything, and files that
 exist only in your RomM library are not listed.
 
-Below the readiness line the tab lists the individual files and which ones are present or missing. Each file lists the
-cores that use it (e.g. _Beetle PSX HW (required)_, _PCSX ReARMed (optional)_); the **active core**'s line is
-highlighted in amber so you can spot at a glance which core's requirements the file applies to.
+Below the readiness line the tab lists individual files — not every file the platform has, but the ones this game gives
+you something to do or to know: files the emulator you launch with requires, files the console itself will not start
+without one of, files you already have, files you can still download, and files the plugin could not judge. What is left
+over — an installed emulator names it, this launch does not require it, it is not there, and no page offers a download
+for it — is counted on one line instead: _6 more files an installed emulator asks for — none required for this launch,
+none to download; the Library page's Platforms tab lists them_.
+
+A Dreamcast is the everyday case. Flycast also emulates Naomi and AtomisWave, so it declares six arcade BIOS files
+beside the two the Dreamcast itself needs, and none of the six is anything a Dreamcast game's page could act on. The
+**Platforms** tab of the **Library** page lists every file without exception — that is where BIOS files are managed, and
+it is the page the summary line points at.
+
+Each row shows whether that file is present or missing, and lists the cores that use it (e.g. _Beetle PSX HW
+(required)_, _PCSX ReARMed (optional)_); the **active core**'s line is highlighted in amber so you can spot at a glance
+which core's requirements the file applies to.
 
 A core's word for a file is the core's own, and the plugin prints it unchanged. Where a core marks _every_ file it asks
 for optional and its console does not start without one of them, the line states that instead, with the count:
@@ -124,6 +171,18 @@ A red row has a second cause worth knowing about. Where the plugin could not loo
 broken permissions, or storage going bad — the row says _its location could not be read_ rather than calling the file
 missing, so you know to check the folder instead of hunting for a download. It still counts as not ready, because an
 emulator will not get in there either.
+
+Where a file **is** there and the emulator looked at its contents, the row says what came of that, because "not ready"
+covers three quite different situations and only one of them is a problem you can fix by downloading:
+
+- _the emulator does not recognise this file_ — it read the file and no list it keeps matches these bytes. That is not a
+  failure: DuckStation starts such an image and calls it an unknown BIOS. It is also not a clean bill of health, which
+  is why the row stays neutral rather than going green — a dump nobody has catalogued and a wrong file look the same
+  from here.
+- _its bytes could not be read_ — the plugin asked for the contents and did not get them. This says nothing about
+  whether your emulator can read the file; it says this plugin could not.
+- _the emulator refuses a file of this size_ — your emulator will not even open it, so whatever is in it, the game will
+  not start from it. This one is red, and the fix is a different copy of the file rather than a different setting.
 
 Some rows say something better than that. Where the file sitting at the destination is byte-for-byte the copy your
 emulator distribution ships, the row names the distribution instead — _provided by RetroDECK_ — because it is the
@@ -155,7 +214,7 @@ there is a folder, so there is no file to fetch into it. On a stock RetroDECK th
 which RetroDECK links onto the BIOS folder itself. (The Library page's platform detail words that row _Missing_, because
 it spells absence out where this tab leaves it to the dot.)
 
-<!-- Screenshot: Game detail page showing orange BIOS status with "2/5 required files ready" -->
+<!-- Screenshot: Game detail page showing orange BIOS status with "2 of 5 files mGBA requires are in place" -->
 
 ![BIOS file list overlay showing individual required files with checkmarks and "Missing" labels](../assets/screenshot-bios.jpg)
 
@@ -190,37 +249,40 @@ and the row you focus is the one the right-hand pane describes.
    hover it. Where the reason is a problem rather than simply nothing to choose — no emulator for the platform, or
    RetroDECK not found — a line under the header says so as well, since a tooltip needs a mouse
 7. **BIOS files** states how many required files are ready (e.g. "1 / 2 required") when the system needs any, and
-   otherwise reads "Nothing required" with the inventory of your library's files beside it (e.g. "3 / 5 files held"). A
-   console that will not start without one of the listed images, with none of them in place, reads **"Needs at least one
-   BIOS file"** — see [When the console needs a BIOS image](#when-the-console-needs-a-bios-image). A system with a
-   required row the plugin could not judge — a declared folder it could not read, say — reads "BIOS readiness unknown"
-   instead — see [When readiness cannot be stated](#when-readiness-cannot-be-stated). Everything here is about the
-   emulator named on line 5: pick a different one from the chip button and the numbers, the dot and the file rows are
-   answered for it, so this pane and a game's BIOS tab tell you the same thing about one platform. That holds for a
-   **standalone** emulator too — PCSX2, DuckStation, Cemu and melonDS are asked like any RetroArch core. Where the
-   plugin has no source for the emulator, the files are shown against every emulator that declares them instead of
-   against one
+   otherwise names the emulator and says it marks none of its BIOS files as required. Under that heading is the same
+   sentence the game page shows, with the inventory of your library's files behind it (e.g. "(3/5 files held)"). Where
+   no emulator can be pinned for the platform there is no name to print, and the line says "The launching emulator"
+   instead. A console that will not start without one of the listed images, with none of them in place, reads **"Needs
+   at least one BIOS file"**, and the line under it names the emulator whose images are missing — see
+   [When the console needs a BIOS image](#when-the-console-needs-a-bios-image). A system with a required row the plugin
+   could not judge — a declared folder it could not read, say — reads "Readiness unknown" instead — see
+   [When readiness cannot be stated](#when-readiness-cannot-be-stated). Everything here is about the emulator named on
+   line 5: pick a different one from the chip button and the numbers, the dot and the file rows are answered for it, so
+   this pane and a game's BIOS tab tell you the same thing about one platform. That holds for a **standalone** emulator
+   too — PCSX2, DuckStation, Cemu and melonDS are asked like any RetroArch core. Where the plugin has no source for the
+   emulator, the files are shown against every emulator that declares them instead of against one
 8. Below it, a table lists the files themselves: the **file**, whether it is **on disk**, and its **contents**. Where
    the emulator asks for the file in a subfolder, the folder is shown in front of the name (`dc/` **`dc_boot.bin`**) —
    that is where it has to go, and it is the one thing you need when placing a file by hand. The description in
-   parentheses is printed under the row rather than beside the name, so it is not cut off. On disk holds marks and no
-   words. The first mark carries two things — a green ✓ for a file that is there and required, a red ✗ for one that is
-   required and is not, and the paler green ✓ / grey ✗ for a file the core you launch with does not need either way.
-   Amber means nothing could be established: a ✓ or ✗ in amber is a file whose presence is known but which no installed
-   emulator could be asked about, and a `?` is a row that could not be checked at all. Where the system needs **one of
-   several** images (see [When the console needs a BIOS image](#when-the-console-needs-a-bios-image)) those rows are
-   marked as the group they are: a red ✗ on each while none is in place, and once you have one of them that row turns
-   green ✓ and the others go grey, because from then on they really are spare. A violet ⊘ appears **beside** that mark —
-   never in place of it — when your RomM library does not hold the file: a file you already have keeps its green ✓, one
-   you still need keeps its red ✗, and the ⊘ adds that the plugin cannot fetch it for you. A legend under the table, one
-   line per mark, names the marks that are actually on it. Anything else a row has to say is printed **under** the row
-   rather than in the column — that a file was provided by RetroDECK, that a folder holds no image, that a location
-   could not be read
+   parentheses is printed under the row rather than beside the name, as it is on a game's page: this column is narrow
+   enough that anything after the name would push the name itself off the row. Like there, it is shown only where the
+   emulator itself wrote it. On disk holds marks and no words. The first mark carries two things — a green ✓ for a file
+   that is there and required, a red ✗ for one that is required and is not, and the paler green ✓ / grey ✗ for a file
+   the core you launch with does not need either way. Amber means nothing could be established: a ✓ or ✗ in amber is a
+   file whose presence is known but which no installed emulator could be asked about, and a `?` is a row that could not
+   be checked at all. Where the system needs **one of several** images (see
+   [When the console needs a BIOS image](#when-the-console-needs-a-bios-image)) those rows are marked as the group they
+   are: a red ✗ on each while none is in place, and once you have one of them that row turns green ✓ and the others go
+   grey, because from then on they really are spare. A violet ⊘ appears **beside** that mark — never in place of it —
+   when your RomM library does not hold the file: a file you already have keeps its green ✓, one you still need keeps
+   its red ✗, and the ⊘ adds that the plugin cannot fetch it for you. A legend under the table, one line per mark, names
+   the marks that are actually on it. Anything else a row has to say is printed **under** the row rather than in the
+   column — that a file was provided by RetroDECK, that a folder holds no image, that a location could not be read
 9. **Contents** answers for a required **folder**: how many BIOS images it holds — and the images themselves are listed
    under the row, in the emulator's own words so you can match one against its picker — or that it holds none, or that
-   its contents could not be established. A plain file reads an em dash, which means the question was never asked:
-   checking a file's contents is still to come, and until it lands the em dash must not be read as "checked, and nothing
-   there"
+   its contents could not be established. A plain file reads an em dash in this column, which must not be read as
+   "checked, and nothing there": filling it for file rows is still to come. Where the emulator did look at a file's
+   contents, what came of that is printed **under** the row with the rest of its notes
 10. A **Download** button sits on every row that is missing and in your RomM library, and a **Delete** button on every
     row this plugin downloaded and still has on disk — that is the only thing it will remove, so a file your emulator
     came with never offers one. A **folder** row (PS2's `pcsx2/bios`) offers `Delete (N)` for the files we downloaded
@@ -342,8 +404,9 @@ anything having gone wrong with the old one.
 A **file** reads unknown when that emulator could not be asked — a RetroArch core shipping without its description file,
 a standalone emulator with no packaged card, or RetroDECK's configuration not being readable at all.
 
-A whole **system** reads unknown, showing a neutral grey status and the text **"BIOS requirement unknown"** instead of a
-green all-clear, in either of two situations.
+A whole **system** reads unknown, showing a neutral grey status and a sentence naming the emulator that could not be
+asked — **"Nothing could be established about what PCSX2 needs"** — instead of a green all-clear, in either of two
+situations.
 
 The first is a system with files on the page, not one of which could be answered for. Every row on the platform is
 unknown, which is what leaves nothing to base a readiness claim on. A system whose every file was answered with _not
@@ -358,6 +421,13 @@ Three causes reach these shapes. A system whose launching emulator is a standalo
 whose launching RetroArch core ships without a description file; on a stock RetroDECK that is rare, since only a handful
 of bundled cores are in that state. And a configuration the plugin could not read at all, which leaves it unable to name
 the launching emulator in the first place.
+
+Under that headline the page names the emulator it could not get an answer out of — _Nothing could be established about
+what PCSX2 needs_ — and, where the plugin could not settle on an emulator to name for that system, says that instead:
+_Nothing could be established about what the launching emulator needs_. Your games still launch either way: where the
+plugin names no emulator, it hands the launch to RetroDECK and RetroDECK picks one. Either way the sentence is about
+**one** emulator, the one your games on that system launch with. Others you have installed may have answered perfectly
+well, and their answers are in the rows below.
 
 This is informational, not an error: your files may be perfectly fine, the plugin simply can't confirm what is needed.
 Genuinely BIOS-free systems (such as the NES) are unaffected — the emulator answers, it wants nothing, and the system
@@ -400,7 +470,7 @@ Read off the file list alone that came out as a green **"Nothing required (0/20 
 PlayStation BIOS at all, while not one PS1 game would launch. The plugin now carries the console's own answer beside the
 file list, and the page says:
 
-**Needs at least one BIOS file (0/20 files held)** — red.
+**SwanStation cannot start this system without a BIOS image (0/20 files held)** — red.
 
 Four things about that line:
 
@@ -418,23 +488,27 @@ Four things about that line:
 - **It is a statement about the console, not about your library.** What each row says about itself is unchanged: whether
   it is present, which cores use it, whether your RomM library holds it. Naming the rows that can answer the line sits
   beside those facts rather than in place of them. The downloads are unchanged too — fetching one of the images that
-  core asks for is exactly what clears the line.
+  core asks for is exactly what clears the line. It is not a statement about your BIOS folder either, and the Library
+  page's pane says the same sentence under its own **Needs a BIOS image** heading — _SwanStation cannot start this
+  system without a BIOS image_. A folder holding a PlayStation image that core does not list is exactly the case a
+  flatter wording got wrong: what the plugin can see is that this core cannot start the console from what is there, and
+  it was never entitled to say that no BIOS file was.
 - **The red BIOS badge beside Play appears for it**, the same badge a missing required file raises. The game does not
   start either way, so it is the same warning rather than a softer one of its own.
 
-Where the plugin cannot tell whether one of them is in place, it says **"BIOS readiness unknown"** rather than picking a
-colour — see the next section, which that shape shares. That only ever replaces a line which would otherwise have been
-green: where a required file is already known to be missing, the red line stands, because a doubt about one more file
-does not take back what was shown.
+Where the plugin cannot tell whether one of them is in place, it says **"Whether the BIOS image SwanStation needs is in
+place could not be established"** rather than picking a colour — see the next section, which that shape shares. That
+only ever replaces a line which would otherwise have been green: where a required file is already known to be missing,
+the red line stands, because a doubt about one more file does not take back what was shown.
 
 Systems the plugin holds no such record for are unaffected, and this is deliberate: no record means nobody has checked
 that console, which is not the same as "this console needs nothing". Those systems keep exactly the page they had.
 
 ### When readiness cannot be stated
 
-There is a second grey state, and it is a different sentence: **"BIOS readiness unknown"**. Here the plugin knows
-perfectly well what the system needs — it is whether you **have** it that could not be settled for one of the required
-things.
+There is a second grey state, and it is a different sentence: **"One file SwanStation requires could not be checked"**.
+Here the plugin knows perfectly well what the system needs — it is whether you **have** it that could not be settled for
+one of the required things.
 
 The usual cause is a required **folder** the plugin could not read all the way: a file inside it whose bytes would not
 come back, a folder it could not list in full, or an image its identity table and the emulator's own check disagree
@@ -503,11 +577,11 @@ The active core name appears on the game detail page (the **Emulator** column) a
    only source; there is no bundled fallback snapshot.
 4. If the live configuration can't be read, or the plugin has no source for whatever that platform launches with, it has
    nothing to filter with — so it does not filter, and it does not guess either. Every BIOS file the platform has is
-   listed, each marked _unknown_, and the platform's summary reads **BIOS requirement unknown** with a grey dot —
-   including when the platform has no files to list, which is where saying nothing at all would have read as "nothing
-   needed". That is the honest answer for a platform like PS3, whose emulator the plugin has no card for: saying nothing
-   is needed would report it ready over firmware the emulator will not boot without. The download buttons are unaffected
-   — they follow your library, which is a different question — see
+   listed, each marked _unknown_, and the platform's summary reads **Requirement unknown** with a grey dot — including
+   when the platform has no files to list, which is where saying nothing at all would have read as "nothing needed".
+   That is the honest answer for a platform like PS3, whose emulator the plugin has no card for: saying nothing is
+   needed would report it ready over firmware the emulator will not boot without. The download buttons are unaffected —
+   they follow your library, which is a different question — see
    [When the requirement is unknown](#when-the-requirement-is-unknown).
 
 Whatever this chain resolves to is the **same core the game launches on** — the plugin bakes the resolved core into the

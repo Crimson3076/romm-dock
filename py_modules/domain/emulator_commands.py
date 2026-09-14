@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol
 
 from domain.shortcut_data import EmulatorInvocation
 
@@ -91,6 +91,46 @@ class EmulatorOption:
     status: str
     reason: str | None
     emulator: str | None
+
+
+class LaunchingEmulator(Protocol):
+    """The one emulator a set of firmware answers is about, carried as ONE value.
+
+    Both projections a surface needs come off it: ``emulator`` is the identity
+    every firmware answer is joined and scoped on, ``label`` the name a sentence
+    prints. They travel together so that no caller can hand the filter one
+    emulator's identity and the sentence beside it another's name — the pane
+    that displayed a just-picked PCSX ReARMed while judging the platform by the
+    libretro default was two calls agreeing by coincidence until an override was
+    set. There is no pair here to get wrong: the pick IS the value, and each
+    projection is read off it.
+
+    A structural type rather than a class of its own, because both resolutions
+    that answer this question already state both fields — :class:`EmulatorOption`
+    for a platform's pick, :class:`~domain.shortcut_data.EmulatorInvocation` for
+    a ROM's — and a wrapper would be a third spelling of what they already are.
+
+    **Those two answer two different questions**, and this type does not merge
+    them: it carries the pick the CALLER's question is about — a platform's, for
+    a question about a platform; a ROM's, for a question about a ROM — never "the
+    platform's pick" as such. A parameter typed with it therefore takes its
+    caller's question and chooses nothing itself; where the caller has no pick to
+    state, ``None`` says so and the callee falls back in its own terms. The
+    distinction is the one ``ActiveCoreResolver`` exists to make (a per-game pin
+    over the per-platform override over the es_systems default), and a common
+    type is exactly where it would go quiet: a ROM's pick handed to a
+    platform-scoped answer, or the reverse, is well typed and wrong.
+
+    ``label`` is presentation, and a resolution may carry none. ``emulator`` is
+    ``None`` for an emulator the resolver could not identify, and nothing may be
+    scoped to it.
+    """
+
+    @property
+    def emulator(self) -> str | None: ...
+
+    @property
+    def label(self) -> str | None: ...
 
 
 def classify_command(label: str, text: str, *, emulator: str | None = None) -> EmulatorOption:
@@ -255,11 +295,12 @@ def resolve_platform_option(options: list[EmulatorOption], override: str | None)
 
     **One pick, because a platform's surfaces must not be able to answer for two
     emulators.** The option is returned rather than one projection of it so that
-    the name a pane displays (:func:`resolve_platform_label`) and the ``.so`` its
-    BIOS answers key on (``EmulatorOption.core_so``, ``None`` for a standalone
-    emulator) come off the same choice. Resolving them separately is what let a
-    pane name PCSX ReARMed and judge the platform by the system default beside
-    it.
+    the name a pane displays (:func:`resolve_platform_label`) and the identity
+    its BIOS answers are joined and scoped on (``EmulatorOption.emulator``, the
+    one field that names a standalone emulator, where ``core_so`` is ``None`` for
+    every standalone pick) come off the same choice. Resolving them separately is
+    what let a pane name PCSX ReARMed and judge the platform by the system
+    default beside it.
     """
     pinned = _pinned_option(options, override) if override is not None else None
     return pinned if pinned is not None else select_default_option(options)

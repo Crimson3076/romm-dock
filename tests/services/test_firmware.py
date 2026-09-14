@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -48,6 +49,7 @@ from domain.shortcut_data import EmulatorInvocation
 from services.active_core_resolver import ActiveCoreResolver, ActiveCoreResolverConfig
 from services.cores import CoreService, CoreServiceConfig
 from services.firmware import FirmwareService, FirmwareServiceConfig
+from services.firmware.status import FirmwareStatusReader
 from services.game_detail import GameDetailService, GameDetailServiceConfig
 from services.library import LibraryService, LibraryServiceConfig
 
@@ -109,6 +111,17 @@ def _id(core_so: str) -> str:
     and with one string for both, that bug would pass.
     """
     return f"{core_so}.so"
+
+
+def _pick(emulator: str | None, label: str | None = None) -> EmulatorInvocation:
+    """One resolved emulator, as the per-game path hands it to the BIOS check.
+
+    The check takes the PICK rather than an identity beside a name, so a test
+    asking it about an emulator hands it one value too. ``EmulatorInvocation`` is
+    what the ROM path really passes; its ``kind`` plays no part in a firmware
+    answer, which is keyed on the identity alone.
+    """
+    return EmulatorInvocation(kind="libretro", label=label, emulator=emulator)
 
 
 def _make_firmware_service(
@@ -835,6 +848,102 @@ class TestAFolderRowCountsWhatWePutInside:
         assert plat["files"][0]["deletable_count"] == 1
         # And the platform button, which has counted paths all along, agrees.
         assert plat["deletable_count"] == 1
+
+
+class TestWhatBecameOfARowsBytes:
+    """``checked`` reaches the wire, because the verdict beside it cannot carry it.
+
+    A withheld verdict has several causes and one of them is not a withholding at
+    all: a file the emulator READ and does not recognise was checked, and the
+    surfaces said it could not be. The resolver states which, and the row has to
+    carry the word rather than a reading of it — the vocabulary is upstream's and
+    narrowing it here would be our own claim about it.
+    """
+
+    _CORE = "swanstation"
+
+    def _page(self, plugin, tmp_path, checked: str | None):
+        resolver = FakeFirmwareResolver()
+        resolver.declare("scph1001.bin", required_by=[_id(self._CORE)], present=True, checked=checked)
+        fw = _make_firmware_service(
+            romm_api=plugin._romm_api,
+            uow_factory=FakeUnitOfWorkFactory(plugin._uow),
+            firmware_resolver=resolver,
+            core_info=FakeCoreInfoProvider(
+                active_core=(self._CORE, "SwanStation"), options=[libretro_option(self._CORE, "SwanStation")]
+            ),
+            retrodeck_paths=FakeRetroDeckPaths(bios=str(tmp_path / "bios")),
+        )
+        _inline_executor(fw)
+        _stub_listing(fw, [])
+        return fw.check_platform_bios("psx")
+
+    @pytest.mark.asyncio
+    async def test_the_resolvers_own_word_reaches_the_row(self, plugin, tmp_path):
+        result = await self._page(plugin, tmp_path, "unrecognised")
+        row = next(row for row in result["files"] if row["file_name"] == "scph1001.bin")
+
+        assert row["checked"] == "unrecognised"
+
+    @pytest.mark.asyncio
+    async def test_a_different_reading_travels_as_itself(self, plugin, tmp_path):
+        """The non-vacuity check: a row hardcoding one value would pass the first."""
+        result = await self._page(plugin, tmp_path, "unread")
+        row = next(row for row in result["files"] if row["file_name"] == "scph1001.bin")
+
+        assert row["checked"] == "unread"
+
+    @pytest.mark.asyncio
+    async def test_a_reading_that_asked_no_byte_question_says_nothing(self, plugin, tmp_path):
+        """The ordinary case, and it must stay a stated absence rather than a word."""
+        result = await self._page(plugin, tmp_path, None)
+        row = next(row for row in result["files"] if row["file_name"] == "scph1001.bin")
+
+        assert row["checked"] is None
+
+    @pytest.mark.asyncio
+    async def test_it_moves_no_verdict(self, plugin, tmp_path):
+        """It says what was DONE, never whether the requirement is met.
+
+        ``unrecognised`` is the case that makes the two come apart: the bytes
+        were read and the requirement is still unsettled, so a row folding this
+        into ``satisfied`` would claim a readiness nobody established.
+        """
+        result = await self._page(plugin, tmp_path, "unrecognised")
+        row = next(row for row in result["files"] if row["file_name"] == "scph1001.bin")
+
+        assert row["satisfied"] is True
+        assert row["downloaded"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_platform_pane_gets_the_same_word(self, plugin, tmp_path):
+        """The two pages are built by two row builders, and this asks the other one.
+
+        The game page's rows come off ``asdict`` and carry every field the entry
+        has; the platform pane's are a hand-written projection
+        (``_wanted_fields``), so a field added to the entry reaches that page
+        only if somebody adds it there too. The two surfaces word this from ONE
+        module, so a field on one and not the other means one of them silently
+        words a state it cannot see.
+        """
+        resolver = FakeFirmwareResolver()
+        resolver.declare("scph1001.bin", required_by=[_id(self._CORE)], present=True, checked="unrecognised")
+        fw = _make_firmware_service(
+            romm_api=plugin._romm_api,
+            uow_factory=FakeUnitOfWorkFactory(plugin._uow),
+            firmware_resolver=resolver,
+            core_info=FakeCoreInfoProvider(
+                active_core=(self._CORE, "SwanStation"), options=[libretro_option(self._CORE, "SwanStation")]
+            ),
+            retrodeck_paths=FakeRetroDeckPaths(bios=str(tmp_path / "bios")),
+        )
+        _set_loop(fw, asyncio.get_running_loop())
+
+        with patch.object(plugin._romm_api, "list_firmware", return_value=[]):
+            result = await fw.get_platform_firmware_status("psx")
+
+        row = next(row for row in result["platform"]["files"] if row["file_name"] == "scph1001.bin")
+        assert row["checked"] == "unrecognised"
 
 
 class TestAFolderRequirementIsAnsweredByItsContents:
@@ -2325,8 +2434,10 @@ class TestCheckPlatformBiosUnknown:
         result = await fw.check_platform_bios("dc")
 
         # Three declared files, but only the two the listing carries count:
-        # ``known_count`` is weighed against ``server_count``, so the row the
-        # library does not hold is not in its set.
+        # ``count_wanted`` is scoped to ``on_server`` rows, the same subset
+        # ``server_count`` is taken over, so the row the library does not hold is
+        # in neither. Nothing weighs the two against each other — they agree here
+        # because one scoping produced both.
         assert result["known_count"] == 2
         assert result["server_count"] == 2
         assert result["bios_level"] != "unknown"
@@ -2954,6 +3065,86 @@ class TestOnePlatformOneEmulator:
         assert cores[_id(_PSX_ALTERNATIVE_CORE)] == {"required": False, "needs_one_of": None}
 
 
+class TestTheAnswerNamesTheEmulatorItJudgedBy:
+    """The BIOS answer carries the NAME of the pick its counts were filtered by.
+
+    The game page heads its BIOS section with a sentence about what "the
+    launching emulator" requires, and had no way to say which one: the payload
+    carried the filter's identity nowhere and no name at all, so a name there
+    would have had to come from the core read beside it on the page — a second
+    resolution of the same question, and the split that once had a pane display
+    PCSX ReARMed while judging the platform by the libretro default.
+
+    So the label is a projection of the pick this very answer was scoped to, and
+    the tests below assert that RELATION rather than today's value: the name has
+    to move when the pick does, and it has to follow the pick the caller handed
+    in even where the platform would have resolved to somebody else.
+    """
+
+    @staticmethod
+    async def _page(platform_core: str | None = None, pick: EmulatorInvocation | None = None) -> dict[str, Any]:
+        return await _psx_platform_service(platform_core=platform_core).check_platform_bios("psx", pick)
+
+    @pytest.mark.asyncio
+    async def test_it_names_the_platforms_own_pick(self):
+        assert (await self._page())["active_core_label"] == _PSX_DEFAULT_LABEL
+
+    @pytest.mark.asyncio
+    async def test_the_name_moves_with_the_pick(self):
+        """The non-vacuity check: a page that hardcoded the default would pass the first."""
+        assert (await self._page(_PSX_ALTERNATIVE_LABEL))["active_core_label"] == _PSX_ALTERNATIVE_LABEL
+
+    @pytest.mark.asyncio
+    async def test_a_pick_that_could_not_be_made_names_nobody(self):
+        """ES-DE offers this platform nothing bakeable, so there is no name to print.
+
+        The field is still stated: the surface words its sentence without a name,
+        and an absent key and an absent name are the same thing to it.
+        """
+        page = await _psx_platform_service(platform_core=None, options=[]).check_platform_bios("psx")
+
+        assert page["active_core_label"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_name_and_the_identity_it_judged_by_are_one_pick(self):
+        """Two labels can be one emulator, so the pair cannot be assembled from two calls.
+
+        ES-DE lists one ``pcsx2_libretro.so`` as both ``LRPS2`` and ``PCSX2``,
+        which is why a label names a launch row and never an emulator. Handed a
+        pick the platform itself would not have made, the answer has to print
+        THAT pick's name and judge by THAT pick's identity — the platform's own
+        resolution is a third emulator here, so a name taken from it, or an
+        identity taken from it, shows up immediately.
+
+        The two picks below differ only in their label, which is what makes the
+        second assertion say something: the name moves, the judgment does not.
+        """
+        alternative = _id(_PSX_ALTERNATIVE_CORE)
+        under_one_name = await self._page(pick=_pick(alternative, "PCSX ReARMed"))
+        under_another = await self._page(pick=_pick(alternative, "PCSX-ReARMed (Interpreter)"))
+        platforms_own = await self._page()
+
+        assert under_one_name["active_core_label"] == "PCSX ReARMed"
+        assert under_another["active_core_label"] == "PCSX-ReARMed (Interpreter)"
+        assert platforms_own["active_core_label"] == _PSX_DEFAULT_LABEL
+        # One emulator under two names: the answer is the same one, and it is
+        # not the one the platform would have resolved to on its own.
+        assert _emulator_dependent(under_one_name) == _emulator_dependent(under_another)
+        assert _emulator_dependent(under_one_name) != _emulator_dependent(platforms_own)
+
+    def test_the_seam_carries_the_pick_and_never_a_name_beside_it(self):
+        """There is one emulator argument, which is what makes the pair unrepresentable.
+
+        The test above shows both projections following one pick; this is why
+        they must — a second parameter for the name is all it would take to hand
+        the filter one emulator and the sentence another, and the caller that
+        did so would be perfectly well typed.
+        """
+        parameters = list(inspect.signature(FirmwareStatusReader.check_platform_bios).parameters)
+
+        assert parameters == ["self", "platform_slug", "launching_emulator"]
+
+
 _PSX_ROM_ID = 501
 _PSX_STANDALONE_ID = "DUCKSTATION"
 
@@ -3084,7 +3275,9 @@ class TestOneRomOneEmulator:
     async def test_the_bios_half_answers_for_the_emulator_the_picker_names(self, game_pick, platform_pick):
         picker, bios, fw = await self._both(game_pick, platform_pick)
 
-        named = await fw.check_platform_bios("psx", picker["active_core"])
+        # Asked with the pick the picker itself published — its two projections,
+        # which the rule above says are one resolution, handed over as one value.
+        named = await fw.check_platform_bios("psx", _pick(picker["active_core"], picker["active_core_label"]))
         assert _emulator_dependent(bios) == _emulator_dependent(named)
 
     @pytest.mark.parametrize(("game_pick", "platform_pick"), _ROM_PICKS)
@@ -4448,12 +4641,19 @@ class TestCheckPlatformBiosSlugNormalization:
 
 
 class TestCheckPlatformBiosNoCoreFields:
-    """check_platform_bios returns BIOS status only — never core fields (#923).
+    """check_platform_bios returns BIOS status only — never the picker's data (#923).
 
-    Core data (active_core / active_core_label / available_cores) is served through
-    the dedicated ``get_platform_core_info`` path, not the BIOS payload. Both the
-    ``needs_bios=False`` (empty / offline) branches and the ``needs_bios=True`` branch
-    must be free of core fields.
+    Which emulators a platform offers, and which of them it launches with, are
+    served through the dedicated ``get_platform_core_info`` path and never from
+    the BIOS payload: ``active_core`` and ``available_cores`` are absent from
+    every branch.
+
+    The one field that does ride along is ``active_core_label``, and it is not an
+    exception to that rule but the answer's own: it is the NAME of the pick THIS
+    payload's counts were filtered by, so the sentence over them can say which
+    emulator they are about without a second resolution of the question. It is
+    stamped only where there is an answer to name — the two ``needs_bios: False``
+    branches below carry nothing at all.
     """
 
     @pytest.mark.asyncio
@@ -4536,8 +4736,11 @@ class TestCheckPlatformBiosNoCoreFields:
         assert result["needs_bios"] is True
         assert result["server_count"] == 1
         assert "active_core" not in result
-        assert "active_core_label" not in result
         assert "available_cores" not in result
+        # ES-DE offers this platform no command here, so no pick could be made
+        # and there is no name to print — stated as an empty answer rather than
+        # left out, because the surface words the nameless sentence for it.
+        assert result["active_core_label"] is None
 
 
 class TestDownloadRequiredFirmware:
@@ -4920,9 +5123,11 @@ class TestPerCoreFiltering:
 
         assert result["needs_bios"] is True
         assert result["server_count"] == 3
-        # Core fields are never served from the BIOS payload (#923).
+        # The picker's data is never served from the BIOS payload (#923). The
+        # label beside it is: it names the pick these very counts were filtered
+        # by, which is this answer's own field rather than the picker's.
         assert "active_core" not in result
-        assert "active_core_label" not in result
+        assert result["active_core_label"] == "gpSP"
 
         gba_file = next(f for f in result["files"] if f["file_name"] == "gba_bios.bin")
         assert gba_file["required_by_active"] is True
@@ -5036,7 +5241,7 @@ class TestCheckPlatformBiosPreResolvedCore:
         fw._config.core_info.active_core = ("mgba_libretro", "mGBA")
 
         with patch.object(fw._demand, "_retrodeck_paths", FakeRetroDeckPaths(bios=str(tmp_path / "bios"))):
-            result = await fw.check_platform_bios("gba", launching_emulator=_id("gpsp_libretro"))
+            result = await fw.check_platform_bios("gba", launching_emulator=_pick(_id("gpsp_libretro"), "gpSP"))
 
         assert result["needs_bios"] is True
         assert result["required_count"] == 1  # gpSP requires gba_bios.bin

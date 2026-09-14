@@ -386,6 +386,8 @@ a destination the emulator opens as a file — because the verdict is deliberate
 it. What the verdict does decide is which family of codes can apply, and what a surface says when none of them is
 recognised.
 
+For a declared **file** the cause is the **byte reading** below, which the row carries beside the verdict.
+
 Not every unestablished thing is withheld here. A declared file whose _bytes_ were never verified is not — and for
 almost every such file the reason is simply that nobody asked: the verified question is put to one core at a time and
 only where a folder row is open, so on a platform whose cores declare no folder nothing is verified at all. Where it
@@ -394,15 +396,34 @@ and no others — and their **verdicts** are dropped unread. Either way, reading
 verdict would decline readiness for every row on every platform. The foil to **not on server**, which is a settled
 absence and does count towards readiness.
 
+### Byte reading (firmware): what became of a row's bytes
+
+What the reading DID to a declared file, carried on the row beside its **verdict** in the resolver's own vocabulary and
+never re-derived here. It answers a different question: the verdict says whether the requirement is met, this says what
+was done to establish it.
+
+It is needed because a withheld verdict has several causes and one of them is not a withholding at all. A file the
+emulator **read and does not recognise** was checked — DuckStation boots such an image and calls it an unknown BIOS — so
+the verdict stays withheld while "could not be checked" is simply untrue of it. Beside that sit a file whose **bytes did
+not come back**, which is a statement about the plugin's own read and no evidence the launch cannot read it, and one the
+emulator **refuses** on its size before reading a byte, which arrives with the verdict already unmet and needs the
+reason rather than a verdict. Everything else — the bytes matched, they did not, nothing asked — leaves the row to the
+axes it always had.
+
+Where each of the three is worded is `src/utils/biosFileNote.ts`, the one place both surfaces derive a row's note from.
+The mark in the platform pane's `On disk` cell stays the verdict alone and says only that nothing was settled either
+way.
+
 ### System image (firmware): held / absent / unsettled / not demanded
 
 Whether the core a game launches with has the firmware image its **console** cannot start without — a requirement no
 libretro declaration can express. A `.info` marks each file **needed** or **optional** and nothing else: no way to say
 "one of these", and no way to say the console will not boot without one. An author who knows it will not has two lossy
 moves and the deployed catalogue takes both — SwanStation marks all five of its PlayStation images optional, Beetle PSX
-marks three of its own required — so the file counts alone read a green **Nothing required** under the one core and
-three separate prerequisites under the other, over a system on which no game starts either way. The console's own answer
-is world knowledge rather than a reading of the machine — the resolver keeps a source-cited table of it, per system.
+marks three of its own required — so the file counts alone read a green "this core requires none of the files it names"
+under the one core and three separate prerequisites under the other, over a system on which no game starts either way.
+The console's own answer is world knowledge rather than a reading of the machine — the resolver keeps a source-cited
+table of it, per system.
 
 It is a **disjunction**, and that is what keeps it out of the counts. The console asks for _one_ of the images the core
 declares, not for each of them, so it is a single requirement over the whole list rather than one requirement per file.
@@ -446,6 +467,22 @@ answering for the cores that state required files.
 Scoped to the **active core**, like **required by active core** and unlike **wanted**: one unchanged PlayStation reads
 `absent` under SwanStation, whose five declared images the console needs one of, and `not demanded` under PCSX ReARMed,
 which carries its own substitute.
+
+### Declaration register (firmware): read / packaged
+
+How the emulator that supplied a firmware row's **description** stated what it wants — the resolver's own word, carried
+verbatim onto the row. **read** is a libretro core's own description file, read off the machine beside it, and its prose
+is the packager's LABEL for the file: `(PS1 JP BIOS)` on a row named `scph5500.bin`, a region the name never states.
+**packaged** is the card the resolver keeps for an emulator shipping no declaration of its own, and its prose is the
+resolver explaining the REQUIREMENT in whole sentences. One field, two kinds of writing, and only the first is shown on
+a row: the second is a paragraph on a line sized for a label, and it broke off mid-sentence on the platform pane and
+filled the row on the game page.
+
+It is the register of the ONE entry the description came from — a file several emulators declare carries the prose of
+the first of them — and never a property of the file, the row or the emulator behind it. The resolver states three
+further words (`absent`, `unreadable`, `unsupported`), none of which can reach a row: an entry in one of those states
+carries no requirement, so it declares no file. A row nothing declared states no register at all, and its description is
+its own file name.
 
 ### Safely-bakeable
 

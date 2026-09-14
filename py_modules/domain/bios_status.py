@@ -84,15 +84,6 @@ SYSTEM_IMAGE_VALUES = (
 
 
 @dataclass(frozen=True)
-class AvailableCore:
-    """A RetroArch core available for a platform."""
-
-    core_so: str
-    label: str
-    is_default: bool
-
-
-@dataclass(frozen=True)
 class BiosFileEntry:
     """Status of a single BIOS/firmware file on a platform's list.
 
@@ -126,6 +117,20 @@ class BiosFileEntry:
     so the surfaces can say what a row is instead of describing every one of them
     as a file the library is missing. It defaults to the silent answer, which is
     the one a row nothing declares has.
+
+    ``declaration`` is the resolver's own word for how the emulator that supplied
+    ``description`` stated what it wants — ``read`` off its own ``.info``,
+    ``packaged`` out of the card standing in for one that ships none — and it is
+    what a surface reads to decide whether that prose is the packager's label for
+    the file or atlas explaining the requirement in sentences. ``None`` for a row
+    no emulator declared, whose ``description`` is the file name itself.
+
+    ``checked`` is what became of the row's BYTES, carried from the same entry
+    ``declaration`` is. It exists because ``satisfied`` cannot distinguish the
+    reasons a verdict was withheld, and one of them is not a withholding at all:
+    a file the emulator READ and does not recognise is a file that was checked,
+    and saying it could not be was untrue. ``None`` is no statement — the
+    ordinary answer for a file that is simply absent.
 
     ``declared_path`` is where the emulator said the file goes, relative to the
     firmware root — ``dc/dc_boot.bin`` where a subdirectory was declared, the
@@ -161,13 +166,21 @@ class BiosFileEntry:
     supplied_by: str | None = None
     satisfied: bool | None = None
     declared_kind: str = DECLARED_FILE
+    declaration: str | None = None
     caveats: tuple[str, ...] = ()
     images: tuple[str, ...] = ()
+    checked: str | None = None
 
 
 @dataclass(frozen=True)
 class BiosStatus:
-    """Aggregated BIOS status for a platform, ready for frontend display."""
+    """One platform's classified files and counts, in the shape the level decision reads.
+
+    **Not a wire shape, and it never reaches the wire.** Its one caller builds it
+    to ask :func:`compute_bios_level` and :func:`compute_bios_label` and keeps
+    nothing else of it; what the frontend receives is the plain dict assembled
+    beside it (``FirmwareStatusReader._bios_aggregates``).
+    """
 
     platform_slug: str
     server_count: int
@@ -176,9 +189,6 @@ class BiosStatus:
     required_count: int | None
     required_downloaded: int | None
     files: tuple[BiosFileEntry, ...]
-    active_core: str | None
-    active_core_label: str | None
-    available_cores: tuple[AvailableCore, ...]
     # Server files the machine has an answer about (``needed`` or ``optional``).
     # ``None`` means the caller did not supply it, so the "unknown" decision is
     # not made; ``0`` alongside ``unknown_count`` means nothing about this
@@ -195,7 +205,6 @@ class BiosStatus:
     # one of :data:`SYSTEM_IMAGE_VALUES`. Defaults to the neutral value so a
     # caller that does not supply it keeps the verdict it always got.
     system_image: str = SYSTEM_IMAGE_NOT_DEMANDED
-    cached_at: float = 0.0
 
 
 def format_bios_status(
@@ -204,9 +213,8 @@ def format_bios_status(
     *,
     reading_complete: bool = True,
     system_image: str = SYSTEM_IMAGE_NOT_DEMANDED,
-    cached_at: float = 0.0,
 ) -> BiosStatus:
-    """Build a frontend-ready BiosStatus dataclass from raw firmware check result."""
+    """Assemble the :class:`BiosStatus` the level decision reads, from one raw check result."""
     raw_files = bios.get("files", [])
     if raw_files and isinstance(raw_files[0], dict):
         files: tuple[BiosFileEntry, ...] = tuple(
@@ -225,23 +233,15 @@ def format_bios_status(
                 supplied_by=f.get("supplied_by"),
                 satisfied=f.get("satisfied"),
                 declared_kind=f.get("declared_kind", DECLARED_FILE),
+                declaration=f.get("declaration"),
                 caveats=tuple(f.get("caveats", ())),
                 images=tuple(f.get("images", ())),
+                checked=f.get("checked"),
             )
             for f in raw_files
         )
     else:
         files = tuple(raw_files)
-
-    raw_cores = bios.get("available_cores", [])
-    available_cores: tuple[AvailableCore, ...] = tuple(
-        AvailableCore(
-            core_so=c.get("core_so", c.get("core", "")),
-            label=c.get("label", ""),
-            is_default=c.get("is_default", False),
-        )
-        for c in raw_cores
-    )
 
     return BiosStatus(
         platform_slug=platform_slug,
@@ -251,14 +251,10 @@ def format_bios_status(
         required_count=bios.get("required_count"),
         required_downloaded=bios.get("required_downloaded"),
         files=files,
-        active_core=bios.get("active_core"),
-        active_core_label=bios.get("active_core_label"),
-        available_cores=available_cores,
         known_count=bios.get("known_count"),
         unknown_count=bios.get("unknown_count", 0),
         reading_complete=reading_complete,
         system_image=system_image,
-        cached_at=cached_at,
     )
 
 
@@ -322,8 +318,10 @@ def build_file_entry(
         supplied_by=placement.supplied_by if placement is not None else None,
         satisfied=_row_verdict(placement, downloaded),
         declared_kind=placement.declared_kind if placement is not None else DECLARED_FILE,
+        declaration=placement.declaration if placement is not None else None,
         caveats=placement.caveats if placement is not None else (),
         images=folder.images if folder is not None else (),
+        checked=placement.checked if placement is not None else None,
     )
 
 
@@ -398,8 +396,12 @@ def _row_verdict(placement: FirmwarePlacement | None, downloaded: bool) -> bool 
     is not the file, so neither "there" nor "absent" is a claim the reading
     supports.
 
-    Everything else is ``downloaded``, which for a declared file is the
-    resolver's own reading at the destination it will be opened from.
+    Everything else is ``downloaded``, which for a declared file the resolver
+    placed under this root is the resolver's own reading at the destination it
+    will be opened from. Where the declaration carries no ``relative_path`` the
+    destination is one this plugin cannot honour, so the resolver read somewhere
+    else and ``FirmwareDemand.is_downloaded`` answers with its own look at the
+    path assembled here instead.
     """
     if placement is None:
         return downloaded
@@ -517,10 +519,14 @@ def classify_system_image(
 
     **A row's** ``satisfied`` **is presence, not the resolver's usability
     verdict** — the name invites the second reading and does not carry it. For a
-    declared file it is ``FirmwareDemand.is_downloaded``, which ends at
-    ``placement.present is True``; for a folder declaration it is the verdict on
-    what the folder HOLDS, and may be ``None``; and where something other than
-    the expected file occupies the destination it is ``None`` too. Either
+    declared file it is ``FirmwareDemand.is_downloaded``, which answers from the
+    resolver's ``placement.present`` wherever the resolver placed the file under
+    this root and from the plugin's own look at the destination where the
+    declaration carries no ``relative_path`` — the boundary between the two is
+    drawn at ``FirmwareDemand.is_downloaded`` itself, and is stated there. For a
+    folder declaration it is the verdict on what the folder HOLDS, and may be
+    ``None``; and where something other than the expected file occupies the
+    destination it is ``None`` too. Either
     ``None`` reads here as not held — the safe direction, since the alternative
     claims a readiness nothing established.
 
@@ -696,17 +702,20 @@ def count_wanted(files: tuple[BiosFileEntry, ...]) -> tuple[int, int]:
     """``(known, unknown)`` over the server's files — asked for, and unanswerable.
 
     A ``not_needed`` file is in neither: the machine answered for it, and no
-    emulator asks for it. Its absence from both counts is what keeps
-    ``compute_bios_level`` from reading "nothing here is needed" as "nothing
-    could be established".
+    emulator asks for it.
 
-    **Scoped to ``on_server`` rows**, because ``_nothing_established`` weighs
-    ``known_count`` against ``server_count``, which is the server's rows alone.
-    A row the library does not hold exists only because an emulator declared the
-    file, so it always classifies ``needed``/``optional`` and would always be
-    counted as known: one such row would cancel the ``unknown`` verdict for a
-    platform whose every server file went unanswered, turning the headline green
-    while each row still said nothing could answer for it.
+    **Neither number is read as a number.** :func:`_nothing_established` asks
+    ``known_count is not None`` — whether the caller supplied the counts at all —
+    and decides on ``reading_complete`` alone; nothing weighs either count
+    against ``server_count`` or against anything else. ``unknown_count`` has no
+    reader in either half: it travels to the wire and the frontend declares its
+    type (``src/types/firmware.ts``) without ever using it. So the pair is a
+    supplied/not-supplied flag beside a value nobody asks.
+
+    **Scoped to ``on_server`` rows**, and no consumer can currently tell that
+    scoping from any other. A row the library does not hold exists only because
+    an emulator declared the file, so it always classifies
+    ``needed``/``optional`` and would always be counted as known.
     """
     on_server = [f for f in files if f.on_server]
     known = sum(1 for f in on_server if f.wanted in (WANTED_NEEDED, WANTED_OPTIONAL))

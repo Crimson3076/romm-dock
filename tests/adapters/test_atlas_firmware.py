@@ -62,6 +62,11 @@ if TYPE_CHECKING:
 
 _ROOT = "/home/deck/retrodeck/bios"
 
+# The system every requirement here is filed under. One spelling, because the
+# resolver holds a core's stated system need to the systems its own requirements
+# name, so the two builders below have to agree about it.
+_REQUIREMENT_SYSTEM = "gba"
+
 
 def _requirement(
     *,
@@ -87,7 +92,7 @@ def _requirement(
     """
     return FirmwareRequirement(
         core_so=core_so,
-        system="gba",
+        system=_REQUIREMENT_SYSTEM,
         system_source="systemname",
         need=need,
         file_name=file_name,
@@ -122,11 +127,19 @@ def _core(
     resolver states for every libretro entry. A test spells it out for a
     standalone emulator, and passes ``None`` for the entry the resolver could not
     identify at all.
+
+    ``system_firmware_needs`` is derived rather than taken, like the caveats
+    above: the resolver requires ``cannot-run-without-firmware`` to name the
+    systems it is about, and every id there came off a requirement of the same
+    entry — which for these doubles is :func:`_requirement`'s own ``"gba"``.
+    Nothing in this module reads the field, so a test that wanted a different
+    id would be testing the resolver rather than the adapter.
     """
     if declaration != "read" and not caveats:
         caveats = (Caveat(code="core-info-unreadable", message="its .info could not be read"),)
     if refused and not caveats:
         caveats = (Caveat(code="firmware-declaration-leaves-root", message="leaves the root"),)
+    needs = (_REQUIREMENT_SYSTEM,) if system_firmware == SYSTEM_FIRMWARE_CANNOT_RUN_WITHOUT else ()
     return CoreFirmware(
         core_so=core_so,
         label=label,
@@ -137,6 +150,7 @@ def _core(
         caveats=caveats,
         refused=refused,
         system_firmware=system_firmware,
+        system_firmware_needs=needs,
     )
 
 
@@ -276,6 +290,115 @@ class TestPlacements:
         placement = adapter().placements[0]
 
         assert [(w.emulator, w.required) for w in placement.wants] == [("pcsx2_libretro.so", True)]
+
+    def test_a_rows_declaration_is_the_one_the_description_came_from(self, adapter, monkeypatch):
+        """The register a row's prose is written in, read off the entry that wrote it.
+
+        Two emulators declare one PlayStation image and their descriptions are
+        two kinds of writing: a packaged card explains the requirement in whole
+        sentences, a libretro ``.info`` labels the file. The placement keeps one
+        description — the first pair's — so it has to keep that pair's word for
+        how it was written; taking the word off any other declaring entry would
+        describe prose this row does not carry.
+        """
+        packaged_prose = (
+            "a PlayStation BIOS image — the console runs it before any disc, and DuckStation starts "
+            "nothing without one — found by the search, not named by any setting"
+        )
+        answer = _answer(
+            _core(
+                core_so=None,
+                emulator="DUCKSTATION",
+                declaration="packaged",
+                requirements=(_requirement(core_so=None, file_name="scph1001.bin", description=packaged_prose),),
+            ),
+            _core(
+                core_so="swanstation_libretro.so",
+                requirements=(
+                    _requirement(
+                        core_so="swanstation_libretro.so",
+                        file_name="scph1001.bin",
+                        description="scph1001.bin (PS1 US BIOS)",
+                    ),
+                ),
+            ),
+        )
+        monkeypatch.setattr("adapters.atlas_firmware.detect", _detecting(_Installation(answer)))
+
+        placement = adapter().placements[0]
+
+        assert placement.description == packaged_prose
+        assert placement.declaration == "packaged"
+
+    def test_a_rows_bytes_answer_comes_from_the_entry_the_description_did(self, adapter, monkeypatch):
+        """``checked`` rides with the destination half, off the same pair as the description.
+
+        Two emulators declare one image and each entry carries its own reading of
+        the bytes at it. The placement describes ONE destination, so it keeps one
+        answer, and it has to be the first pair's — the same rule the description
+        and its declaration follow. Taking a later entry's would report a read of
+        a place this row does not describe.
+        """
+        answer = _answer(
+            _core(
+                core_so=None,
+                emulator="DUCKSTATION",
+                declaration="packaged",
+                requirements=(
+                    _requirement(core_so=None, file_name="scph1001.bin", found=KIND_FILE, checked="unrecognised"),
+                ),
+            ),
+            _core(
+                core_so="swanstation_libretro.so",
+                requirements=(
+                    _requirement(
+                        core_so="swanstation_libretro.so",
+                        file_name="scph1001.bin",
+                        found=KIND_FILE,
+                        checked="verified",
+                    ),
+                ),
+            ),
+        )
+        monkeypatch.setattr("adapters.atlas_firmware.detect", _detecting(_Installation(answer)))
+
+        assert adapter().placements[0].checked == "unrecognised"
+
+    def test_a_row_whose_reading_asked_no_byte_question_carries_no_answer(self, adapter, monkeypatch):
+        """``None`` is the ordinary answer, and it is carried as such.
+
+        A file that is simply absent has no bytes to read, and the resolver says
+        so by answering nothing. That is not a value to invent a word for.
+        """
+        answer = _answer(_core(requirements=(_requirement(),)))
+        monkeypatch.setattr("adapters.atlas_firmware.detect", _detecting(_Installation(answer)))
+
+        assert adapter().placements[0].checked is None
+
+    def test_a_declaration_with_no_location_under_the_root_carries_no_byte_answer(self, adapter, monkeypatch):
+        """The destination half goes silent together, and this is part of it.
+
+        A standalone emulator's own XDG tree holding the file says nothing about
+        the BIOS root the caller writes to, so the reading is dropped rather than
+        travelling on to describe a place the caller will never look at.
+        """
+        answer = _answer(
+            _core(
+                requirements=(
+                    _requirement(
+                        declared="/opt/elsewhere/gba_bios.bin",
+                        path="/opt/elsewhere/gba_bios.bin",
+                        found=KIND_FILE,
+                        checked="verified",
+                    ),
+                )
+            )
+        )
+        monkeypatch.setattr("adapters.atlas_firmware.detect", _detecting(_Installation(answer)))
+
+        placement = adapter().placements[0]
+        assert placement.relative_path is None
+        assert placement.checked is None
 
     def test_an_entry_the_resolver_could_not_identify_still_owns_its_file(self, adapter, monkeypatch):
         """EmuDeck's ``n3ds`` rows: a launch atlas classifies standalone and cannot name.

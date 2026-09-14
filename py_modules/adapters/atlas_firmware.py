@@ -23,11 +23,16 @@ Two properties of the resolver decide this module's shape:
 
 **Two questions, and the scope is what tells them apart.**
 :class:`AtlasFirmwareAdapter` asks ``firmware_inventory()`` — every installed
-libretro core, unverified — and it is the right question only where the caller
-has no platform to name: the RetroDECK-home migration's untracked-BIOS sweep,
-and the download of one firmware id. It carries **no standalone entry at all**,
-which upstream states outright, so it can never answer what a standalone
-emulator wants.
+libretro core plus, since the resolver's 0.19.0, the standalone emulators a
+packaged card covers, all unverified — and it is the right question only where
+the caller has no platform to name: the RetroDECK-home migration's
+untracked-BIOS sweep, and the download of one firmware id. **Its standalone
+entries say only what a card can name unverified.** A card may identify its
+image by CONTENT, and this route reads no bytes, so such an entry comes back
+declaring nothing at all — DuckStation's inventory entry names no file here
+while the verified per-system reading below has it naming the image it found.
+So an absence here is still never "this emulator wants nothing", and no
+readiness answer is built from this route.
 
 :class:`AtlasPlatformFirmwareAdapter` asks
 ``firmware_for_system(<system>, verify=True)`` — every emulator ES-DE offers for
@@ -411,7 +416,13 @@ def _placement_for(
     is the early return: a standalone emulator's own XDG tree holding the file
     says nothing about the BIOS root the caller will write to, so the reading is
     dropped rather than travelling on to describe somewhere else. What survives
-    is the declaration — its kind is what the emulator OPENS, not what is there.
+    is the declaration — its kind is what the emulator OPENS, not what is there,
+    and its ``declaration`` state says which register the description is written
+    in, which is a property of the entry that stated it rather than of the place.
+
+    ``checked`` goes with the destination half, and off the same entry the
+    declaration does: it is what became of the bytes AT that place, so carrying
+    it past the early return would describe a read of somewhere else.
     """
     first_core, first = pairs[0]
     directory = first.declared_kind == DECLARED_DIRECTORY
@@ -425,6 +436,7 @@ def _placement_for(
             description=first.description,
             wants=wants,
             declared_kind=declared_kind,
+            declaration=first_core.declaration,
         )
 
     speaking = _speaking_for(at_path, in_dir, first, emulator_identity(first_core))
@@ -437,9 +449,11 @@ def _placement_for(
         wants=wants,
         present=first.present,
         declared_kind=declared_kind,
+        declaration=first_core.declaration,
         caveats=tuple(dict.fromkeys(caveat.code for caveat in speaking)),
         folder=folder,
         supplied_by=supplied.label if supplied is not None else None,
+        checked=first.checked,
     )
 
 
