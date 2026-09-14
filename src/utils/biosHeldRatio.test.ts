@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { biosHeldRatio, HELD_RATIO_PHRASE } from "./biosHeldRatio";
+import { componentSources } from "../test-utils/componentSources";
 import type { BiosStatus, FirmwarePlatformExt } from "../types";
 
 describe("biosHeldRatio", () => {
@@ -46,22 +45,28 @@ describe("biosHeldRatio", () => {
 
 /**
  * The same drift lock `biosSummary.test.ts` puts on the seven sentences, over
- * the one tail both of those surfaces append to them.
+ * the one tail the surfaces append to them.
  *
- * The template stood in both components at once, which is the state this module
+ * The template stood in two components at once, which is the state this module
  * removed; nothing but a search of the sources can say it has not come back. The
  * phrase comes from the module the answer is built from, so a wording change
  * moves the lock with it rather than leaving a second copy of it here.
  *
+ * **It sweeps the same set its twin does** (`test-utils/componentSources.ts`)
+ * rather than naming the components, for the reason written there: both locks
+ * once named two while three components rendered a BIOS state. Only the sentence
+ * half actually drifted — the Platforms list has never written a ratio — so the
+ * sweep holds this half before the fact rather than repairing it after, which is
+ * the only thing a lock can do for a surface that has not gone wrong yet.
+ *
  * It reads the components as TEXT, so a comment quoting the ratio fails it too —
  * deliberately: the words belong to the module, and so does the reasoning about
- * them.
+ * them. And like its twin it can only see this phrase copied: a component
+ * inventing its own way to write the library's ratio is invisible to it, as it
+ * would be to any string search.
  */
 describe("no surface writes the ratio itself", () => {
-  const surfaces = ["../components/BiosTab.tsx", "../components/library/PlatformDetail.tsx"];
-
-  it.each(surfaces)("%s carries no spelling of its own", (relative) => {
-    const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+  it.each(componentSources())("$path carries no spelling of its own", ({ source }) => {
     expect(source).not.toContain(HELD_RATIO_PHRASE);
   });
 
