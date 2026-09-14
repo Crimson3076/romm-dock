@@ -964,6 +964,7 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     "finalize_game_session",
     # Firmware / BIOS read-only checks.
     "get_firmware_status",
+    "get_platform_firmware_status",
     "check_platform_bios",
     "get_bios_status",
     # Save sync read-only / device queries.
@@ -1170,7 +1171,7 @@ class TestMainStartupOrdering:
                 adoption_move=MagicMock(),
                 firmware_file_store=MagicMock(),
                 firmware_resolver=MagicMock(),
-                firmware_folder_verdicts=MagicMock(),
+                platform_firmware_resolver=MagicMock(),
                 migration_file_store=MagicMock(),
                 rom_file_store=MagicMock(),
                 save_file_store=MagicMock(),

@@ -956,16 +956,25 @@ it, for the focused platform:
 - **BIOS files** — the summary (required, or files, the console's own demand where it has one, and the three shapes that
   make no readiness claim — `system_image: "absent"` reads "Needs at least one BIOS file" and outranks the counts and
   the decline alike, tested before either, because the console asks for one of the images and no count can state that;
-  `"unsettled"` joins `required_withheld` on the keeping side of `nothingEstablished`, so its downloads stay), then a
-  table: File, On disk, Contents, and a **Download** button on every row that is missing and in the RomM library (#164)
-  — never on a folder declaration, whatever its state, because the emulator opens that name as a directory — and a
-  **Delete** button on every row a download record of ours still holds. That covers a declared **folder** too, where no
-  record carries the row's name and the button counts the distinct files our records name underneath it (`Delete (N)`):
-  a folder is never a download, which says nothing about the files already inside one. Same authority as `Delete BIOS`,
-  described below. Below the table one row of buttons: Download required (_N_), Download all, Delete BIOS behind a
-  `ConfirmModal`. **All three are always rendered and disable when there is nothing to do**, the ruling the Remove group
-  already had: on PS2 all three vanished at once, and a button that disappears is a state the reader has to work out. A
-  disabled `DialogButton` is still a focus stop, so the row stays walkable.
+  `"unsettled"` and `required_withheld` are declined VERDICTS over rows that answered, so neither reaches
+  `nothingEstablished`, which is the narrowest decline and decides **wording only**), then a table: File, On disk,
+  Contents, and a **Download** button on every row that is missing and in the RomM library (#164) — never on a folder
+  declaration, whatever its state, because the emulator opens that name as a directory — and a **Delete** button on
+  every row a download record of ours still holds. That covers a declared **folder** too, where no record carries the
+  row's name and the button counts the distinct files our records name underneath it (`Delete (N)`): a folder is never a
+  download, which says nothing about the files already inside one. Same authority as `Delete BIOS`, described below.
+  Below the table one row of buttons: Download required (_N_), Download all, Delete BIOS behind a `ConfirmModal`. **All
+  three are always rendered and disable when there is nothing to do**, the ruling the Remove group already had: on PS2
+  all three vanished at once, and a button that disappears is a state the reader has to work out. A disabled
+  `DialogButton` is still a focus stop, so the row stays walkable.
+
+  **What the two Download buttons and the per-row one read is the fetchable set and nothing else** — one filter, in this
+  file, over `on_server && !downloaded && declared_kind !== "directory"`. Readiness is not an input to it, in any of its
+  shapes: what the resolver could establish is the EMULATOR's demand and what is fetchable is what the RomM library
+  holds, and neither answers the other. Gating on the verdict is what took the buttons off PS2, GameCube and PSP when a
+  BIOS answer was first scoped to the emulator that launches — those three launch standalone emulators the resolver
+  holds no card for, so the verdict declines over a library that still holds their files, and the pane then offered
+  nothing to press on exactly the platforms that need one.
 
   **A running download is said by the button that started it.** The pressed button — bulk or per-row — becomes a
   spinner, every other download button on the pane disables, and when it finishes the rows re-read. There is no
@@ -1044,13 +1053,13 @@ it, for the focused platform:
   `biosFileNote`'s caveat wording ("its location could not be read", "a folder is here, where the emulator opens a
   file") appears wherever a destination cannot be read, which no corpus predicts.
 
-  The file name is printed once. The description beside it is **not RomM's** — `_group_server_firmware` builds no
-  description at all and `_wanted_fields` overwrites what came in, so what arrives is the core's own `firmwareN_desc`,
-  or the file name itself for a row no placement covers. Both spell the name into the words, and across the 292 `.info`
-  files a stock RetroDECK ships (695 declared entries) they do it in three shapes: the description IS the name (35%),
-  the name then prose (47%), or the name with its directory then prose (17%). The rule is to drop a leading token that
-  names this file — as itself or at the end of a path — and keep the rest verbatim, with a first half that strips the
-  name where the description opens with it verbatim, which is the only way a name containing spaces can be seen
+  The file name is printed once. The description beside it is **not RomM's** — `_server_files` builds no description at
+  all and `_wanted_fields` overwrites what came in, so what arrives is the core's own `firmwareN_desc`, or the file name
+  itself for a row no placement covers. Both spell the name into the words, and across the 292 `.info` files a stock
+  RetroDECK ships (695 declared entries) they do it in three shapes: the description IS the name (35%), the name then
+  prose (47%), or the name with its directory then prose (17%). The rule is to drop a leading token that names this file
+  — as itself or at the end of a path — and keep the rest verbatim, with a first half that strips the name where the
+  description opens with it verbatim, which is the only way a name containing spaces can be seen
   (`"7800 BIOS (U).rom (7800 BIOS)"`). Surrounding quotes are stripped before that comparison, which is what reaches the
   corpus's one folder declaration (`"'pcsx2/bios' folder"`, on a row whose name line already shows that path). Together
   they fire on 690 of the 695; of the five printed whole, three name a folder the file sits in and two are upstream
@@ -1083,41 +1092,67 @@ it, for the focused platform:
   so in a line under the pair, because with a spinner above it a silent failure is a spinner that never stops; the
   button stays pressable there, since a failed count is not evidence that there is nothing to delete.
 
-Five reads feed the tab. Three are list-shaped and run once per page mount: `get_platforms` (RomM's platforms with ROMs,
-the list itself), `get_firmware_status` (BIOS state for the platforms it can speak for) and `get_registry_platforms`
+Six reads feed the tab. Three are list-shaped and run once per page mount: `get_platforms` (RomM's platforms with ROMs,
+the list itself), `get_firmware_status` (**which** platforms have a BIOS answer to give) and `get_registry_platforms`
 (ROMs bound to a Steam shortcut per platform — the shortcut counts, and what "has synced games" means here). Only the
 first gates the list; the other two fill in beside it, and **each says so on the pane when it fails**, because for both
 of them a failure and an answer arrive the same way — as an absence. A failed `get_registry_platforms` read as zero
 shortcuts would empty the header, withdraw the core picker behind "sync this platform first" and disable the removal,
 three claims about a platform nothing was learned about; the counts go to `null` instead, which is not zero, and a line
-under the header says the number is missing while the removal stays live (it needs only the slug). A failed
-`get_firmware_status` is worded apart from a platform the overview genuinely has no entry for, which is a finished
-answer — and a failed **re-read** is that finished answer again, not a third state: an answer set is still held, so a
-pane with no entry of its own goes on saying "nothing is known about this platform's BIOS files" and the notice above it
-warns that the whole answer may be stale. Only a first read that never landed leaves a pane with nothing to say.
+under the header says the number is missing while the removal stays live (it needs only the slug).
 
-The other two are **per-platform-slug reads issued once per selection** and cached for the life of the page.
-`get_system_core_info` exists because neither list read can answer for the focused platform: `get_platform_core_info` is
-keyed by ROM and layers that ROM's own pin on top, and the firmware overview carries no entry at all for a platform it
-has nothing to say about. It costs one ES-DE options read and a `settings.json` lookup, and opens no database
-transaction. `count_platform_saves` answers how many save files the platform holds, for the Delete _N_ save files
-button: nothing else knows the number, because the delete finds its files through the platform's installed ROMs and
-counts only what it removed, afterwards. It walks that same path without deleting, and **that path is 3N+1 short
-`BEGIN IMMEDIATE` transactions** in the ordinary case, not one. The platform's id read opens one
-(`SaveService._installed_rom_ids_on_platform`), and `find_save_files` → `RomInfo.get_rom_save_info` opens three more per
-ROM: `rom_installs.get`, then `current_save_sorting()` — which is unconditional — asking `pending_sort_settings()` and,
-because nothing is normally pending, `_read_current_sort_settings()` behind the same `or`. Nothing memoises the sorting
-answer, so both are re-read for every ROM. A pending save-sort migration makes it **2N+1**: the `or` short-circuits.
-`sort_by_core` recorded makes it **4N+1** and adds an ES-DE read per ROM, because `resolve_retroarch_corename` →
-`ActiveCoreResolver.active_core_for_rom` opens a fourth transaction for the ROM and its install and then resolves
-through `get_emulator_options(system)` — the heavy read, which globs each option's emulator install through the find
-rules, not the cheaper `get_default_emulator`. On a 128-ROM platform that is 385 lock acquisitions ordinarily and 513
-with sort-by-core. That cost is deliberate and is not the read's to fix: it must walk exactly what the delete walks, or
-the number offered stops being the number taken. What keeps it out of the way is that it is offloaded off the event loop
-and asked once per selection, and that a failure — `SQLITE_BUSY` among them — degrades to a line saying the count could
-not be read rather than to a wrong number — and that failure forgets the slug, so re-selecting the platform asks again,
-which is what the line says and is the only failure on this pane that does not need the page reopened. It is asked again
-after a delete, so the button stops offering saves that are gone.
+The fourth is `get_platform_firmware_status`, and it is asked **once per platform** rather than once per page, because
+what a platform's BIOS state IS costs a live per-system reading of the machine. Measured on the reference device: the
+reading itself is 67-350 ms per system and a platform's whole answer 106-486 ms, so a 28-platform library put 4.1 s in
+front of the first row when one call answered for all of them — where the call that merely names those 28 takes 4.6 ms.
+The page therefore renders from the cheap reads and the answers arrive underneath it, and four rules hold:
+
+- **The frontend owns the order.** It walks its own list top-down and puts whichever row the reader is on next, because
+  that is the pane that is open. The backend answers one platform at a time and builds no ordering of its own.
+- **A row waiting for its answer is drawn and worded apart from one nothing could be established for.** Both hold no
+  answer, so both would otherwise be the grey dot that means "unknown" — an ANSWER, and the wrong one, over most of the
+  list for the first seconds of every visit. A waiting row draws the dot as an **outline** and says "Checking…"; the
+  solid grey dot keeps its meaning.
+- **Leaving the page stops the work.** No further platform is asked for, and an answer already in flight is dropped
+  rather than written — a visit's answers belong to that visit, and a fresh one has re-read them.
+- **A BIOS download or delete, and a core change, re-read that platform and no other.** The files (or the emulator)
+  changed for one platform; re-reading the library would pay a live reading per platform for it.
+
+Two reads for one platform are ordered by a counter taken when each is issued, and only the newest may write. The core
+picker is offered while a platform's BIOS answer is still coming — it needs no BIOS data — so a core change really can
+put a second read in flight for one platform, and the older one lands describing the core that is no longer picked. Its
+only symptom would be a wrong colour.
+
+A read that **failed** is worded apart from a platform the overview genuinely has nothing to say about, which is a
+finished answer. So is a failed **re-read**: an answer already held is not taken back, the pane goes on showing it, and
+a line above says it may be out of date — and only that platform's pane says so, because only that platform's read
+failed. Picking the platform again retries it, which is what the line says; only that and the save count recover without
+reopening the page.
+
+The last two are **per-platform-slug reads issued once per selection** and cached for the life of the page.
+`get_system_core_info` exists because neither the list reads nor the BIOS read can answer for the focused platform at
+the moment it is focused: `get_platform_core_info` is keyed by ROM and layers that ROM's own pin on top, and the
+per-platform BIOS answer carries the same emulator fields but arrives whenever the walk reaches that platform — which is
+not when the reader opens its pane, and never at all for a platform the page has nothing to say about. It costs one
+ES-DE options read and a `settings.json` lookup, and opens no database transaction. `count_platform_saves` answers how
+many save files the platform holds, for the Delete _N_ save files button: nothing else knows the number, because the
+delete finds its files through the platform's installed ROMs and counts only what it removed, afterwards. It walks that
+same path without deleting, and **that path is 3N+1 short `BEGIN IMMEDIATE` transactions** in the ordinary case, not
+one. The platform's id read opens one (`SaveService._installed_rom_ids_on_platform`), and `find_save_files` →
+`RomInfo.get_rom_save_info` opens three more per ROM: `rom_installs.get`, then `current_save_sorting()` — which is
+unconditional — asking `pending_sort_settings()` and, because nothing is normally pending,
+`_read_current_sort_settings()` behind the same `or`. Nothing memoises the sorting answer, so both are re-read for every
+ROM. A pending save-sort migration makes it **2N+1**: the `or` short-circuits. `sort_by_core` recorded makes it **4N+1**
+and adds an ES-DE read per ROM, because `resolve_retroarch_corename` → `ActiveCoreResolver.active_core_for_rom` opens a
+fourth transaction for the ROM and its install and then resolves through `get_emulator_options(system)` — the heavy
+read, which globs each option's emulator install through the find rules, not the cheaper `get_default_emulator`. On a
+128-ROM platform that is 385 lock acquisitions ordinarily and 513 with sort-by-core. That cost is deliberate and is not
+the read's to fix: it must walk exactly what the delete walks, or the number offered stops being the number taken. What
+keeps it out of the way is that it is offloaded off the event loop and asked once per selection, and that a failure —
+`SQLITE_BUSY` among them — degrades to a line saying the count could not be read rather than to a wrong number — and
+that failure forgets the slug, so re-selecting the platform asks again, which is what the line says and is the only
+failure on this pane that does not need the page reopened. It is asked again after a delete, so the button stops
+offering saves that are gone.
 
 **Collections** has no per-entry detail, so it is one wide list: the favorites toggle and the Mine / All owner scope on
 top, the kind filter (Standard, Smart, Virtual — with the Franchise / IGDB Collection split inside Virtual), the fuzzy

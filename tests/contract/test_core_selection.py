@@ -20,11 +20,15 @@ The resolution reads the live ``es_systems.xml`` the harness seeds under
 ``tmp_path`` (#1210) — there is no ``core_defaults`` snapshot. The last block
 pins the SHAPE of the three emulator-picker payloads — the game-detail
 ``get_platform_core_info``, the platform-keyed ``get_system_core_info`` the
-Library page's Platforms detail asks, and the ``get_firmware_status`` overview —
-with the emulator list present (happy) and absent (emulator data unavailable).
+Library page's Platforms detail asks, and ``get_platform_firmware_status``, the
+BIOS page's per-platform answer — with the emulator list present (happy) and
+absent (emulator data unavailable). The ``get_firmware_status`` overview beside
+them carries none of it, and is pinned for that absence.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from ._seed import (
     seed_component_launcher,
@@ -49,6 +53,7 @@ _MGBA_ENTRY = {
     "label": "mGBA",
     "kind": "libretro",
     "core_so": "mgba_libretro",
+    "emulator": "mgba_libretro.so",
     "is_default": True,
     "bakeable": True,
     "reason": None,
@@ -57,6 +62,7 @@ _VBA_NEXT_ENTRY = {
     "label": "VBA Next",
     "kind": "libretro",
     "core_so": "vba_next_libretro",
+    "emulator": "vba_next_libretro.so",
     "is_default": False,
     "bakeable": True,
     "reason": None,
@@ -154,7 +160,11 @@ async def test_get_platform_core_info_payload_shape(harness):
     }
     assert result["emulator_data_available"] is True
     assert result["emulators"] == [_MGBA_ENTRY, _VBA_NEXT_ENTRY]
-    assert result["active_core"] == "mgba_libretro"
+    # One identity space across the whole payload: the active pick is stated in
+    # the same spelling the picker entry beside it carries, which is what the
+    # BIOS pane joins its per-emulator rows on.
+    assert result["active_core"] == "mgba_libretro.so"
+    assert result["active_core"] == _MGBA_ENTRY["emulator"]
     assert result["active_core_label"] == "mGBA"
     assert result["platform_core_label"] is None
     assert result["has_game_override"] is False
@@ -219,29 +229,72 @@ async def test_get_system_core_info_unavailable_when_no_es_systems(harness):
     assert result["active_core_label"] is None
 
 
-async def test_get_firmware_status_carries_emulators_per_platform(harness):
-    """The firmware overview carries the classified emulator list per platform."""
+async def test_the_firmware_overview_names_platforms_without_reading_them(harness):
+    """The overview says which platforms the page can speak for, and nothing else.
+
+    A platform's state costs a live per-system reading, so this call pays none —
+    which makes the absence of every state-bearing key the thing to pin: a
+    ``bios_level`` or a ``files`` list here would be rendered over a platform
+    nobody has asked about yet.
+    """
     seed_es_systems(harness)
-    seed_rom(harness, 7, platform_slug="gba")  # bound → has_games
+    seed_rom(harness, 6, platform_slug="gba")  # bound → has_games
     harness.romm.firmware_files = list(_GBA_FIRMWARE)
 
     result = await harness.plugin.get_firmware_status()
 
     assert result["success"] is True
+    assert result["server_offline"] is False
     gba = next(p for p in result["platforms"] if p["platform_slug"] == "gba")
+    assert set(gba) == {"platform_slug", "has_games"}
+    assert gba["has_games"] is True
+
+
+async def _named_platform(harness, slug: str) -> dict[str, Any]:
+    """The BIOS answer for a platform the page NAMES, asked for the way the page asks.
+
+    Taken through both calls rather than by reaching for the second one: what the
+    guarantee says is that the emulator info is there for every platform the page
+    can speak for, so a platform the overview stopped naming — or one it names
+    and the per-platform call cannot answer — has to fail these, and a test that
+    hardcoded the slug would pass through either.
+    """
+    named = await harness.plugin.get_firmware_status()
+    assert slug in [p["platform_slug"] for p in named["platforms"]]
+    answer = await harness.plugin.get_platform_firmware_status(slug)
+    assert answer["success"] is True
+    assert answer["platform"] is not None
+    return answer["platform"]
+
+
+async def test_a_named_platforms_answer_carries_its_classified_emulators(harness):
+    """Every platform the page names has the classified emulator list with its answer."""
+    seed_es_systems(harness)
+    seed_rom(harness, 7, platform_slug="gba")  # bound → has_games
+    harness.romm.firmware_files = list(_GBA_FIRMWARE)
+
+    gba = await _named_platform(harness, "gba")
+
     assert gba["emulator_data_available"] is True
     assert gba["emulators"] == [_MGBA_ENTRY, _VBA_NEXT_ENTRY]
-    assert gba["active_core"] == "mgba_libretro"
+    # The pane's pick and the identity its BIOS rows are keyed on are one field,
+    # and it is the identity — the one spelling that names a standalone emulator
+    # too. It is the same string the picker entry beside it carries.
+    assert gba["active_core"] == "mgba_libretro.so"
+    assert gba["active_core"] == _MGBA_ENTRY["emulator"]
 
 
-async def test_get_firmware_status_flags_unavailable_emulator_data(harness):
-    """No es_systems → each platform entry flags emulator data unavailable."""
+async def test_a_named_platform_flags_unavailable_emulator_data(harness):
+    """No es_systems → the named platform's answer flags emulator data unavailable.
+
+    Unavailable is not empty: the page says "RetroDECK was not found" off this
+    flag, and an empty list alone would read as a platform with no emulator.
+    """
     seed_rom(harness, 8, platform_slug="gba")
     harness.romm.firmware_files = list(_GBA_FIRMWARE)
 
-    result = await harness.plugin.get_firmware_status()
+    gba = await _named_platform(harness, "gba")
 
-    gba = next(p for p in result["platforms"] if p["platform_slug"] == "gba")
     assert gba["emulator_data_available"] is False
     assert gba["emulators"] == []
 
@@ -315,6 +368,7 @@ async def test_a_standalone_whose_component_is_absent_never_becomes_the_default(
             "label": "Ryubing (Standalone)",
             "kind": "standalone",
             "core_so": None,
+            "emulator": "RYUBING",
             "is_default": False,
             "bakeable": False,
             "reason": "not_installed",
@@ -323,6 +377,7 @@ async def test_a_standalone_whose_component_is_absent_never_becomes_the_default(
             "label": "Yuzu",
             "kind": "libretro",
             "core_so": "yuzu_libretro",
+            "emulator": "yuzu_libretro.so",
             "is_default": True,
             "bakeable": True,
             "reason": None,

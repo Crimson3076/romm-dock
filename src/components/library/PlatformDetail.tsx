@@ -419,8 +419,8 @@ const BiosRowLines: FC<{ lines: string[] }> = ({ lines }) =>
 /**
  * The description beside a file's name, with the name itself taken back out.
  *
- * **It is not RomM's description** — `_group_server_firmware` builds no
- * `description` key at all, and `_wanted_fields` overwrites whatever came in.
+ * **It is not RomM's description** — `_server_files` builds no `description`
+ * key at all, and `_wanted_fields` overwrites whatever came in.
  * What arrives is the core's own `firmwareN_desc` out of its `.info` file, or,
  * for a row no placement covers, the file name itself (`build_file_entry`'s
  * `else file_name`). Both spell the name into the words.
@@ -914,38 +914,40 @@ const BiosSection: FC<{ row: PlatformRow; state: PlatformsPageState; firmware: F
   // on `missing` and so never arrives with an `unknown` level — but nothing
   // joins the three surfaces, and a decline added ahead of that test in
   // `compute_bios_level` would leave this pane alone saying "Nothing installed
-  // could answer for this system" and withdrawing every download button while
-  // the other two said the console needs at least one BIOS file.
+  // could answer for this system" while the other two said the console needs at
+  // least one BIOS file.
   const declined = firmware.bios_level === "unknown" && systemImage !== "absent";
-  // An unsettled console demand is a declined VERDICT and not an unanswered
-  // platform: its rows were answered, so the downloads below stay — the same
-  // reading `requiredWithheld` gets, one axis over.
+  // The narrowest of the declines: not one row on the platform was answered, so
+  // the pane has nothing to point the reader at and says where a file can be put
+  // instead. A withheld required row and an unsettled console demand are both
+  // declined VERDICTS over rows that DID answer, and neither reaches this. It
+  // decides wording only — what the pane offers to fetch is a separate question
+  // with a separate input, below.
   const nothingEstablished = declined && requiredWithheld === 0 && systemImage !== "unsettled";
   const { summaryLabel, summaryDescription } = declined
     ? getUnknownSummary(requiredWithheld, systemImage)
     : getBiosSummary(requiredCount, requiredDone, requiredReady, optionalMissing, done, total, systemImage);
 
-  // The download affordances key off what is missing AND fetchable, never off
-  // readiness: a required file the RomM library does not hold leaves the
-  // platform not ready and still gives the user nothing to press here.
+  // The download affordances key off what is missing AND fetchable, and off
+  // nothing else — not on readiness, and not on whether a verdict could be
+  // reached. They are two independent questions: what the RESOLVER could
+  // establish is the emulator's demand, what is FETCHABLE is what the RomM
+  // library holds, and neither answers the other. A required file the library
+  // does not hold leaves the platform not ready and still gives the user
+  // nothing to press here; a platform nothing could be read for still has a
+  // library behind it, and fetching from it is the one action that moves the
+  // platform along at all.
   //
-  // `nothingEstablished` withdraws them entirely, and that is a PLATFORM
-  // condition, never a per-file one: a platform whose reading finished may hold
-  // plenty of files no installed emulator asks for — a PlayStation page
-  // typically does — and every one of them stays fetchable, because "nothing
-  // wants this" is an answer. Where nothing could be established there is no
-  // answer to download against, so the pane says so instead of offering to
-  // fetch files it cannot reason about. A declined READINESS verdict is not
-  // that state and keeps its buttons: its rows were answered, and downloading
-  // the files the library holds is the one thing that can still move the
-  // platform along.
+  // Reading readiness here is what took the buttons off PS2, GameCube and PSP
+  // the moment a BIOS answer was scoped to the emulator that actually launches:
+  // those launch standalone emulators the resolver holds no card for, so their
+  // verdict is withheld — which says nothing whatever about the files their
+  // library offers.
   //
   // A folder declaration is out whatever its state: the emulator lists that
   // name, so there is no file to fetch into it — what would satisfy it is a
   // BIOS image inside the folder, which is a different row.
-  const fetchableMissing = nothingEstablished
-    ? []
-    : files.filter((f) => f.on_server && !f.downloaded && f.declared_kind !== "directory");
+  const fetchableMissing = files.filter((f) => f.on_server && !f.downloaded && f.declared_kind !== "directory");
   const requiredMissing = fetchableMissing.filter((f) => f.required_by_active).length;
   const hasOptionalMissing = fetchableMissing.some((f) => !f.required_by_active);
   const showRequired = requiredMissing > 0 && !state.serverOffline;
@@ -976,12 +978,12 @@ const BiosSection: FC<{ row: PlatformRow; state: PlatformsPageState; firmware: F
           state a platform's BIOS state and they now agree by construction. */}
       <SectionTitle title="BIOS files" note={summaryLabel} noteColor={biosColorForLevel(firmware.bios_level ?? null)} />
       <Muted>{summaryDescription}</Muted>
-      {/* The one actionable thing in this state, and all that is left to say.
-          The line used to open "BIOS management is not supported for this
-          system yet", which is a claim about the plugin and not what the state
-          means: install an emulator that declares firmware for this platform
-          and the pane answers, with nothing changed here. It also said a third
-          time what the label and the summary above already say. */}
+      {/* The route the summary above cannot name: nothing here could say which
+          files this system wants, so the reader has to be told that placing one
+          by hand still works. The line used to open "BIOS management is not
+          supported for this system yet", which is a claim about the plugin and
+          not what the state means: install an emulator that declares firmware
+          for this platform and the pane answers, with nothing changed here. */}
       {nothingEstablished && <Muted>You can still put BIOS files in your BIOS folder by hand.</Muted>}
       {files.length > 0 && <BiosTableHeader />}
       {files.map((file) => (
@@ -1253,18 +1255,14 @@ export const PlatformDetail: FC<{ row: PlatformRow; state: PlatformsPageState }>
         busyName={state.rows.get(state.busySlug ?? "")?.name ?? "another platform"}
       />
       <CoreNotice row={row} state={state} offer={offer} />
-      {/* A failed read is said on EVERY pane, not only the ones with no entry.
-          A failed refresh does not clear the map, so a platform that has an
-          entry keeps showing pre-change rows — which is exactly where a reader
-          needs telling, and where the notice used to be silent while appearing
-          on the panes that had least to be wrong about. The two panes need
-          different sentences because only one of them has stale rows to warn
-          about. */}
-      {state.firmwareFailed && (
+      {/* A failed RE-read keeps the answer it could not replace, so what is
+          below is the state from before whatever changed it — which is exactly
+          where a reader needs telling, and where the notice used to be silent.
+          A read that failed with nothing behind it says so where the rows would
+          be, below. */}
+      {row.firmwareStale && (
         <Muted>
-          {state.firmwareHeld
-            ? "Could not re-read the BIOS state, so what is below may be out of date. Reopen the page to try again."
-            : "Could not read the BIOS state. Reopen the page to try again."}
+          Could not re-read the BIOS state, so what is below may be out of date. Pick the platform again to retry.
         </Muted>
       )}
       {firmware ? (
@@ -1272,15 +1270,18 @@ export const PlatformDetail: FC<{ row: PlatformRow; state: PlatformsPageState }>
       ) : (
         <>
           <SectionTitle title="BIOS files" />
-          {/* A failed read and a platform the overview has nothing to say about
-              arrive the same way — an absent entry — and they are different
-              sentences: one is a question that could not be asked, the other a
-              finished answer. A failed RE-read is the second again: the answer
-              set still stands, this platform's part of it is still "nothing",
-              and the notice above says the whole of it may be stale. */}
-          {(!state.firmwareFailed || state.firmwareHeld) && (
-            <Muted>Nothing is known about this platform&apos;s BIOS files.</Muted>
+          {/* Three ways to have no rows, and they are three different
+              sentences. A read still out is a question nobody has answered yet
+              — said as one, because the alternative is the reader taking the
+              silence for "nothing needed" on a platform whose turn simply has
+              not come. A read that did not come back is a question that could
+              not be asked. What is left is a finished answer: there is nothing
+              to manage here. */}
+          {row.firmwareState === "pending" && <Muted>Checking what this platform needs…</Muted>}
+          {row.firmwareState === "failed" && (
+            <Muted>Could not read the BIOS state. Pick the platform again to retry.</Muted>
           )}
+          {row.firmwareState === "nothing" && <Muted>Nothing is known about this platform&apos;s BIOS files.</Muted>}
         </>
       )}
       <RemoveSection row={row} state={state} />

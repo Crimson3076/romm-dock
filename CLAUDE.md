@@ -166,14 +166,16 @@ locally with `mise run docs`.
   resolver has no source for what it wants. Reading a length where the verdict was asked produced a green "needs
   nothing" over a console that does not boot without an image, twice in one hour, and the second time with
   `requirements_met: None` already on screen. The same shape recurs across the answer: `system_firmware: None` is
-  nothing recorded rather than nothing needed, and `core_so: None` is a standalone emulator's entry rather than no
-  entry. **The answer is entry-shaped**, and `answer.requirements` is a flattening that has already discarded
-  `declaration`, `requirements_met`, `caveats`, `unread` and `refused` — so an entry-level question answered from it is
-  answered from evidence that was thrown away before the question was put. Related and separate: `description` is
-  deliberately outside the resolver's contract (it is the packager's prose from a core's `.info`), so it is not a field
-  to render as a row's headline. Nothing mechanical carries any of this; the vocabulary overlaps ours almost exactly
-  (`satisfied`, `required`, `present`, `cores`, `description` all exist on both sides and name different types), which
-  is what makes a wrong reading look like a correct one.
+  nothing recorded rather than nothing needed, and `core_so: None` is a standalone emulator's entry rather than no entry
+  — which emulator that is comes from `emulator`, the identity field that stands on both kinds and on both the catalogue
+  answer and the firmware one; `label` is presentation (one `pcsx2_libretro.so` under two of them) and a caveat's
+  `token` is a third vocabulary again. **The answer is entry-shaped**, and `answer.requirements` is a flattening that
+  has already discarded `declaration`, `requirements_met`, `caveats`, `unread` and `refused` — so an entry-level
+  question answered from it is answered from evidence that was thrown away before the question was put. Related and
+  separate: `description` is deliberately outside the resolver's contract (it is the packager's prose from a core's
+  `.info`), so it is not a field to render as a row's headline. Nothing mechanical carries any of this; the vocabulary
+  overlaps ours almost exactly (`satisfied`, `required`, `present`, `cores`, `description` all exist on both sides and
+  name different types), which is what makes a wrong reading look like a correct one.
 
 ## Current State
 
@@ -375,16 +377,20 @@ Format: **invariant** — tier — enforced by.
   `tests/services/test_firmware.py::TestCheckPlatformBiosUnknown` pins the same listing answering `not_needed` under a
   whole reading and `unknown` under a partial one. The rule spans four modules and no diff-scoped review sees it whole:
   the adapter decides whether the reading happened, `domain/firmware_wants.py` holds the two values apart,
-  `services/firmware/status.py` scopes the doubt to the emulators ES-DE offers for the platform, and both frontend
-  surfaces render them as different sentences. **Nothing mechanical stands behind the scoping half.** A future caller
-  that folds the two values back together — a truthiness test on a placement, a `wanted != "needed"` bucket, a default
-  of `not_needed` where the catalogue is silent — goes green: the collapse is the upstream defect this swap removed, and
-  it is one careless `or` away from returning. The scope is the second half, and there the two ends now agree rather
-  than one trusting the other: `_core_scope` answers `None` both when the emulator catalogue could not be read **and**
-  when it offers the platform no libretro core (35 of ES-DE's 172 systems, `ps3` among them — a mapped RomM platform
-  whose only entry is RPCS3), and `reading_complete_for` refuses an empty scope as well as a `None` one. An empty scope
-  read as complete is a finished reading of nobody: every server file classifies `not_needed`, `required_count` is 0,
-  and the platform reports a green "Nothing required" over firmware the standalone emulator will not boot without
+  `services/firmware/status.py` scopes the doubt to the emulator the platform launches with, and both frontend surfaces
+  render them as different sentences. **Nothing mechanical stands behind the scoping half.** A future caller that folds
+  the two values back together — a truthiness test on a placement, a `wanted != "needed"` bucket, a default of
+  `not_needed` where the catalogue is silent — goes green: the collapse is the upstream defect this swap removed, and it
+  is one careless `or` away from returning. The scope is the second half, and since #1821 it is ONE emulator rather than
+  a platform's whole list: `reading_complete_for` takes the launching emulator's identity and refuses `None` — an
+  unresolved pick, or one the resolver could not identify. Read as complete, a `None` is a finished reading of nobody:
+  every server file classifies `not_needed`, `required_count` is 0, and the platform reports a green "Nothing required"
+  over firmware the emulator will not boot without. **An unread emulator the platform also offers no longer withholds
+  the answer**, which is deliberate — it says nothing about a launch that does not use it — and the cost is that
+  switching a platform's emulator can move it from a finished answer to a withheld one. `declaration="packaged"` with an
+  EMPTY requirement list counts as unread and is the shape most likely to be folded back the wrong way: a card may
+  identify its image by content, so it names no file until the bytes are read, and reading the empty list as "wants
+  nothing" puts a green all-clear on a PlayStation launching DuckStation
 - **A firmware row the RomM library does not hold (`on_server: False`) counts towards readiness, and never towards a
   download affordance or a progress ratio** — test + prompt-only — `tests/services/test_firmware.py` pins the row's
   shape (`id` absent, `on_server` clear), that it raises `required_count`, and that it stays out of `server_count`;
@@ -459,8 +465,9 @@ Format: **invariant** — tier — enforced by.
   a statement of the rule rather than an enforcement of it. It is also not the store's only real I/O — `grid_dir()` is
   called from `services/artwork.py` (six sites), `services/shortcut_removal.py` and `services/library/reporter.py`, and
   `check_retroarch_input_driver()` from `services/settings.py` — those are unlisted, and their being unlisted is a gap,
-  not a judgement) and `FirmwareFolderVerdictFn` (lists one core's declared folder and reads every candidate inside it
-  the way the core does — 0.26 s for LRPS2 on the reference machine), the save answer — `resolve_save_answer` and the
+  not a judgement), `FirmwarePlatformResolver` (reads what one system's emulators want WITH content verification: it
+  opens each candidate in a declared folder and reads it the way the emulator does — 64-318 ms per system on the
+  reference machine) and its whole-machine sibling `FirmwareResolver`, the save answer — `resolve_save_answer` and the
   saves package's own `save_answer` wrapper, 170 ms warm and 490 ms cold per ROM, which makes it the most expensive
   entry in the list — the two path resolvers — `MigrationFileStore.realpath` (one walk per stored RetroDECK-home marker,
   a directory that may sit on the SD card the marker is pending a migration away from) and `ResolvedPathFn` (the same
@@ -567,23 +574,23 @@ Format: **invariant** — tier — enforced by.
 - **A firmware row's verdict is `BiosFileEntry.satisfied`, and for a folder declaration it is what the folder HOLDS —
   never that the folder is there** — test + prompt-only —
   `tests/services/test_firmware.py::TestAFolderRequirementIsAnsweredByItsContents` pins all three answers end-to-end,
-  `tests/domain/test_firmware_wants.py` pins the two folds the service asks through, and
-  `tests/adapters/test_atlas_firmware.py` pins which folder answers the unverified reading already settles and which
-  codes those rows carry. The rule spans four modules and no diff-scoped review sees it whole: the adapter carries
-  `declared_kind` and the folder verdict, `domain/bios_status.py::_row_verdict` decides the row's answer,
-  `services/firmware/demand.py::FirmwareDemand.folder_answers` scopes the verified read, and both frontend surfaces
-  colour and word the row off it. **Nothing mechanical joins those four**, which is what a consumer reading `downloaded`
-  for a folder row breaks — an `if row.downloaded` beside the verdict, a count that spends presence as readiness.
-  RetroDECK links LRPS2's `pcsx2/bios` onto the BIOS root, so such a consumer reports "All required ready" over a PS2
-  install with no BIOS file at all; that was the state before #1807 declined the verdict, and this cut replaced the
-  declining with a real answer, so the same field access brings it straight back. The same holds for the third value: a
-  required row answered `None` takes the level to `unknown`, and folding it into `False` claims an absence nothing
-  established. `declared_kind` carries a second rule with **no check at all**: a folder declaration is never offered as
-  a download — the emulator lists that name, so there is no file to fetch into it. Three places refuse it today
-  (`PlatformDetail.tsx`'s fetchable filter, `FirmwareDownloader._download_firmware_batch`, and
-  `FirmwareDownloader.download_platform_firmware_file`, which answers one named file and so refuses with a reason where
-  the batch simply passes the row over); `FirmwareDownloader.download_firmware(firmware_id)` still does not. It is the
-  DECLARATION's kind, so it survives an absent folder, which is exactly the case a presence check would let through
+  `tests/domain/test_firmware_wants.py` pins the fold the service asks through, and
+  `tests/adapters/test_atlas_firmware.py` pins each folder answer and which codes those rows carry. The rule spans three
+  modules and no diff-scoped review sees it whole: the adapter carries `declared_kind` and the folder verdict — settled
+  in the same verified per-platform reading the rest of the row comes from, so there is no second question to keep in
+  step — `domain/bios_status.py::_row_verdict` decides the row's answer, and both frontend surfaces colour and word the
+  row off it. **Nothing mechanical joins those three**, which is what a consumer reading `downloaded` for a folder row
+  breaks — an `if row.downloaded` beside the verdict, a count that spends presence as readiness. RetroDECK links LRPS2's
+  `pcsx2/bios` onto the BIOS root, so such a consumer reports "All required ready" over a PS2 install with no BIOS file
+  at all; that was the state before #1807 declined the verdict, and this cut replaced the declining with a real answer,
+  so the same field access brings it straight back. The same holds for the third value: a required row answered `None`
+  takes the level to `unknown`, and folding it into `False` claims an absence nothing established. `declared_kind`
+  carries a second rule with **no check at all**: a folder declaration is never offered as a download — the emulator
+  lists that name, so there is no file to fetch into it. Three places refuse it today (`PlatformDetail.tsx`'s fetchable
+  filter, `FirmwareDownloader._download_firmware_batch`, and `FirmwareDownloader.download_platform_firmware_file`, which
+  answers one named file and so refuses with a reason where the batch simply passes the row over);
+  `FirmwareDownloader.download_firmware(firmware_id)` still does not. It is the DECLARATION's kind, so it survives an
+  absent folder, which is exactly the case a presence check would let through
 - **The console's own firmware demand is a value of its own (`system_image`) and is never folded into a count, and the
   resolver's `system_firmware: null` reaches it as a claim about nothing** — test + prompt-only —
   `tests/domain/test_bios_status.py::TestClassifySystemImage` pins all four answers and the precedence over them,
@@ -615,9 +622,11 @@ Format: **invariant** — tier — enforced by.
   **unverified** (the entry below), so it cannot occur here. What the presence half actually resolves to — a row's
   `satisfied` is presence, `null` in two shapes, and both read as not held — is written once, at
   `classify_system_image`, because an outside reader took that field for the resolver's usability answer and drew a
-  false finding from it. And on the frontend, `system_image: "unsettled"` joins `required_withheld` on the KEEPING side
-  of `PlatformDetail`'s `nothingEstablished`: its rows were answered, so withdrawing the downloads there takes away the
-  one action that still moves the platform along. **A fourth frontend reader is the play row's BIOS badge**
+  false finding from it. And on the frontend, `system_image: "unsettled"` joins `required_withheld` on the side
+  `PlatformDetail`'s `nothingEstablished` excludes: its rows were answered, so the pane has a file list to point at
+  rather than only a place to put files by hand. Since #1821 that flag decides WORDING alone — the download affordances
+  read the fetchable set and nothing else, because what the resolver could establish is the emulator's demand and what
+  is fetchable is what the library holds. **A fourth frontend reader is the play row's BIOS badge**
   (`src/utils/playSection.ts::extractBiosInfo`), where `"absent"` is a second established absence beside the required
   count. Whether the count sees the same thing is the core author's choice, which is why the badge may not be left to
   it: under SwanStation every image is optional, `required_count` is 0 and the comparison beside it is vacuously false,
@@ -636,8 +645,8 @@ Format: **invariant** — tier — enforced by.
   could answer for this system" and withdraw every download button while the other two read "Needs at least one BIOS
   file". Each surface pins its own order (`BiosTab.test.tsx`, `PlatformsTab.test.tsx`) and nothing joins them. **A
   narrower form of the same answer is read PER CORE onto every row**
-  (`FirmwareCatalogue.cores_needing_one_of_their_files` → `build_file_entry`'s `cores[<core_so>]["needs_one_of"]` and
-  the row's own `system_image_candidate`, worded by `BiosTab.tsx`'s `coreLineSuffix` and marked by
+  (`FirmwareCatalogue.emulators_needing_one_of_their_files` → `build_file_entry`'s `cores[<emulator>]["needs_one_of"]`
+  and the row's own `system_image_candidate`, worded by `BiosTab.tsx`'s `coreLineSuffix` and marked by
   `library/PlatformDetail.tsx`'s `diskMark`), and there the rule is that the two keys on that entry are two SPEAKERS:
   `required` is the core's own `.info`, the other is the packaged table about that core's console counted over the
   core's whole declaration, and `optional` beside `needs_one_of: 5` is the informative pair rather than a contradiction
@@ -651,32 +660,74 @@ Format: **invariant** — tier — enforced by.
   and widening either to match the other is the fix that reintroduces one of those two defects. Nothing checks any of
   it: `needs_one_of` is a plain int-or-null on a dict a surface may read either key of, and the candidate flag is a
   plain bool beside a `required_by_active` that reads like its sibling
-- **Which emulator a PLATFORM's answers are about is one pick, and every platform-scoped answer is a projection of it**
-  — test + prompt-only — `tests/services/test_firmware.py::TestOnePlatformOneEmulator` asserts the two surfaces AGREE
-  across every way a platform arrives at an emulator (no pick, each of the three ES-DE offers, a pin naming an emulator
-  the catalogue no longer lists, a pin whose command cannot be baked) rather than pinning today's value, because a value
-  test would pass for a third resolution that diverges on some other configuration;
+- **Which emulator a set of answers is about is ONE pick per scope — a platform's, and a ROM's — and every answer in
+  that scope is a projection of it** — test + prompt-only —
+  `tests/services/test_firmware.py::TestOnePlatformOneEmulator` asserts the two surfaces AGREE across every way a
+  platform arrives at an emulator (no pick, each of the three ES-DE offers, a pin naming an emulator the catalogue no
+  longer lists, a pin whose command cannot be baked) rather than pinning today's value, because a value test would pass
+  for a third resolution that diverges on some other configuration;
   `::TestDownloadRequiredFirmware::test_it_fetches_what_the_platforms_own_pick_calls_required` holds the download button
   to the same pick. The pick is `domain/emulator_commands.py::resolve_platform_option` — the per-platform override
   (`settings.json` `platform_cores`) when its label still names a bakeable emulator, else the es_systems default — and
   it is the read-path precedence `ActiveCoreResolver` applies minus the per-game layer. Three call sites read it today:
   `FirmwareStatusReader._platform_emulator` (which serves BOTH the overview's `active_core` / `active_core_label` and
-  `check_platform_bios`'s `active_core_so=None` fallback) and `FirmwareDownloader._platform_core`. **Nothing joins
-  them**, and a fourth resolution is exactly what this entry is about: the pane displayed a just-picked PCSX ReARMed and
-  judged the platform by the libretro system default beside it, so one PlayStation read `not_demanded` / `ok` on the
-  game page and `absent` / `missing` on the pane, and the write's own response carried the wrong verdict. `.label` and
-  `.core_so` must come off ONE call — two calls agree by coincidence, which is what the old pair did until an override
-  was set. A **standalone** pick names no core, so `active_core` is `None` and the file rows fall back to every
-  declaring emulator: that is ADR-0020's deferred degradation and it must not be repaired by reaching for a libretro
-  reading of the catalogue instead, which is the disagreement this removed. `CoreInfoProvider.get_active_core` — the
-  "first libretro entry, bakeable or not" reading these sites used — has no production caller left
-- **The whole-machine firmware inventory is never asked with content verification** — prompt-only —
-  `firmware_inventory()` is asked unverified and the verified question goes through `FirmwareFolderVerdictFn`, one core
-  per call, only for the folder rows `unanswered_folder_cores` reports still open. `verify=True` on the inventory sweeps
-  every unclaimed file under the BIOS root, plus each declared file the packaged identity table covers at a matching
-  size; the plugin resolves the whole machine on every game-page open, so the flag would be a per-open cost over the
-  user's entire BIOS directory. Nothing detects it — `firmware_inventory(verify=True)` is one keyword argument and every
-  test stays green
+  `check_platform_bios`'s `launching_emulator=None` fallback) and `FirmwareDownloader._platform_emulator_identity`.
+  **Nothing joins them**, and a fourth resolution is exactly what this entry is about: the pane displayed a just-picked
+  PCSX ReARMed and judged the platform by the libretro system default beside it, so one PlayStation read `not_demanded`
+  / `ok` on the game page and `absent` / `missing` on the pane, and the write's own response carried the wrong verdict.
+  `.label` and `.emulator` must come off ONE call — two calls agree by coincidence, which is what the old pair did until
+  an override was set. **The key is the emulator IDENTITY, not `.core_so`** (#1821): the identity names a standalone
+  pick as readily as a libretro one, where `core_so` is `None` for every standalone emulator and sent the rows back to
+  "every declaring emulator". Reaching for `.core_so` here again restores that degradation silently, because the field
+  is still there and still right for the picker payload beside it. `CoreInfoProvider.get_active_core` — the "first
+  libretro entry, bakeable or not" reading these sites used — has no production caller left. **The ROM scope is the same
+  rule one layer in, over a different pair of modules**: the game page is assembled by two services that each ask
+  `ActiveCoreReader.active_emulator_for_rom` for themselves — `services/cores.py::get_platform_core_info` names the pick
+  in the picker, `services/game_detail.py::get_bios_status` scopes the BIOS question to it — and
+  `::TestOneRomOneEmulator` asserts they agree across every way a ROM arrives at an emulator (nothing pinned, the
+  platform's pick, a per-game override, the override over a platform pick naming something else, a standalone pick, a
+  stale pin that degrades). They read one seam today and nothing says they must; the picker reaching for
+  `active_core_for_rom` — the `.so`-space projection right beside it — would answer `None` for every standalone pick and
+  send the BIOS rows back to the platform's own, which is the platform-scoped defect above, per ROM. **What the ROM
+  sibling cannot pin is the fixture's own default**: `FakeCoreInfoProvider.get_default_emulator` builds its invocation
+  from the `active_core` tuple, which carries no identity, so a test on the bare fake resolves an unpinned ROM to a
+  `None` where the live adapter resolves it to an emulator — `_DeclaredDefaultCoreInfo` in that file renders the
+  declared default the way `AtlasCatalogueAdapter` does, and every other fixture on the bare fake still exercises the
+  weaker resolution
+- **A platform's BIOS answer is asked for one platform at a time, and a row that has not got one yet is never rendered
+  as a row nothing could be established for** — test + prompt-only — `src/components/library/PlatformsTab.test.tsx` pins
+  the four halves that can be seen from a test: the two renderings apart (an outline dot and "Checking…" against the
+  solid grey dot and "Nothing is known"), the focused row asked ahead of the rows above it, the walk stopping at
+  unmount, and a read issued before a core change not overwriting the one issued after it. Each was mutation-checked.
+  **The JOIN between the two calls is pinned once**, in `tests/contract/test_firmware_status_read.py`: it composes them
+  over the real wiring and holds the result against the key set the single whole-page call answered with, which is the
+  one thing the service tier cannot do — its ~25 whole-page tests compose through a local helper that would reproduce a
+  composition bug rather than catch it. **The rule spans three frontend modules and one backend split, and nothing joins
+  them.** `services/firmware/status.py` answers `get_firmware_status` (which platforms the page can speak for) and
+  `get_platform_firmware_status` (one platform's whole entry — 106-486 ms each against 4.6 ms for the overview,
+  measured); `usePlatformsPage` owns the walk, the per-slug ordering counter and the four-valued `firmwareState`;
+  `PlatformsTab` draws the dot; `PlatformDetail` words the pane. Every failure here is silent and looks like an answer.
+  A state-bearing field creeping back onto the overview payload gets rendered over a platform nobody has asked about
+  yet. A fifth rendering path reading `firmware === null` instead of the state says "nothing could be established" about
+  most of the list for the first seconds of every visit — which is the confusion this cut exists to remove, restored by
+  a truthiness test. An answer already held is not taken back by a later failure (`firmwareStale` beside the state,
+  never instead of it), and "the overview did not name this platform" is one of the two ways to hold one. **Two halves
+  no test reaches**: the `alive` guard in the hook's `accept` is unobservable under React Testing Library, which drops a
+  write to an unmounted tree itself — what a test can see is the walk stopping, so the guard states the rule rather than
+  being held to it; and whether an 8px outline reads as "not yet" against a filled dot is device-only, like everything
+  else about this list's legibility
+- **The whole-machine firmware inventory is never asked with content verification, and the per-platform reading is never
+  asked without it** — prompt-only — `firmware_inventory()` (`FirmwareResolver`, `AtlasFirmwareAdapter`) is asked
+  unverified: `verify=True` there sweeps every unclaimed file under the BIOS root plus each declared file the packaged
+  identity table covers at a matching size, and its two callers — the home migration's untracked-BIOS sweep and
+  `download_firmware(firmware_id)` — need only where a file GOES. `firmware_for_system(<system>)`
+  (`FirmwarePlatformResolver`, `AtlasPlatformFirmwareAdapter`) is asked WITH it, and that half is the one a reader is
+  likely to "optimise": drop the flag and two answers go silent rather than loud — a packaged card that identifies its
+  image by content names no file at all (DuckStation comes back `declaration="packaged"` with an empty list and no
+  system recording), and every folder declaration's verdict falls to `None`, which takes each platform holding one to
+  `unknown`. Measured on the reference machine: 64-318 ms per system verified, against 248 ms for one unverified
+  whole-machine sweep — the per-system read performs no unclaimed sweep at all, which is what bounds it. Nothing detects
+  either direction: `verify` is one keyword argument on each call and every test stays green
 - **No sentinel objects on the wire — explicit JSON-representable tagged values only** — prompt-only — no sentinel
   survives on the wire today (`NO_MIGRATION` retired with #1004, legacy `slot:null` confirmation with #1276), so the
   rule now guards reintroduction; nothing mechanical detects a new one
@@ -714,20 +765,20 @@ Format: **invariant** — tier — enforced by.
   in the UI able to remove it. The PATH has its own version of the same trap: a status row's `local_path` is recomputed
   from today's placement, so for a file fetched before an emu-atlas bump moved it the name still matches our record
   while the path names whatever now occupies the new destination — RetroDECK's own `codehandler.bin`, in the case that
-  motivated this. The count the UI offers is bound to the same set: `deletable_count` on the `get_firmware_status`
-  payload is records-still-on-disk, counted as distinct paths, because `local_count` is the library's progress ratio and
-  is wrong in both directions — it hid the button entirely for a platform whose downloads had all left the library.
-  **Since #1815 the same field is stamped per ROW** (`_stamp_deletable`), and the frontend authorises a destructive
-  action on it: a row's Delete is offered where `deletable_count` is non-zero and nowhere else, and a folder row's
-  counts the distinct files our records name underneath it, because a folder is never a download but what we put inside
-  one is still ours — and two records naming one path are one unlink, the platform count's own rule read one layer in.
-  That is a wire field a page reads to decide whether to offer a delete, so deriving it from `downloaded` — the same
-  substitution as below, one layer out — puts the button on `codehandler.bin`; `TestGetFirmwareStatusDeletableCount`
-  pins the row's answer for a file the plugin did not place. **Three buttons now reach one removal loop**
-  (`PlatformBiosDeleter._delete_recorded_io`, under a record predicate per button): a second copy of that loop is the
-  shape this rule is about, because the copies would drift silently. **Nothing mechanical stands behind any of this.** A
-  delete path looping a status list on `downloaded` alone would go green — which is exactly the shape this one had when
-  it destroyed that file
+  motivated this. The count the UI offers is bound to the same set: `deletable_count` on the
+  `get_platform_firmware_status` payload is records-still-on-disk, counted as distinct paths, because `local_count` is
+  the library's progress ratio and is wrong in both directions — it hid the button entirely for a platform whose
+  downloads had all left the library. **Since #1815 the same field is stamped per ROW** (`_stamp_deletable`), and the
+  frontend authorises a destructive action on it: a row's Delete is offered where `deletable_count` is non-zero and
+  nowhere else, and a folder row's counts the distinct files our records name underneath it, because a folder is never a
+  download but what we put inside one is still ours — and two records naming one path are one unlink, the platform
+  count's own rule read one layer in. That is a wire field a page reads to decide whether to offer a delete, so deriving
+  it from `downloaded` — the same substitution as below, one layer out — puts the button on `codehandler.bin`;
+  `TestGetFirmwareStatusDeletableCount` pins the row's answer for a file the plugin did not place. **Three buttons now
+  reach one removal loop** (`PlatformBiosDeleter._delete_recorded_io`, under a record predicate per button): a second
+  copy of that loop is the shape this rule is about, because the copies would drift silently. **Nothing mechanical
+  stands behind any of this.** A delete path looping a status list on `downloaded` alone would go green — which is
+  exactly the shape this one had when it destroyed that file
 - **Every read-mutate-write of a `RomSaveSyncState` runs under `SyncEngine.rom_lock(rom_id)`** — prompt-only — sync
   paths, `get_save_status`, and the four slot mutations hold the lock; mechanize via a `rom_save_sync_states.save`
   call-site audit
