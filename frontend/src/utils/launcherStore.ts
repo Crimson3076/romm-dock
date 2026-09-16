@@ -8,16 +8,18 @@
  *
  * It starts false and is never set back. False therefore means "not established
  * this session" — the pass has not finished, or the backend said nothing may be
- * rewritten yet — and every reader is written for that reading, because the
- * panel would otherwise tell a user the pre-rename install is safe to remove on
- * the strength of a pass that never ran.
+ * rewritten yet — and any reader must be written for that reading: false is not
+ * evidence that a shortcut still points at the old path.
  *
  * Updated by:
  *   - plugin load init in index.tsx (relocateShortcutsToLauncher)
  *
  * Read by:
- *   - bigpicture/LegacyInstallBanner.tsx through {@link useLauncherRelocated},
- *     which decides which of the card's two statements the panel shows
+ *   - nothing, today. The card that read it through {@link useLauncherRelocated}
+ *     asked whether the pre-rename plugin folder was safe to remove, and that
+ *     question went with the plugin loader. The pass itself still runs and still
+ *     records its answer here, because whether the shortcuts point at the
+ *     launcher is the same question under any host.
  *
  * Every write installs a NEW state object and notifies. That is what lets
  * {@link getLauncherState} serve as a `useSyncExternalStore` snapshot — React

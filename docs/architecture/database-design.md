@@ -382,17 +382,16 @@ full per-connection PRAGMA set for runtime Unit-of-Work connections is applied b
 `busy_timeout=5000`, `temp_store=MEMORY`, with `isolation_level=None` so the UoW drives `BEGIN`/`COMMIT`/`ROLLBACK`
 explicitly.
 
-**Database location.** The database is `romm_sync.db` in the plugin's own data root under the user's home —
-`~/.local/share/romm-tender/` — reached through `bootstrap()`'s `locations.data_dir` and never composed at a call site.
-It used to live in the Decky-assigned runtime directory, whose name Decky derives from the plugin's folder, so a release
-that renamed the folder moved the database with it; the start-up migration copies it across on the first start that can,
-and a run whose migration could not finish still reads and writes the Decky directory. Both the reason and the
-migration's ladder are on [Backend Architecture → Where user data lives](backend-architecture.md#where-user-data-lives)
-([ADR-0031](../adr/0031-user-data-lives-outside-the-plugin-directory.md)).
+**Database location.** The database is `romm_sync.db` in this program's own data root — `~/.local/share/romm-tender/` by
+default — reached through `bootstrap()`'s `directories.data_dir` and never composed at a call site. It used to live in a
+directory a plugin loader derived from the delivered folder's name, so a release that renamed the folder moved the
+database with it; where the directories are is now resolved once from the environment and handed in, so no name can move
+it again. The ladder is on [Backend Architecture → Where user data lives](backend-architecture.md#where-user-data-lives)
+([ADR-0036](../adr/0036-the-backend-hosts-itself.md)).
 
 The live path reads and writes it; DB-init is hard-failing (a migration failure aborts startup rather than degrading
-silently) so a corrupt or unmigratable database never serves stale reads. The migration that moves the file runs
-**before** the schema runner opens it, so the two never race: what the runner opens is whatever the move settled on.
+silently) so a corrupt or unmigratable database never serves stale reads. Nothing moves the file any more, so the schema
+runner opens the one path the entry point resolved and there is no ordering left to get wrong.
 
 ### Adding a migration past v1
 

@@ -10,10 +10,9 @@ Common issues and how to fix them.
 failed to start — check Decky logs", and the Sync buttons are disabled. This state means the plugin's own Python backend
 process never started — it is **not** the same as an unreachable RomM server, which shows **Not connected** instead.
 
-**Fix**: The backend aborted during startup — most often a failed data migration after an update — so the UI can't reach
-it. Open the Decky plugin log to find the underlying error, then reload Tender from the Decky plugin list. If it still
-fails after a reload, restart Steam (or the Steam Deck); if the error persists, include the log output when you report
-it.
+**Fix**: The backend aborted during startup, so the UI can't reach it. Open the Decky plugin log to find the underlying
+error, then reload Tender from the Decky plugin list. If it still fails after a reload, restart Steam (or the Steam
+Deck); if the error persists, include the log output when you report it.
 
 Reaching that verdict takes up to about a minute and a half, because the check keeps retrying to ride out a backend that
 is merely slow to start rather than calling it dead too early. It runs to its conclusion whether or not the panel is
@@ -37,13 +36,14 @@ answers with its own message instead — "Server unreachable", "Sign-in rejected
 
 ### "RomM Sync" is still installed
 
-**Symptom**: Decky lists two plugins — an older **RomM Sync** and **Tender** — and Tender's QAM panel shows a warning
-card about it. Tender may also look brand new, with no server configured and no synced games.
+**Symptom**: Decky lists two plugins — an older **RomM Sync** and **Tender**. Tender may also look brand new, with no
+server configured and no synced games.
 
-**Fix**: Nothing to fix — read the card. It says one of two things: your games still launch through a file in that older
-plugin's folder, or nothing in Tender depends on it any more and it can go. Removing it before the card says so stops
-all of your games from starting, and Tender cannot put that file back. See
-[Updating from a release before 0.31.0](getting-started.md#updating-from-a-release-before-0310).
+**Fix**: Nothing to fix, but do not remove the older plugin until you have checked one of your games. Your shortcuts may
+still start through a file inside that older plugin's folder; removing it before they have been repointed stops all of
+your games from starting, and nothing can put that file back. A game's own **Target** path tells you which state you are
+in — see [Updating from a release before 0.31.0](getting-started.md#updating-from-a-release-before-0310) for the check
+and what each answer means.
 
 ### BIOS files missing
 

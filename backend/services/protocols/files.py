@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
     from models.adoption import ArchiveMemberInfo, ExistingContent, MoveOutcome, TopLevelEntry, TopLevelName
-    from models.data_location import SourceDescription
     from models.prune import (
         MutationOutcome,
         RecoveryArtifact,
@@ -688,9 +687,11 @@ class SgdbArtworkCache(Protocol):
     """Filesystem seam for the SteamGridDB artwork cache directory.
 
     Owns the raw POSIX calls SteamGridService uses to manage cached
-    SGDB artwork (heroes, logos, grids, icons) under the plugin runtime
-    directory. Path construction and pruning policy remain a service
-    concern; this Protocol exposes only the I/O seams.
+    SGDB artwork (heroes, logos, grids, icons) under the CACHE root —
+    it is re-derivable from the server, which is what puts it there
+    rather than beside the database. Path construction and pruning
+    policy remain a service concern; this Protocol exposes only the
+    I/O seams.
 
     Implementations are synchronous — services that call from an async
     context offload via ``loop.run_in_executor``.
@@ -748,19 +749,6 @@ class PruneArtifactStore(Protocol):
 
     def recovery_artifacts(self, rom_ids: list[int]) -> list[RecoveryArtifact]: ...
     def remove(self, rom_ids: list[int], claims: dict[str, SourceClaim] | None = None) -> MutationOutcome: ...
-
-
-class DataLocationStore(Protocol):
-    """Own the older data locations the plugin may still be asked to move from.
-
-    Only the two operations a running plugin performs: describing the candidates
-    a user is choosing between, and recording which one they picked. The copy
-    itself happens at the next start, before the database is opened, and is not
-    on this seam.
-    """
-
-    def describe_sources(self) -> list[SourceDescription]: ...
-    def record_answer(self, name: str) -> None: ...
 
 
 class SteamRecoveryStore(Protocol):
