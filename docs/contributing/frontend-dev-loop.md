@@ -25,10 +25,15 @@ Three pieces line up:
   events on exactly two files per plugin: `dist/index.js` and `main.py`. On a match it reloads the plugin in place —
   backend subprocess restart plus a cache-busted frontend re-import (the plugin unmounts cleanly first, so router
   patches are removed and re-applied).
-- **Reloading is gated on a `debug` flag.** The watcher itself runs on every device, but it only re-loads plugins
-  carrying `"debug"` in the `flags` array of `plugin.json`. `mise run deploy` injects the flag into the **deployed**
-  `plugin.json` only — it is never committed to the repo copy, because a release that shipped it would make every user's
-  device restart the plugin whenever its `dist/index.js` or `main.py` changed.
+- **Reloading is gated on a `debug` flag, and this repo no longer produces the manifest that carries it.** The watcher
+  itself runs on every device, but it only re-loads plugins carrying `"debug"` in the `flags` array of a plugin's
+  `plugin.json`. No Decky manifest is written or deployed from this tree any more, so the hot reload described in this
+  section does not fire on a deploy from here. It is documented because the watcher's behaviour is what the loop below
+  is shaped around, and because the installer that replaces the deploy is its own cut (#1902).
+
+  Do not mistake `frontend/plugin.json` for that manifest. It carries a `name` and nothing else, it is never deployed,
+  and it exists only because `@decky/rollup` reads a file of that name before it will build at all — see the comment
+  above `deckyPlugin({})` in `frontend/rollup.config.js`. Adding `flags` to it would reach no device.
 
 ## One-time setup
 
@@ -39,15 +44,14 @@ mise run dev:setup
 This changes the system so the daily loop can run without `sudo`:
 
 - Writes the systemd drop-in `/etc/systemd/system/plugin_loader.service.d/10-dev-loop.conf` with
-  `Environment=CHOWN_PLUGIN_PATH=0`. This disables Decky's tamper guard, which otherwise re-owns the plugin dir and
-  `plugin.json` back to root on every plugin load — with the guard off, the deck user can write straight into
+  `Environment=CHOWN_PLUGIN_PATH=0`. This disables Decky's tamper guard, which otherwise re-owns the plugin dir back to
+  root on every plugin load — with the guard off, the deck user can write straight into
   `~/homebrew/plugins/romm-tender`. Drop-ins survive Decky self-updates (those rewrite only the unit file).
 - Runs `systemctl daemon-reload` and restarts `plugin_loader`.
 - Chowns an existing plugin dir back to the deck user.
 - Warns (without failing) if `~/.steam/steam/.cef-enable-remote-debugging` is missing — see [DevTools](#devtools).
 
-The task is idempotent — safe to re-run at any time. The `debug` flag itself is not part of the setup: it is injected at
-deploy time by `mise run deploy`, on every deploy.
+The task is idempotent — safe to re-run at any time.
 
 ## Daily loop
 

@@ -100,6 +100,25 @@ locally with `mise run docs`.
 
 ## Traps — non-obvious rules that bite silently
 
+- **The build output lives at `<repo>/dist/`, not under `frontend/`** — and the frontend package writes one directory UP
+  to put it there (`config.output.dir = "../dist"` in `frontend/rollup.config.js`, assigned after `@decky/rollup` merges
+  its own defaults last, like `input` and `sourcemap`). `dist/` is the SEAM between the two halves rather than the
+  frontend's property: the backend serves it as `os.path.join(directories.code_dir, "dist")` (`backend/main.py`), and a
+  host that located its own build output relative to `__file__` would be the only part of the backend that knew the
+  repository's layout. Tidying `dist/` into the package it is built by would put the backend's reach inside the
+  frontend's internals. Two consequences worth knowing: `frontend/tsconfig.json`'s `outDir` and
+  `frontend/.size-limit.json`'s `path` both point up as well, and **emptying that directory is the `build` script's
+  job** (`rm -rf ../dist && rollup -c`) — `@decky/rollup` puts a `rollup-plugin-delete` in its plugin array aimed at
+  `./dist/*`, which resolves against the working directory and so cleans the package's own unused `dist` instead of the
+  real one.
+- **`frontend/plugin.json` is not a manifest, and `@decky/rollup` is why it exists** — the builder opens it
+  unconditionally as its first statement (`@decky/rollup@1.0.2`, `src/index.js:74`), with no option to skip the read, so
+  deleting it makes `rollup -c` fail with `ENOENT` before any config of ours runs. Nothing installs, ships or reads it
+  otherwise. Its contents are inert: `name` is the only field reached, and it reaches only a `127.0.0.1:1337` asset URL
+  no loader serves for us and a `decky://` sourcemap prefix the dev build alone emits, plus a `@decky/manifest` external
+  global no module imports. It is **not** a home of the display name — nothing requires it to agree with `DISPLAY_NAME`.
+  It goes when `@decky/rollup` does (#1899).
+
 - **Shortcuts**: Use `SteamClient.Apps.AddShortcut()` from frontend JS, NOT VDF writes. VDF edits require Steam restart;
   SteamClient API is instant.
 - **AddShortcut ignores most params**: `AddShortcut(name, exe, startDir, launchOptions)` ignores startDir and
@@ -133,14 +152,16 @@ locally with `mise run docs`.
   `main.py`) — the plugin is inert until the server is updated.
 - **User-Agent on outgoing HTTP**: SteamGridDB **and** RomM behind Cloudflare Tunnel reject the default `Python-urllib`
   UA with 403. Both adapters that talk to a server off this machine (`adapters/romm/http.py`, `adapters/steamgriddb.py`)
-  take a `user_agent: str` ctor param; bootstrap threads `<package name>/<version>`, both halves from one `package.json`
-  read — no hardcoded name and no hardcoded version, so it and the recovery root come from that one read rather than
-  from two literals that could drift (the root additionally through `sanitize_package_name`, which is the identity for a
-  name shaped like this one). Those two are everything `package.json`'s `name` reaches; the folder the plugin ships as
-  is not decided by this file — and is decided nowhere in the tree today, the build that decided it having gone with the
-  Decky zip. A missing or malformed `package.json` degrades to the metadata adapter's documented fallback,
-  `decky-plugin/0.0.0`. `adapters/renderer_gc.py` also speaks HTTP — to Steam's debugger on `localhost` — and takes
-  none.
+  take a `user_agent: str` ctor param; bootstrap threads `<package name>/<version>`, both halves from
+  `domain/identity.py` — no hardcoded name and no hardcoded version at the format site, so the UA and the recovery root
+  come from that one module rather than from two literals that could drift (the root additionally through
+  `sanitize_package_name`, which is the identity for a name shaped like this one). Those two are everything
+  `PACKAGE_NAME` reaches; the folder the program ships as is not decided by it — and is decided nowhere in the tree
+  today, the build that decided it having gone with the Decky zip. **There is no fallback and no failure mode left**:
+  this used to be a `package.json` read that degraded to `decky-plugin/0.0.0` when the manifest was missing or
+  malformed, and a constant cannot be missing — so a UA naming anything but this program is now a code change, never a
+  deployment accident. `VERSION` is machine-stamped by release-please (`x-release-please-version` on its line) and never
+  edited by hand. `adapters/renderer_gc.py` also speaks HTTP — to Steam's debugger on `localhost` — and takes none.
 - **Large payloads**: two caps, and they fail differently — `host/dispatch.py` refuses an encoded answer over ~12 MiB as
   an ordinary error for that one call, while `host/connection.py` closes the socket on a frame over 16 MiB, which
   rejects every call in flight with it. So a bulk payload is chunked rather than sent: per-item callables, and bulk
@@ -204,7 +225,7 @@ Latest release and shipped features: see `git tag --sort=-v:refname` and GitHub 
 
 ## Development
 
-- **Build**: `pnpm build` (Rollup -> dist/index.js)
+- **Build**: `pnpm -C frontend build` (Rollup -> dist/index.js)
 - **Tests**: backend — `python -m pytest tests/ -q` or `mise run test`; frontend — `mise run test:frontend` (Vitest +
   happy-dom)
 - **Coverage**: backend — `python -m pytest tests/ -q --cov=backend --cov-report=term --cov-branch`; frontend —
@@ -213,14 +234,26 @@ Latest release and shipped features: see `git tag --sort=-v:refname` and GitHub 
   inside `mise run gate`.
 - **Gate**: `mise run gate` (the full CI battery in one command — mirrors every PR check; slow. Run before pushing.)
 - **Setup**: `mise run setup` (installs JS + Python dependencies)
+- **Release**: release-please, configured as `release-type: simple` (`release-please-config.json`). What it proposes is
+  normally computed from `.release-please-manifest.json` plus the commits since — but **not today**:
+  `release-as: "1.0.0"` overrides that computation on every run, so every release PR proposes 1.0.0 until the key is
+  removed. **Take it out once 1.0.0 has shipped**, or the version stops moving and nothing says so.
+
+  Two files carry the version and each is written by a different mechanism: `version.txt` at the repository root is the
+  `simple` strategy's own version file, and `backend/domain/identity.py`'s `VERSION` line is an extra file, found by the
+  `x-release-please-version` marker on that line (the `generic` entry reaches only `identity.py`). Both are OUTPUTS of
+  the release run and neither is edited by hand. `version.txt` ends with a newline because that is what release-please
+  writes (`DefaultUpdater.updateContent` returns `this.version + '\n'`); stripping it makes the next release PR diff a
+  line nobody touched.
 - **Dev reload**: `mise run dev [display]` (build + restart plugin_loader; a display like `dp4` / `internal` also opens
   windowed BPM on it after the deploy)
 - **Frontend live dev**: `mise run dev:watch [display]` (one-time `mise run dev:setup`) — hot-reloads the **frontend**
   into windowed Big Picture on every save, no loader restart. **Backend** changes need `mise run dev:push-backend`. Lost
   the Decky UI after leaving BPM: `mise run dev:bpm-reset [display]`. Guide: `docs/contributing/frontend-dev-loop.md`
-- **Tooling**: mise manages node, pnpm, python, uv; venv auto-creates at `.venv`. Python deps are pinned in
-  `requirements-*.lock`, compiled from `requirements-*.txt` by `uv pip compile`; regenerate with `mise run lock-update`
-  after editing a source or bumping a pin.
+- **Tooling**: mise manages node, pnpm, python, uv; venv auto-creates at `.venv`. Python deps are pinned in two
+  lock/source pairs — `requirements-dev.lock` at the root, for `backend/`, `tests/` and `scripts/`, and
+  `docs/requirements.lock` beside the documentation it builds — each compiled from the `.txt` next to it by
+  `uv pip compile`; regenerate with `mise run lock-update` after editing a source or bumping a pin.
 - **Pre-commit hook** (`.githooks/pre-commit`): formats staged files — `ruff format` + `ruff check` (Python),
   `prettier --write` (TS/TSX), `deno fmt` (Markdown). Stays fast (<2s); heavy validation is CI-only. Do not re-introduce
   heavy checks here. It re-stages what it formatted, but **only for a file with no unstaged changes**: `git add` stages
@@ -275,7 +308,7 @@ Format: **invariant** — tier — enforced by.
   about the user's data as two plain `str` fields on structs the composition root passes around. **Counting rule** (an
   AST walk for an attribute in `{config_dir, data_dir, cache_dir, state_dir, runtime_dir,
   code_dir}` whose base ends
-  in `directories`): **21 reads over three modules**, `main.py` and `bootstrap/`'s two — `code_dir` 8, `data_dir` 6,
+  in `directories`): **19 reads over three modules**, `main.py` and `bootstrap/`'s two — `code_dir` 6, `data_dir` 6,
   `cache_dir` 4, and one each for `config_dir`, `state_dir` and `runtime_dir`. Re-derive it rather than trusting the
   number. **Two fields are read in `main.py` alone** and nowhere else: `state_dir`, which the logging setup opens, and
   `runtime_dir`, which the port file lives in. `config_dir` has exactly one reader, `PersistenceAdapter`. The pairing
@@ -287,13 +320,20 @@ Format: **invariant** — tier — enforced by.
   `str` fields on one frozen struct, so a read of the wrong one is a rename away and fails silently in whichever
   direction it happened to point
 - **The identifier's three homes are never derived from one another — in particular `APP_DIR_NAME`
-  (`domain/user_data_location.py`) is never read from `package.json`** — prompt-only — the three homes and the question
-  each answers are enumerated in `backend/domain/identity.py`'s module docstring, and nothing mechanical detects a fold.
-  `APP_DIR_NAME` and `package.json`'s `name` spell the same string today, so `APP_DIR_NAME = package_name` reproduces
-  every current path exactly and the whole suite stays green; the cost arrives at the next manifest edit, which then
-  moves every user's library on the following start with nothing failing and nothing said. The rule is stated at
-  `APP_DIR_NAME` itself, because a diff that folds it opens neither the docstring nor this file.
-  `tests/domain/test_identity.py` pins only the seam between the DISPLAY name and the identifier, a different fold
+  (`domain/user_data_location.py`) is never read from `PACKAGE_NAME` (`domain/identity.py`)** — test + prompt-only — the
+  three homes and the question each answers are enumerated in `backend/domain/identity.py`'s module docstring.
+  `APP_DIR_NAME` and `PACKAGE_NAME` spell the same string today, so `APP_DIR_NAME = PACKAGE_NAME` reproduces every
+  current path exactly and every value comparison stays green — the two are still equal after the fold, which is what
+  makes it invisible; the cost arrives at the next package rename, which then moves every user's library on the
+  following start with nothing failing and nothing said.
+  `tests/domain/test_identity.py::TestTheIdentifierStaysInTwoPlaces` therefore asks the module what it ASSIGNS rather
+  than what it resolves to: it parses `user_data_location.py` and fails unless `APP_DIR_NAME` is a string literal, which
+  is the one answer that cannot be another constant's — a fold through a transform (`PACKAGE_NAME.lower()`) is a call
+  node and fails too. The reverse fold, `PACKAGE_NAME = APP_DIR_NAME`, is caught by asserting `domain.identity` has no
+  `APP_DIR_NAME` attribute, and **that half is the weaker one**: importing it under an alias evades it. The THIRD home
+  is unchecked entirely — `SESSION_BREADCRUMB_KEY` is frontend TypeScript and no test on either side relates it to the
+  other two. The rule is also stated at `APP_DIR_NAME` itself, because a diff that folds it opens neither the docstring
+  nor this file
 - **Sync run-lifecycle (`sync_state` / `current_sync_id`) written only via `LibrarySyncStateBox` verbs** — check —
   `scripts/check_sync_lifecycle_owner.py`
 - **A library-sync seam is held only by the module owning the job it belongs to: `active_core` / `disc_resolver` by
@@ -549,36 +589,40 @@ Format: **invariant** — tier — enforced by.
 - **Layer import direction (services ↛ adapters, adapters ↛ services, …)** — check — `.importlinter` (`lint-imports`)
 - **Frontend direction: `frontend/src/utils/` and `frontend/src/api/` never import either surface
   (`frontend/src/bigpicture/`, `frontend/src/desktop/`); the two surfaces never import each other; and no
-  `frontend/src/` module takes part in an import cycle** — check — `eslint.config.js` (`import-x/no-restricted-paths`,
-  `import-x/no-cycle`). The surface pair is a peer rule, not a layer rule: the two share data and logic and almost
-  nothing visual, so anything that turns out to belong to both moves DOWN into `api/`, `utils/` or `types/`, never
-  sideways. These rules go inert rather than loud when misconfigured: `import-x/extensions` ships as `['.js']`, so until
-  it names `.ts`/`.tsx` the plugin resolves an import but never opens the target to read its imports, and `no-cycle`
-  reports nothing on any codebase. `frontend/src/eslintBoundaries.test.ts` lints known-bad fixtures through the real
-  config and fails if any of the seven stops reporting — a green `pnpm lint` alone proves nothing. Type-only imports are
-  not edges (erased at runtime), which is why the `api/backend.ts` ⇄ `utils/cachedGameDetailStore.ts` back-reference is
-  not a cycle
+  `frontend/src/` module takes part in an import cycle** — check — `frontend/eslint.config.js`
+  (`import-x/no-restricted-paths`, `import-x/no-cycle`). The surface pair is a peer rule, not a layer rule: the two
+  share data and logic and almost nothing visual, so anything that turns out to belong to both moves DOWN into `api/`,
+  `utils/` or `types/`, never sideways. These rules go inert rather than loud when misconfigured: `import-x/extensions`
+  ships as `['.js']`, so until it names `.ts`/`.tsx` the plugin resolves an import but never opens the target to read
+  its imports, and `no-cycle` reports nothing on any codebase. `frontend/src/eslintBoundaries.test.ts` lints known-bad
+  fixtures through the real config and fails if any of the seven stops reporting — a green `pnpm lint` alone proves
+  nothing. Type-only imports are not edges (erased at runtime), which is why the `api/backend.ts` ⇄
+  `utils/cachedGameDetailStore.ts` back-reference is not a cycle
 - **No bare `# type: ignore` / blanket suppressions** — check — `scripts/check_no_bare_ignores.sh`
 - **A coverage exclusion names a property of the code, never a place: every frontend-scoped entry stands in BOTH
-  `vitest.config.ts`'s `coverage.exclude` and `sonar-project.properties`' `sonar.coverage.exclusions`, every file entry
-  carries its reason as a `// coverage-exempt:` marker in the file's own first lines, and every marked file is listed**
-  — check — `scripts/check_coverage_exclusions.py` (a folder entry is admitted only from the script's `FOLDER_ENTRIES`,
-  where membership in the folder IS the property; the backend/config entries are Sonar-only and the frontend test glob
-  Vitest-only, each declared there with its reason so the asymmetry is stated rather than tolerated). Two accidents it
-  removes, both silent: `src/patches/**` excluded a FOLDER, so a file's coverage obligation changed when it was moved
-  out of the folder and nothing said so; and `steamShortcuts.ts` sat on Sonar's list and not on Vitest's under a comment
-  claiming the two were aligned. **What the check cannot see is MEMBERSHIP in a folder entry's directory** — the two
-  admitted folders are checked to exist and their contents are never read, so a real module filed into
-  `frontend/src/types/` or `frontend/src/test-utils/` is exempted by its PLACE, with no marker asked for and nothing
-  failing: the very accident above, still live for those two directories. It is declared rather than mechanized on
-  purpose — "is this really only a type declaration" is not a cheap check, and a half-check would exempt on a property
-  nobody stated while reading as enforcement. **Nor can it see the marker's SENTENCE** — a false reason passes green,
-  which is what the three stated reasons this cut found were: "no logic to assert" over a file with four passing tests,
-  "no isolated logic to assert" over 88.65% line coverage, and "thin plugin-entry shim" over 89.09%. Only the first was
-  replaced by a truer marker; the other two files lost their exclusions outright, which is also how their list drift was
-  settled
-- **Every pinned version in `requirements-*.lock` satisfies its `requirements-*.txt` source constraint** — check —
-  `scripts/check_lock_sync.py`
+  `frontend/vitest.config.ts`'s `coverage.exclude` and `sonar-project.properties`' `sonar.coverage.exclusions`, every
+  file entry carries its reason as a `// coverage-exempt:` marker in the file's own first lines, and every marked file
+  is listed** — check — `scripts/check_coverage_exclusions.py`. **The two lists spell a shared entry differently and
+  that is not drift**: Sonar runs from the repository root and Vitest from `frontend/`, so `src/types/**` there is
+  `frontend/src/types/**` here, and the gate normalises before comparing. An entry spelled repo-relative on the Vitest
+  side excludes nothing at all — Vitest would resolve it to `frontend/frontend/...` — so it is reported by name rather
+  than normalised into agreement with Sonar's identical-looking copy. (A folder entry is admitted only from the script's
+  `FOLDER_ENTRIES`, where membership in the folder IS the property; the backend/config entries are Sonar-only and the
+  frontend test glob Vitest-only, each declared there with its reason so the asymmetry is stated rather than tolerated).
+  Two accidents it removes, both silent: `src/patches/**` excluded a FOLDER, so a file's coverage obligation changed
+  when it was moved out of the folder and nothing said so; and `steamShortcuts.ts` sat on Sonar's list and not on
+  Vitest's under a comment claiming the two were aligned. **What the check cannot see is MEMBERSHIP in a folder entry's
+  directory** — the two admitted folders are checked to exist and their contents are never read, so a real module filed
+  into `frontend/src/types/` or `frontend/src/test-utils/` is exempted by its PLACE, with no marker asked for and
+  nothing failing: the very accident above, still live for those two directories. It is declared rather than mechanized
+  on purpose — "is this really only a type declaration" is not a cheap check, and a half-check would exempt on a
+  property nobody stated while reading as enforcement. **Nor can it see the marker's SENTENCE** — a false reason passes
+  green, which is what the three stated reasons this cut found were: "no logic to assert" over a file with four passing
+  tests, "no isolated logic to assert" over 88.65% line coverage, and "thin plugin-entry shim" over 89.09%. Only the
+  first was replaced by a truer marker; the other two files lost their exclusions outright, which is also how their list
+  drift was settled
+- **Every pinned version in a lock satisfies its `.txt` source constraint (`requirements-dev.*` at the root,
+  `docs/requirements.*` beside the docs)** — check — `scripts/check_lock_sync.py`
 - **Every local markdown link in tracked docs resolves (file target + heading/attr-list anchor)** — check —
   `scripts/check_markdown_links.py`
 - **Every stated RomM minimum version matches the enforced `Plugin._MIN_REQUIRED_VERSION`** — check —
