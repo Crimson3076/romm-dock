@@ -3,15 +3,16 @@ paths:
   - "backend/host/**/*.py"
 ---
 
-# The host — six things that go wrong in silence
+# The host — seven things that go wrong in silence
 
-`backend/host/` is the process, not a layer of the application: the port, the protocol, the single-instance lock and the
-lifetime. Standard library only. Two `.importlinter` contracts hold it apart from the code it hosts — it imports nothing
-from `services`, `adapters`, `bootstrap` or `domain`, and **nothing but `main.py` imports it**. The second half is the
-one that rots without a check: the first service that wants to send an event reaches in here for the sink, and from then
-on the composition root is no longer the only place that knows a transport exists.
+`backend/host/` is the process, not a layer of the application: the port, the protocol, the single-instance lock, the
+lifetime, and loading the panel into Steam. Standard library only. Two `.importlinter` contracts hold it apart from the
+code it hosts — it imports nothing from `services`, `adapters`, `bootstrap` or `domain`, and **nothing but `main.py`
+imports it**. The second half is the one that rots without a check: the first service that wants to send an event
+reaches in here for the sink, and from then on the composition root is no longer the only place that knows a transport
+exists.
 
-None of the six below has a mechanical check. Each of them fails green.
+None of the seven below has a mechanical check. Each of them fails green.
 
 ## 1. A transport error is not a callable's failure shape
 
@@ -70,6 +71,38 @@ request down with it.
 `HostServer` takes `static_root`. A host that looked for a build output relative to `__file__` would be the only piece
 of this backend that knew the repository's layout, and it would be wrong the moment the program was installed anywhere.
 Every request path goes through `lib.path_safety.safe_join`, which resolves symlinks before comparing.
+
+## 7. The injection puts the token in one place and the panel in one context
+
+`host/inject/` evaluates one expression into Steam's renderer. Four properties of it have no check at all.
+
+**The token goes into the addresses and one field beside them, and nowhere a press or a log can reach it.** The panel
+reads its port and its token off the URL it was imported from (`api/host.ts` hands `import.meta.url` to
+`hostSocket.ts`), so the token has to be in that address; the same facts object carries it a second time because the
+expression's redaction matches the token itself rather than a pattern. Both die with the expression. Where it must never
+go: the marker left on the window, the load-failure card, and what the expression answers the backend with — any error
+text has the token replaced with `<token>` before the injector logs it. Rule 2's redaction covers the log FILE; this
+covers stderr and the page, which it does not.
+
+**The marker is claimed before anything is imported, and kept when the import fails.** `window.__tender_panel__` is the
+whole of how a context says it already carries the panel — a JS-context rebuild wipes it and nothing short of one does —
+so claiming it afterwards lets a second evaluation load the panel twice, and dropping it on failure retries a broken
+bundle into the same context for ever.
+
+**The load-failure card may not take the machine over.** Whether Steam's controller focus reaches a node appended to its
+document from outside its React tree is not established here, so the card is built so that it does not matter: drawn
+`pointer-events: none` everywhere except its one button, which keeps every control underneath reachable whatever happens
+to that button. A full-screen overlay here would be worse than the fault it reports.
+
+**That button's only way back is a debugger binding, and the domain it needs is enabled only when a card exists.**
+`Runtime.addBinding` goes on before the source that may draw the card is evaluated and is re-installed on every
+injection, because whether a binding survives a JS-context rebuild is not established here. `Runtime.enable` is what
+makes a press arrive — and it turns on every other Runtime event for that connection — so it is called only after a load
+that failed, never on the path where the panel came up. A refused binding is carried into the card as "no button": a
+button that cannot report a press is worse on that card than none.
+
+Which bundles are loaded, and the record that stops the injection when it takes the interface down, are in the invariant
+register — they span more than this package.
 
 ## And one that is not about silence at all
 
