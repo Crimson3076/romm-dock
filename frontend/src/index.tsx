@@ -1,8 +1,11 @@
-import { definePlugin, addEventListener, removeEventListener, toaster } from "@decky/api";
+import { definePlugin, addEventListener, removeEventListener, toaster } from "./api/host";
 import { showToast, PLUGIN_NAME } from "./utils/toast";
 import { useState, useRef, useEffect, FC, type ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { FaGamepad } from "react-icons/fa";
+import { StartupFailurePanel } from "./boot/StartupFailurePanel";
+import { readSearchingCopy } from "./boot/searchingCopy";
+import { checkSteamModules, describeFailure, describeSurvivedMiss } from "./boot/steamModules";
 import { MainPage } from "./bigpicture/MainPage";
 import { SettingsPage } from "./bigpicture/SettingsPage";
 import { LibraryPage } from "./bigpicture/LibraryPage";
@@ -352,6 +355,48 @@ function registerAppIds(map: Record<string, number[]>): void {
 }
 
 export default definePlugin(() => {
+  // Before anything else runs, and before anything mounts: did every search into
+  // Steam's own interface find what it was looking for?
+  //
+  // Almost everything the panel renders is a search predicate over Steam's
+  // minified bundle, and a predicate Steam has moved past returns `undefined`
+  // with nothing thrown. The panel then dies mid-tree or, worse, renders a hole
+  // and says nothing — and an empty panel looks EXACTLY like a backend that is
+  // not running, which is a completely different fault with a completely
+  // different fix.
+  //
+  // So nothing mounts. Not a degraded panel, not the pages whose lookups did
+  // resolve: a half-working panel acts on what it cannot see, and nothing below
+  // is written to run without the components it was written against.
+  //
+  // Unless the panel survives what missed, which the check answers for
+  // separately: taking the whole interface off the air for a decoration the one
+  // place that draws it already renders without — or for a name only a debug
+  // dump reads, which already prints `UNDEFINED` in its place — is the opposite
+  // trade.
+  const startup = checkSteamModules();
+  if (!startup.everySearchAnswered) {
+    // Whose copy of `@decky/ui` ran the missed searches is read once, here, and
+    // handed to the page and to both log lines: the three must not answer a
+    // question about the machine separately and disagree. It is read only where
+    // something missed, so the ordinary start touches none of Decky's globals.
+    const copy = readSearchingCopy(startup);
+    if (!startup.panelMayMount) {
+      console.error(`[${PLUGIN_NAME}] ${describeFailure(startup, copy)} Missing: ${startup.missing.join(", ")}`);
+      return {
+        name: PLUGIN_NAME,
+        icon: <FaGamepad />,
+        content: <StartupFailurePanel report={startup} copy={copy} />,
+        alwaysRender: true,
+      };
+    }
+    // The panel mounts, so nothing on screen reports this: the log line is the
+    // whole record, and the next reader of it is whoever is asked why a button
+    // lost its glyph, or why a debug dump prints `UNDEFINED` where a class name
+    // belongs.
+    console.warn(`[${PLUGIN_NAME}] ${describeSurvivedMiss(startup, copy)} Missing: ${startup.missing.join(", ")}`);
+  }
+
   mountPruneLeasePlugin();
   const pluginAdmission = capturePruneLeaseAdmission();
   registerGameDetailPatch();

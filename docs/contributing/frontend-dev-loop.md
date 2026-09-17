@@ -1,13 +1,30 @@
 # Frontend dev loop
 
-!!! warning "This loop depends on the Decky deploy, which no longer produces a loadable plugin"
+!!! danger "There is no frontend dev loop right now, and nothing below runs"
 
-    The backend hosts itself now ([ADR-0036](../adr/0036-the-backend-hosts-itself.md)) and has no zero-argument
-    lifecycle hook a plugin loader can call, so the deploy this page builds on comes up and fails. The injector and
-    installer that replace it are separate pieces of work
-    ([#1900](https://github.com/danielcopper/romm-tender/issues/1900),
-    [#1902](https://github.com/danielcopper/romm-tender/issues/1902)). Everything below is kept because the mechanics —
-    windowed Big Picture, the display choice, the height caveat — carry over; the deploy step does not.
+    **The loop this page describes is gone, and what replaces it is not built yet.** It is kept, unedited below the
+    fold, because the mechanics it documents — windowed Big Picture, choosing a display, the height caveat, reading
+    errors out of the QAM's own realm — carry straight over to whatever replaces it, and because rediscovering them
+    costs days.
+
+    Three separate things broke it, in order:
+
+    - **The backend stopped being a plugin.** It hosts itself now
+      ([ADR-0036](../adr/0036-the-backend-hosts-itself.md)) and has no zero-argument lifecycle hook a plugin loader can
+      call, so `mise run deploy` stages a plugin that comes up and fails.
+    - **The frontend stopped being one file.** Since
+      [#1899](https://github.com/danielcopper/romm-tender/issues/1899) the build produces a React bootstrap and two
+      variants of the panel — see [How the panel is built and loaded](../architecture/frontend-bundles.md) — and
+      Decky's hot-reload watcher matches one name, `dist/index.js`, which is now only one of the three.
+    - **Nothing in this tree loads any of them.** The injector is
+      [#1900](https://github.com/danielcopper/romm-tender/issues/1900) and the installer is
+      [#1902](https://github.com/danielcopper/romm-tender/issues/1902). Until the first of those lands, the only way to
+      get the panel into Steam is by hand, through the CEF debugger, the way the #1897 spike did it.
+
+    **What works today, without this page:** `pnpm -C frontend build`, `pnpm -C frontend test` and
+    `pnpm -C frontend check:bundle` all run and tell you something. What none of them can tell you is whether the panel
+    is usable with a controller — happy-dom has no navigation tree — so that answer still comes from a device, just not
+    from this loop.
 
 Iterate on the frontend from Desktop Mode on the Steam Deck: edit code next to a windowed Big Picture window and watch
 the real plugin UI hot-reload on every save — no Desktop/Game Mode switching, no `plugin_loader` restarts.
@@ -25,15 +42,12 @@ Three pieces line up:
   events on exactly two files per plugin: `dist/index.js` and `main.py`. On a match it reloads the plugin in place —
   backend subprocess restart plus a cache-busted frontend re-import (the plugin unmounts cleanly first, so router
   patches are removed and re-applied).
-- **Reloading is gated on a `debug` flag, and this repo no longer produces the manifest that carries it.** The watcher
-  itself runs on every device, but it only re-loads plugins carrying `"debug"` in the `flags` array of a plugin's
-  `plugin.json`. No Decky manifest is written or deployed from this tree any more, so the hot reload described in this
-  section does not fire on a deploy from here. It is documented because the watcher's behaviour is what the loop below
-  is shaped around, and because the installer that replaces the deploy is its own cut (#1902).
-
-  Do not mistake `frontend/plugin.json` for that manifest. It carries a `name` and nothing else, it is never deployed,
-  and it exists only because `@decky/rollup` reads a file of that name before it will build at all — see the comment
-  above `deckyPlugin({})` in `frontend/rollup.config.js`. Adding `flags` to it would reach no device.
+- **Reloading is gated on a `debug` flag, and this repo produces no manifest at all any more.** The watcher itself runs
+  on every device, but it only re-loads plugins carrying `"debug"` in the `flags` array of a plugin's `plugin.json`, and
+  no such file exists in this tree: `frontend/plugin.json` was never that manifest — it existed only because
+  `@decky/rollup` read a file of that name before it would build — and both went with #1899. So the hot reload described
+  here cannot fire from this tree at all. It is documented because the watcher's behaviour is what the loop below is
+  shaped around.
 
 ## One-time setup
 
@@ -67,7 +81,10 @@ What happens:
 2. A windowed Big Picture opens on the desktop (a no-op if one is already open; if Steam isn't running, it starts
    straight into BPM) and its window is placed on the chosen display.
 3. Rollup stays in watch mode. On every save it rebuilds `dist/index.js` and copies it into the deployed `dist/`;
-   decky-loader hot-reloads the plugin about 1–2 seconds later.
+   decky-loader hot-reloads the plugin about 1–2 seconds later. Since #1899 that is one of three build outputs, and the
+   two the watcher does not carry are the ones the loader never needed: `dist/globals.js` installs the React globals the
+   loader installs itself, and `dist/index-coexistence.js` is the same panel taking `@decky/ui` from the loader's copy —
+   which is what `dist/index.js` also did, under the loader, before this cut.
 
 The reload is bundle-level, not component-level hot module replacement: the plugin is unmounted and re-imported, so
 component state resets and whatever is currently on screen keeps showing the **old** render until it is mounted again.

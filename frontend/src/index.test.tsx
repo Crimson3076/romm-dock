@@ -1,7 +1,7 @@
 /**
  * Exercises index.tsx's `download_complete` and `migration_relaunch_options`
- * listeners through the @decky/api event harness. The plugin factory registers
- * the listeners on the in-memory bus; tests dispatch events via emitDeckyEvent
+ * listeners through the backend-event harness. The plugin factory registers
+ * the listeners on the in-memory bus; tests dispatch events via emitHostEvent
  * and assert the launch-options confirm-poll fires for the payload's appId.
  *
  * The heavyweight registration side effects (game-detail patch, launch
@@ -11,11 +11,11 @@
  * post-catch side effect (the surfaced error message) is observable.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { toaster } from "@decky/api";
-import { emitDeckyEvent, deckyEventListenerCount } from "./test-utils/decky-api-mock";
+import { toaster } from "./api/host";
+import { emitHostEvent, hostEventListenerCount } from "./test-utils/host-event-bus";
 import {
   getSettingsResetNotice,
   getAllPlaytime,
@@ -26,6 +26,8 @@ import {
   releasePruneConflictLease,
   waitForPruneRelease,
 } from "./api/backend";
+import { registerGameDetailPatch } from "./bigpicture/patches/gameDetailPatch";
+import { registerLaunchInterceptor } from "./utils/launchInterceptor";
 import { getSettingsResetState, setSettingsResetState } from "./utils/settingsResetStore";
 import { getDownloadState, setDownloads } from "./utils/downloadStore";
 import { getSyncProgress, setSyncProgress } from "./utils/syncProgress";
@@ -35,6 +37,7 @@ import { recordSyncCreated, resetSyncDelta, getSyncDelta } from "./utils/syncDel
 import { resetSyncCancel } from "./utils/syncManager";
 import { beginPrunePreview, beginPruneRun, getPruneState, resetPruneState } from "./utils/pruneStore";
 import { mountPruneLeasePlugin, releaseAllPruneLeases } from "./utils/pruneLease";
+import type { StartupReport } from "./boot/steamModules";
 import type {
   DownloadCompleteEvent,
   DownloadProgressEvent,
@@ -43,6 +46,29 @@ import type {
   SyncStaleData,
   RomMetadata,
 } from "./types";
+
+// The start-up check gates everything the factory does, and under this suite it
+// would answer NO for almost every search: the global `@decky/ui` stub in
+// `test-setup.ts` hands back `undefined` for the class maps, the tabbed page, the
+// scroll panel and the module finder, exactly as a Steam that had moved them
+// would. Left unmocked, every test below would be handed the fallback page.
+//
+// So the answer is supplied here, and the one test that wants the other answer
+// sets it. It is a stand-in for the CHECK, never for the searches — what the
+// check itself reads is pinned in `boot/steamModules.test.ts`, where nothing is
+// stubbed away.
+const everythingResolved = (): StartupReport => ({
+  everySearchAnswered: true,
+  panelMayMount: true,
+  missing: [],
+  missingPackageNames: [],
+  checked: 27,
+});
+let startupAnswer: StartupReport = everythingResolved();
+vi.mock("./boot/steamModules", async () => {
+  const actual = await vi.importActual<typeof import("./boot/steamModules")>("./boot/steamModules");
+  return { ...actual, checkSteamModules: () => startupAnswer };
+});
 
 vi.mock("./bigpicture/patches/gameDetailPatch", () => ({
   registerGameDetailPatch: vi.fn(),
@@ -182,6 +208,107 @@ beforeEach(() => {
   vi.stubGlobal("appStore", { GetAppOverviewByAppID: () => null, allApps: [] });
 });
 
+describe("index.tsx — what the factory does when a Steam search found nothing", () => {
+  const failing: StartupReport = {
+    everySearchAnswered: false,
+    panelMayMount: false,
+    missing: ["Focusable", "PanelSection"],
+    missingPackageNames: ["Focusable", "PanelSection"],
+    checked: 27,
+  };
+  // The refusal is logged on purpose, and the suite fails a test that emits an
+  // unexpected `console.error` — so the spy both permits it and makes the line
+  // an assertion rather than noise nobody reads.
+  let consoleError: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    startupAnswer = failing;
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleError.mockRestore();
+    startupAnswer = everythingResolved();
+  });
+
+  it("mounts the fallback page instead of the panel, and names what is missing", () => {
+    const plugin = pluginFactory();
+    render(createElement("div", null, plugin.content));
+
+    expect(screen.getByText(/could not read Steam/i)).toBeInTheDocument();
+    expect(screen.getByText(/Focusable, PanelSection/)).toBeInTheDocument();
+  });
+
+  it("puts the same names in the log, where a user with no panel can still reach them", () => {
+    pluginFactory();
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("Missing: Focusable, PanelSection"));
+  });
+
+  it("registers nothing at all — not the patches, not the listeners, not the relocation", () => {
+    // A half-working panel acts on what it cannot see. Nothing below the check
+    // is written to run without the components it was written against, so the
+    // refusal has to be total rather than a degraded panel: the pages whose
+    // lookups happened to resolve would still reach the ones that did not.
+    vi.mocked(registerGameDetailPatch).mockClear();
+    vi.mocked(registerLaunchInterceptor).mockClear();
+    relocateShortcutsToLauncher.mockClear();
+
+    // Cast locally rather than widening `pluginFactory`: this is the one exit
+    // where the teardown is absent, and making it optional everywhere would say
+    // the other seventy-nine call sites have to guard for something they do not.
+    const plugin = pluginFactory() as unknown as { onDismount?: () => void };
+
+    expect(registerGameDetailPatch).not.toHaveBeenCalled();
+    expect(registerLaunchInterceptor).not.toHaveBeenCalled();
+    expect(relocateShortcutsToLauncher).not.toHaveBeenCalled();
+    expect(hostEventListenerCount("sync_progress")).toBe(0);
+    expect(hostEventListenerCount("download_complete")).toBe(0);
+    // And nothing to tear down: a factory that registered nothing must not hand
+    // back a teardown that would remove listeners the real panel installed.
+    expect(plugin.onDismount).toBeUndefined();
+  });
+});
+
+describe("index.tsx — what the factory does when only a decoration was not found", () => {
+  const cosmeticOnly: StartupReport = {
+    everySearchAnswered: false,
+    panelMayMount: true,
+    missing: ["ControllerGlyph"],
+    missingPackageNames: [],
+    checked: 27,
+  };
+  let consoleWarn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    startupAnswer = cosmeticOnly;
+    consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleWarn.mockRestore();
+    startupAnswer = everythingResolved();
+  });
+
+  it("mounts the panel and registers everything, with no failure page", () => {
+    // The whole point: a glyph the one place that draws it already renders
+    // without must not cost the user their interface.
+    vi.mocked(registerGameDetailPatch).mockClear();
+    const plugin = pluginFactory();
+    render(createElement("div", null, plugin.content));
+
+    expect(screen.queryByText(/could not read Steam/i)).not.toBeInTheDocument();
+    expect(registerGameDetailPatch).toHaveBeenCalled();
+    plugin.onDismount();
+  });
+
+  it("reports it in the log, which is the only place it is reported at all", () => {
+    const plugin = pluginFactory();
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("Missing: ControllerGlyph"));
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("a newer Tender is the repair"));
+    plugin.onDismount();
+  });
+});
+
 describe("index.tsx — launcher relocation at plugin load", () => {
   beforeEach(() => {
     setLauncherRelocated(false);
@@ -230,18 +357,18 @@ describe("index.tsx — persistent prune listeners", () => {
       action: "remove_shortcut" as const,
       app_id: 9001,
     };
-    expect(deckyEventListenerCount("prune_action_required")).toBe(1);
+    expect(hostEventListenerCount("prune_action_required")).toBe(1);
 
     await act(async () => {
-      emitDeckyEvent("prune_action_required", action);
+      emitHostEvent("prune_action_required", action);
       await Promise.resolve();
     });
 
     expect(handlePruneAction).toHaveBeenCalledWith(action);
     plugin.onDismount();
-    expect(deckyEventListenerCount("prune_action_required")).toBe(0);
-    expect(deckyEventListenerCount("prune_progress")).toBe(0);
-    expect(deckyEventListenerCount("prune_complete")).toBe(0);
+    expect(hostEventListenerCount("prune_action_required")).toBe(0);
+    expect(hostEventListenerCount("prune_progress")).toBe(0);
+    expect(hostEventListenerCount("prune_complete")).toBe(0);
   });
 
   it("stores progress and completion, invalidates affected details, and emits a refresh", async () => {
@@ -251,7 +378,7 @@ describe("index.tsx — persistent prune listeners", () => {
     globalThis.addEventListener("romm_data_changed", changed);
 
     act(() => {
-      emitDeckyEvent("prune_progress", {
+      emitHostEvent("prune_progress", {
         run_id: "run-1",
         preview_id: "preview-1",
         current: 1,
@@ -260,7 +387,7 @@ describe("index.tsx — persistent prune listeners", () => {
         rom_ids: [7],
         name: "Removed Game",
       });
-      emitDeckyEvent("prune_complete", {
+      emitHostEvent("prune_complete", {
         success: true,
         partial: false,
         run_id: "run-1",
@@ -304,8 +431,8 @@ describe("index.tsx — persistent prune listeners", () => {
     };
 
     act(() => {
-      emitDeckyEvent("prune_complete", frame);
-      emitDeckyEvent("prune_complete", frame);
+      emitHostEvent("prune_complete", frame);
+      emitHostEvent("prune_complete", frame);
     });
 
     expect(getPruneState().runId).toBe("current");
@@ -321,7 +448,7 @@ describe("index.tsx — persistent prune listeners", () => {
     beginPrunePreview("preview-partial");
 
     act(() => {
-      emitDeckyEvent("prune_complete", {
+      emitHostEvent("prune_complete", {
         success: false,
         partial: true,
         run_id: "run-partial",
@@ -356,7 +483,7 @@ describe("index.tsx — persistent prune listeners", () => {
     beginPrunePreview("preview-nothing");
 
     await act(async () => {
-      emitDeckyEvent("prune_complete", {
+      emitHostEvent("prune_complete", {
         success: true,
         partial: false,
         run_id: "run-nothing",
@@ -390,7 +517,7 @@ describe("index.tsx — persistent prune listeners", () => {
     );
 
     act(() => {
-      emitDeckyEvent("prune_complete", {
+      emitHostEvent("prune_complete", {
         success: false,
         partial: true,
         run_id: "run-repoint-partial",
@@ -428,7 +555,7 @@ describe("index.tsx — persistent prune listeners", () => {
     beginPrunePreview("preview-ambiguous");
 
     act(() => {
-      emitDeckyEvent("prune_complete", {
+      emitHostEvent("prune_complete", {
         success: false,
         partial: true,
         run_id: "run-repoint-ambiguous",
@@ -465,7 +592,7 @@ describe("index.tsx — persistent prune listeners", () => {
     beginPrunePreview("preview-missing-publication-lease");
 
     act(() => {
-      emitDeckyEvent("prune_complete", {
+      emitHostEvent("prune_complete", {
         success: true,
         partial: false,
         run_id: "run-missing-publication-lease",
@@ -516,7 +643,7 @@ describe("index.tsx — download_complete launch-options sync", () => {
       launch_options: 'flatpak run net.retrodeck.retrodeck "/games/test.bin"',
     };
     act(() => {
-      emitDeckyEvent<[DownloadCompleteEvent]>("download_complete", event);
+      emitHostEvent<[DownloadCompleteEvent]>("download_complete", event);
     });
     await flush();
 
@@ -531,7 +658,7 @@ describe("index.tsx — download_complete launch-options sync", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[DownloadCompleteEvent]>("download_complete", {
+      emitHostEvent<[DownloadCompleteEvent]>("download_complete", {
         rom_id: 999,
         rom_name: "Unsynced",
         platform_name: "PSX",
@@ -551,7 +678,7 @@ describe("index.tsx — download_complete launch-options sync", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[DownloadCompleteEvent]>("download_complete", {
+      emitHostEvent<[DownloadCompleteEvent]>("download_complete", {
         rom_id: 42,
         rom_name: "Test ROM",
         platform_name: "PSX",
@@ -587,7 +714,7 @@ describe("index.tsx — download_progress cancelled eviction (#149 downloads-rou
     ]);
 
     act(() => {
-      emitDeckyEvent<[DownloadProgressEvent]>("download_progress", {
+      emitHostEvent<[DownloadProgressEvent]>("download_progress", {
         rom_id: 42,
         rom_name: "Paused",
         platform_name: "N64",
@@ -611,7 +738,7 @@ describe("index.tsx — download_progress cancelled eviction (#149 downloads-rou
     setDownloads([]);
 
     act(() => {
-      emitDeckyEvent<[DownloadProgressEvent]>("download_progress", {
+      emitHostEvent<[DownloadProgressEvent]>("download_progress", {
         rom_id: 7,
         rom_name: "Live",
         platform_name: "N64",
@@ -642,7 +769,7 @@ describe("index.tsx — sync_stale listener", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncStaleData]>("sync_stale", {
+      emitHostEvent<[SyncStaleData]>("sync_stale", {
         remove: [
           { rom_id: 99, app_id: 9900 },
           { rom_id: 77, app_id: 7700 },
@@ -661,7 +788,7 @@ describe("index.tsx — sync_stale listener", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncStaleData]>("sync_stale", { remove: [] });
+      emitHostEvent<[SyncStaleData]>("sync_stale", { remove: [] });
     });
     await flush();
 
@@ -682,7 +809,7 @@ describe("index.tsx — sync_stale listener", () => {
     vi.useFakeTimers();
     try {
       act(() => {
-        emitDeckyEvent<[SyncStaleData]>("sync_stale", { remove });
+        emitHostEvent<[SyncStaleData]>("sync_stale", { remove });
       });
       await act(async () => {
         for (let i = 0; i < 40; i++) await Promise.resolve();
@@ -712,7 +839,7 @@ describe("index.tsx — sync_stale listener", () => {
     vi.useFakeTimers();
     try {
       act(() => {
-        emitDeckyEvent<[SyncStaleData]>("sync_stale", { remove, prune_lease_token: "standalone-stale-lease" });
+        emitHostEvent<[SyncStaleData]>("sync_stale", { remove, prune_lease_token: "standalone-stale-lease" });
       });
       await act(async () => {
         for (let i = 0; i < 40; i++) await Promise.resolve();
@@ -744,7 +871,7 @@ describe("index.tsx — sync_stale listener", () => {
       // so the stored promise REJECTS — the shape L20 is about.
       await releaseAllPruneLeases();
       act(() => {
-        emitDeckyEvent<[SyncStaleData]>("sync_stale", {
+        emitHostEvent<[SyncStaleData]>("sync_stale", {
           remove: [{ rom_id: 1, app_id: 3000 }],
           prune_lease_token: "rejecting-stale-lease",
         });
@@ -762,7 +889,7 @@ describe("index.tsx — sync_stale listener", () => {
       // The completion continuation awaits that same tail and still runs its
       // sibling reconciles to the end instead of being aborted by it.
       act(() => {
-        emitDeckyEvent<[SyncCompleteAfterStaleFailure]>("sync_complete", {
+        emitHostEvent<[SyncCompleteAfterStaleFailure]>("sync_complete", {
           platform_app_ids: { gba: [3000] },
           total_games: 1,
           prune_lease_token: "completion-after-failed-tail",
@@ -796,7 +923,7 @@ describe("index.tsx — migration_relaunch_options listener", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[{ items: { app_id: number; launch_options: string }[] }]>("migration_relaunch_options", {
+      emitHostEvent<[{ items: { app_id: number; launch_options: string }[] }]>("migration_relaunch_options", {
         items: [
           { app_id: 100, launch_options: 'flatpak run net.retrodeck.retrodeck "/new/a.bin"' },
           { app_id: 200, launch_options: 'flatpak run net.retrodeck.retrodeck "/new/b.bin"' },
@@ -814,7 +941,7 @@ describe("index.tsx — migration_relaunch_options listener", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[{ items: { app_id: number; launch_options: string }[] }]>("migration_relaunch_options", {
+      emitHostEvent<[{ items: { app_id: number; launch_options: string }[] }]>("migration_relaunch_options", {
         items: [],
       });
     });
@@ -829,7 +956,7 @@ describe("index.tsx — migration_relaunch_options listener", () => {
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[{ items: { app_id: number; launch_options: string }[] }]>("migration_relaunch_options", {
+      emitHostEvent<[{ items: { app_id: number; launch_options: string }[] }]>("migration_relaunch_options", {
         items: [{ app_id: 100, launch_options: 'flatpak run net.retrodeck.retrodeck "/new/a.bin"' }],
       });
     });
@@ -843,10 +970,10 @@ describe("index.tsx — migration_relaunch_options listener", () => {
 
   it("removes the migration_relaunch_options listener on unmount", () => {
     const plugin = pluginFactory();
-    expect(deckyEventListenerCount("migration_relaunch_options")).toBe(1);
+    expect(hostEventListenerCount("migration_relaunch_options")).toBe(1);
 
     plugin.onDismount();
-    expect(deckyEventListenerCount("migration_relaunch_options")).toBe(0);
+    expect(hostEventListenerCount("migration_relaunch_options")).toBe(0);
   });
 });
 
@@ -959,7 +1086,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     );
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 0,
         cancelled: false,
@@ -983,7 +1110,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     );
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 0,
         cancelled: true,
@@ -1004,7 +1131,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     vi.mocked(getInstalledRelaunchOptions).mockRejectedValue(new Error("pull failed"));
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 0,
         cancelled: false,
@@ -1032,7 +1159,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     vi.mocked(releasePruneConflictLease).mockClear();
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: { SNES: [100] },
         total_games: 1,
         prune_lease_token: "sync-complete-lease",
@@ -1062,7 +1189,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     createOrUpdateRomMCollections.mockClear();
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: { SNES: [100] },
         romm_collection_app_ids: { Favorites: [100] },
         total_games: 1,
@@ -1094,7 +1221,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     );
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 0,
         prune_lease_token: "outer-sync-lease",
@@ -1122,7 +1249,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
     vi.useFakeTimers();
     try {
       act(() => {
-        emitDeckyEvent<[SyncStaleData]>("sync_stale", { remove, prune_lease_token: "stale-event-lease" });
+        emitHostEvent<[SyncStaleData]>("sync_stale", { remove, prune_lease_token: "stale-event-lease" });
       });
       await act(async () => {
         for (let index = 0; index < 40; index++) await Promise.resolve();
@@ -1131,7 +1258,7 @@ describe("index.tsx — sync_complete launch-options reconcile (#1151)", () => {
       expect(releasePruneConflictLease).not.toHaveBeenCalledWith("stale-event-lease");
 
       act(() => {
-        emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+        emitHostEvent<[SyncCompletePayload]>("sync_complete", {
           platform_app_ids: {},
           total_games: 0,
           prune_lease_token: "stale-tail-lease",
@@ -1168,7 +1295,7 @@ describe("index.tsx — sync_complete registers RomM appIds (#1205)", () => {
 
   function emitSyncComplete(payload: SyncCompletePayload): void {
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", payload);
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", payload);
     });
   }
 
@@ -1302,7 +1429,7 @@ describe("index.tsx — sync_complete stale-collection cleanup (#1040)", () => {
 
   function emitSyncComplete(payload: SyncCompletePayload): void {
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", payload);
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", payload);
     });
   }
 
@@ -1476,7 +1603,7 @@ describe("index.tsx — sync_complete re-applies overview metadata (#1207)", () 
     vi.mocked(getAppIdRomIdMap).mockResolvedValue({ "100": 55 });
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
     });
     await flush();
 
@@ -1499,7 +1626,7 @@ describe("index.tsx — sync_complete re-applies overview metadata (#1207)", () 
     vi.mocked(getAppIdRomIdMap).mockResolvedValue({ "7": 9 });
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 3, cancelled: true });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 3, cancelled: true });
     });
     await flush();
 
@@ -1518,7 +1645,7 @@ describe("index.tsx — sync_complete re-applies overview metadata (#1207)", () 
     vi.mocked(getMetadataCachePage).mockRejectedValue(new Error("boom"));
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
     });
     await flush();
 
@@ -1569,7 +1696,7 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     vi.mocked(resetSyncCancel).mockClear();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-xyz", units: [], total_units: 1, total_roms: 1 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-xyz", units: [], total_units: 1, total_roms: 1 });
     });
 
     // The listener clears the per-run cancel flag once per run, before any unit
@@ -1588,7 +1715,7 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     setSyncProgress({ running: true, stage: "applying", message: "Applying changes..." });
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 42 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 42 });
     });
     await flush();
 
@@ -1602,7 +1729,7 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     setSyncProgress({ running: true, stage: "applying", message: "Applying changes..." });
 
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 5, cancelled: true });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 5, cancelled: true });
     });
     await flush();
 
@@ -1615,19 +1742,19 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 2, total_roms: 2 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 2, total_roms: 2 });
     });
     // Two distinct shortcuts created this run (what the syncManager create path records).
     recordSyncCreated(100);
     recordSyncCreated(200);
     // One shortcut removed via the real sync_stale listener.
     act(() => {
-      emitDeckyEvent<[SyncStaleData]>("sync_stale", { remove: [{ rom_id: 7, app_id: 700 }] });
+      emitHostEvent<[SyncStaleData]>("sync_stale", { remove: [{ rom_id: 7, app_id: 700 }] });
     });
 
     // total_games=53 is the misleading total — the toast must NOT use it.
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 53 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 53 });
     });
     await flush();
 
@@ -1639,10 +1766,10 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 0 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 0 });
     });
     act(() => {
-      emitDeckyEvent<[SyncStaleData]>("sync_stale", {
+      emitHostEvent<[SyncStaleData]>("sync_stale", {
         remove: [
           { rom_id: 7, app_id: 700 },
           { rom_id: 8, app_id: 800 },
@@ -1650,7 +1777,7 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
       });
     });
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 53 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 53 });
     });
     await flush();
 
@@ -1662,12 +1789,12 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 53 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 53 });
     });
     // No creates, no removes — but total_games=53 (the old toast wrongly said
     // "53 games added"). The fixed toast must say the library is up to date.
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 53 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 53 });
     });
     await flush();
 
@@ -1679,14 +1806,14 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 2, total_roms: 1 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 2, total_roms: 1 });
     });
     // Same appId surfaces in its platform unit and a collection unit; the Set
     // in the store collapses it to one "added".
     recordSyncCreated(100);
     recordSyncCreated(100);
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
     });
     await flush();
 
@@ -1698,13 +1825,13 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
     });
     recordSyncCreated(100);
     recordSyncCreated(200);
     recordSyncCreated(300);
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 53,
         cancelled: true,
@@ -1720,10 +1847,10 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
     });
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 53,
         cancelled: true,
@@ -1739,7 +1866,7 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
     });
     recordSyncCreated(100);
     recordSyncCreated(200);
@@ -1748,7 +1875,7 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     // flags. The additive `interrupted` must win the wording: the run died
     // externally (frontend crash/reload), the user never pressed Cancel.
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 53,
         cancelled: true,
@@ -1765,10 +1892,10 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
     });
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 53,
         cancelled: true,
@@ -1785,12 +1912,12 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
     });
     recordSyncCreated(100);
     recordSyncCreated(200);
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 53,
         cancelled: true,
@@ -1816,11 +1943,11 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
   it("a non-pause completion toast carries no custom duration (default lifetime)", async () => {
     const plugin = pluginFactory();
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 1 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 1 });
     });
     recordSyncCreated(100);
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", { platform_app_ids: {}, total_games: 1 });
     });
     await flush();
     const toastCalls = vi.mocked(toaster.toast).mock.calls;
@@ -1833,10 +1960,10 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 3, total_roms: 10 });
     });
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 53,
         cancelled: true,
@@ -1856,11 +1983,11 @@ describe("index.tsx — sync_complete toast shows the true delta (#744)", () => 
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 1 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-1", units: [], total_units: 1, total_roms: 1 });
     });
     recordSyncCreated(100);
     act(() => {
-      emitDeckyEvent<[SyncCompletePayload]>("sync_complete", {
+      emitHostEvent<[SyncCompletePayload]>("sync_complete", {
         platform_app_ids: {},
         total_games: 1,
         restart_recommended: true,
@@ -1878,7 +2005,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [{ type: "platform", id: 1, name: "N64", slug: "n64", rom_count: 120, bound_count: 0 }],
         total_units: 3,
@@ -1896,7 +2023,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [
           // A fully-mirrored platform re-syncing: every row already carries a
@@ -1927,7 +2054,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [
           // A Force Full Sync clears the completion stamps, so collapsed_count is
@@ -1959,7 +2086,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [{ type: "platform", id: 1, name: "N64", slug: "n64", rom_count: 200, bound_count: 0 }],
         total_units: 1,
@@ -1968,7 +2095,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     });
     // A backend frame carries no etaSeconds — the listener must not wipe it.
     act(() => {
-      emitDeckyEvent<[SyncProgress]>("sync_progress", {
+      emitHostEvent<[SyncProgress]>("sync_progress", {
         running: true,
         stage: "applying",
         step: 1,
@@ -1992,7 +2119,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const previewSeed = 321;
     setSyncProgress({ running: true, stage: "applying", message: "Applying changes...", etaSeconds: previewSeed });
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", { run_id: "run-eta", units: [], total_units: 3, total_roms: 5400 });
+      emitHostEvent<[SyncPlanData]>("sync_plan", { run_id: "run-eta", units: [], total_units: 3, total_roms: 5400 });
     });
 
     // The crude estimateApplySeconds(5400, 0) bound must NOT overwrite the preview seed.
@@ -2008,7 +2135,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     // the etaSeconds-undefined gate.
     expect(getSyncProgress().etaSeconds).toBeUndefined();
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [{ type: "platform", id: 1, name: "N64", slug: "n64", rom_count: 80, bound_count: 0 }],
         total_units: 2,
@@ -2024,7 +2151,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [
           {
@@ -2055,7 +2182,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [
           // Predicted skip: weight 0 even though counts are known.
@@ -2101,7 +2228,7 @@ describe("index.tsx — sync_plan seeds the applying-phase ETA (always-on estima
     const plugin = pluginFactory();
 
     act(() => {
-      emitDeckyEvent<[SyncPlanData]>("sync_plan", {
+      emitHostEvent<[SyncPlanData]>("sync_plan", {
         run_id: "run-eta",
         units: [
           { type: "platform", id: 1, name: "N64", slug: "n64", rom_count: 60 },

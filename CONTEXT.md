@@ -118,6 +118,73 @@ on a rename, and nothing derives a directory from a folder name any more. Also a
 directory. "XDG directory" is now only half wrong — the XDG variables ARE read, as the ladder's second rung, but they
 are not where the answer comes from on an installed system.
 
+### Standalone bundle / coexistence bundle / React bootstrap
+
+The three files `pnpm -C frontend build` produces, and the names to use for them.
+
+- **Standalone bundle** — `dist/index.js`. The panel with `@decky/ui` bundled inside it. For a machine where Decky
+  Loader is not running.
+- **Coexistence bundle** — `dist/index-coexistence.js`. The same panel, taking `@decky/ui` from the copy Decky Loader
+  has already loaded, through the `DFL` global. For a machine where Decky is running: a second bundled copy re-executes
+  Steam's module registry underneath a Decky that is already rendering from it, and takes the Big Picture window down.
+- **React bootstrap** — `dist/globals.js`. Installs `SP_REACT`, `SP_REACTDOM` and `SP_JSX`, which Steam does not define
+  and Decky's loader otherwise would. Its own file because `@decky/ui`'s component half reads React internals while its
+  modules evaluate, so it cannot be in the import graph of the module that creates the globals.
+
+The two panel bundles differ in exactly one thing and are told apart by NAME — nothing inside either is read to choose
+between them. Which one is loaded is the injector's decision and is made nowhere in this tree yet. Each does carry a
+build-time stamp of which of the two it IS, read in one place — `frontend/src/boot/searchingCopy.ts` — to name the copy
+of `@decky/ui` that ran a search that missed. That answer is printed twice: on the start-up check's fallback page and in
+the log line beside it.
+
+_Avoid_: **DFL build** / **bundled build** — both name the mechanism rather than the situation, and the situation is
+what the choice turns on. Avoid **the bundle** unqualified once more than one exists. Avoid calling the React bootstrap
+a "shim" or a "polyfill": it installs Steam's own React, not a stand-in for it.
+
+### Start-up check
+
+The question `frontend/src/boot/steamModules.ts` asks before anything mounts: did every search into Steam's own
+interface find something? Almost everything the panel renders is a search predicate over Steam's minified bundle, and
+one Steam has moved past returns `undefined` with nothing thrown.
+
+Each name checked states what its **absence costs**: the `panel`, which is every name's status quo, only its
+`appearance`, or — where the name is read by a `diagnostic` and nothing else — a debug line naming a class instead of
+the class. On a miss that costs the panel, the panel does not mount at all — the factory returns a **fallback page**
+instead and registers nothing. The page distinguishes SOME searches missing from ALL of them (the React bootstrap never
+ran, or Steam's registry was read before it was complete, neither of them `@decky/ui`'s doing), which is the first fact
+that leads to a repair.
+
+A **miss the panel survives** costs neither the panel nor anything the panel acts on: it mounts as usual and the log is
+the only place the miss is reported. That line answers the same question the page does — whose copy of `@decky/ui` ran
+the search — rather than naming a repair of its own, because the two costs below the panel do not all belong to the same
+program: `ControllerGlyph` is a search Tender runs itself, and `playSectionClasses` is a `@decky/ui` export whose search
+is Decky's in the coexistence bundle. _Avoid_ **cosmetic miss** for the pair: it is true of the glyph and false of
+`playSectionClasses`, whose absence nothing draws in the first place.
+
+The second is the **searching copy**: which installed copy of `@decky/ui` ran the predicate that went stale, since the
+coexistence bundle runs Decky Loader's rather than ours. It is read ONCE per start and worded by both surfaces, which is
+what stops the page and the log line from answering it differently. It gives SOME four answers instead of one — Tender's
+own copy searched and missed (update Tender); Decky's copy searched and missed (update Decky Loader, whose own interface
+and other plugins are affected the same way); Decky's copy does not export a name Tender asks it for, which is two
+separately installed programs disagreeing about the package (bring both to current); or what missed spans both kinds,
+which still settles Decky's copy — it carries every name asked of it and its searches for them came back empty all the
+same — and leaves the rest to whichever kind of name that is. The **package disagreement** is asked before the mixed
+answer because a name Decky's copy does not export is a fact about the two installs, where a name it exports with an
+empty value is a search result whose cause is inferred.
+
+Asked before them all: four of the names checked are not `@decky/ui` lookups at all — the three `SP_*` React globals and
+`ControllerGlyph`, which Tender reaches with a predicate of its own — so a miss confined to those belongs to NO copy of
+the package and names none. The **fallback page** then names no repair either, because a global can be among them and
+who installed it on a machine running both programs is not this page's to decide. The log line is not in that position:
+a global's absence costs the panel, so it never reaches one, and the names that do reach it in this answer are searches
+Tender runs itself — so there the repair is named, a newer Tender. (That is this answer's scope, not a universal:
+`playSectionClasses` reaches the log line too, and its search is the package's.)
+
+_Avoid_: **health check** — it asks one question at one moment and is not a recurring probe. Avoid **degraded mode**:
+the panel is whole or it is absent, and a half-mounted panel acting on what it cannot see is the thing the check exists
+to refuse. A miss the panel survives is not degraded mode: what is absent is a decoration the one place that draws it
+renders without, or a name only a debug line reads — never something a page acts on.
+
 ### Persistence boundary (settings.json / SQLite)
 
 Where a piece of persisted state lives is a deliberate decision driven by what the data _is_, not which file it

@@ -34,6 +34,8 @@ is invisible at the citation site), so reach it through the page that owns the t
   [steam-non-steam-shortcuts.md](docs/architecture/steam-non-steam-shortcuts.md)
 - QAM panel — pages and their widths, the wide-page frame, list-and-detail navigation, notices and their homes —
   [qam-panel.md](docs/architecture/qam-panel.md)
+- How the panel is BUILT and loaded — the three build outputs, the two copies of the panel and why, Steam's React
+  globals, the start-up check — [frontend-bundles.md](docs/architecture/frontend-bundles.md)
 - Save-file sync — slots, conflict resolution, negotiate transport, version history —
   [save-file-sync-architecture.md](docs/architecture/save-file-sync-architecture.md)
 - Save-sync coverage matrix — [save-sync-coverage.md](docs/architecture/save-sync-coverage.md)
@@ -79,7 +81,8 @@ new code in it.
   fix the upstream artifact instead of the copy is not. `defaults/` holds no vendored artifact since the BIOS registry
   left.
 - `testing-backend.md` — test tiers, gate tests, vendored conformance vectors.
-- `testing-frontend.md` — the `@decky/api` event harness, non-vacuous catch assertions.
+- `testing-frontend.md` — the backend-event harness, that `api/host` is stubbed suite-wide so no socket is ever opened,
+  non-vacuous catch assertions.
 - `comments.md` — an inline comment is the exception: only an outside-world fact, a road not taken, or a constraint the
   code cannot express. Re-read the comment on the line you touch — a stale one is worse than none, because it is
   believed and nothing in the toolchain contradicts it. **No mechanical check exists.**
@@ -107,23 +110,40 @@ locally with `mise run docs`.
 ## Traps — non-obvious rules that bite silently
 
 - **The build output lives at `<repo>/dist/`, not under `frontend/`** — and the frontend package writes one directory UP
-  to put it there (`config.output.dir = "../dist"` in `frontend/rollup.config.js`, assigned after `@decky/rollup` merges
-  its own defaults last, like `input` and `sourcemap`). `dist/` is the SEAM between the two halves rather than the
+  to put it there (`OUT_DIR` in `frontend/rollup.config.js`). `dist/` is the SEAM between the two halves rather than the
   frontend's property: the backend serves it as `os.path.join(directories.code_dir, "dist")` (`backend/main.py`), and a
   host that located its own build output relative to `__file__` would be the only part of the backend that knew the
   repository's layout. Tidying `dist/` into the package it is built by would put the backend's reach inside the
   frontend's internals. Two consequences worth knowing: `frontend/tsconfig.json`'s `outDir` and
-  `frontend/.size-limit.json`'s `path` both point up as well, and **emptying that directory is the `build` script's
-  job** (`rm -rf ../dist && rollup -c`) — `@decky/rollup` puts a `rollup-plugin-delete` in its plugin array aimed at
-  `./dist/*`, which resolves against the working directory and so cleans the package's own unused `dist` instead of the
-  real one.
-- **`frontend/plugin.json` is not a manifest, and `@decky/rollup` is why it exists** — the builder opens it
-  unconditionally as its first statement (`@decky/rollup@1.0.2`, `src/index.js:74`), with no option to skip the read, so
-  deleting it makes `rollup -c` fail with `ENOENT` before any config of ours runs. Nothing installs, ships or reads it
-  otherwise. Its contents are inert: `name` is the only field reached, and it reaches only a `127.0.0.1:1337` asset URL
-  no loader serves for us and a `decky://` sourcemap prefix the dev build alone emits, plus a `@decky/manifest` external
-  global no module imports. It is **not** a home of the display name — nothing requires it to agree with `DISPLAY_NAME`.
-  It goes when `@decky/rollup` does (#1899).
+  `frontend/.size-limit.json`'s paths point up as well, and **emptying that directory is the `build` script's job**
+  (`rm -rf ../dist && rollup -c`) rather than any plugin's.
+- **The build produces THREE files, and two of them are the same panel** — `dist/globals.js` (Steam's React installed by
+  us), `dist/index.js` (the panel with `@decky/ui` bundled) and `dist/index-coexistence.js` (the panel taking it from
+  Decky's `DFL` global). **Which panel bundle gets loaded is the injector's decision (#1900) and is made nowhere in this
+  tree yet**; the name is the whole of the SELECTION mechanism. Each panel bundle does know which of the two it IS —
+  `rollup.config.js` stamps it through `virtual:tender-bundle-kind`, and `frontend/src/boot/searchingCopy.ts` is the one
+  thing that reads it. What it reads it INTO is the start-up failure answer, whose sentence names a different program to
+  update depending on whose copy of `@decky/ui` ran the search that missed — and that answer has two consumers, not one:
+  `index.tsx` resolves it once and hands it to both the fallback page and the log line beside it. Importing `@decky/ui`
+  re-executes every module in Steam's live webpack registry, and **what makes a second import fatal is a consumer
+  already RENDERING from those modules — not the number of sweeps, and not Big Picture.** Measured on the device: a
+  second sweep on the desktop client survives; a third with Big Picture open and the Quick Access view mounted survives;
+  starting Decky into that same session survives; Big Picture plus Quick Access plus Decky **already rendering** crashes
+  with `Minified React error #31`, because a module re-executed underneath something holding its exports leaves an empty
+  object where a component was. Steam's own interface is not such a consumer; Decky's is. That is why the pair exists
+  and why a runtime `if` cannot replace it: the damage is done at import, and ESM hoists the import above any set-up
+  code in the same module. **`dist/globals.js` carries the same sweep** — it imports `@decky/ui/dist/webpack`, whose
+  `initModuleCache()` is unguarded at module scope — so the short-circuit inside `installGlobals` protects nothing, and
+  that bundle must not be loaded beside a running Decky either. `pnpm -C frontend check:bundle` fails when either bundle
+  stops being what it is; `pnpm build` alone would not. Detail:
+  [frontend-bundles.md](docs/architecture/frontend-bundles.md).
+- **Our three React globals must match Decky's EXACTLY, and the cost of a difference lands on Decky's users** —
+  `frontend/src/boot/steamGlobals.ts` installs `SP_REACT`, `SP_REACTDOM` and `SP_JSX`, which Steam does not define and
+  Decky's loader otherwise would. Decky skips its **entire** globals block when `SP_REACT` is already set, so when ours
+  runs first, **Decky's whole frontend renders through our shape** — a predicate of ours that differs breaks Decky's
+  interface, not Tender's. `frontend/src/boot/decky-globals-block.txt` pins upstream's block verbatim with its
+  provenance and `steamGlobals.test.ts` holds the two against each other; a failure there is not a test to fix but a
+  question about which of the two moved.
 
 - **Shortcuts**: Use `SteamClient.Apps.AddShortcut()` from frontend JS, NOT VDF writes. VDF edits require Steam restart;
   SteamClient API is instant.
@@ -143,8 +163,12 @@ locally with `mise run docs`.
   evidence about any of them — it is equally true of `SetShortcutName`, which is the one that has **never** been
   measured. The sync writes the name in place too (`rewriteShortcutIdentity`), and nothing has established what that
   does to the appId; do not read the exe measurement as covering it.
-- **Frontend API**: `@decky/ui` + `@decky/api` (NOT deprecated `decky-frontend-lib`). Use `callable()` (NOT
-  `ServerAPI.callPluginMethod()`).
+- **Frontend API**: `@decky/ui` for Steam's components, and `frontend/src/api/host.ts` for everything `@decky/api` used
+  to give us — same six export names, so a call site reads the same. Four of the six go over the backend's WebSocket;
+  **`toaster` and `routerHook` are declared placeholders that do nothing** until #1901, so no toast appears and Steam's
+  game page carries no Tender section. Neither reaches Decky's loader API when one is present, and the reason is the
+  device test rather than purity: the reference machine has Decky installed but disabled, so a placeholder that borrowed
+  the loader's API whenever it found one would pass that test for a reason nobody could identify afterwards.
 - **A callable must be `async def`**: even where the body is synchronous. The set a caller can reach is exactly the
   public `async def` on `Plugin` — `host.dispatch.reachable_methods` resolves it off the loaded class,
   `scripts/check_callable_manifest.py` derives the same set from the source, and `tests/host/test_dispatch.py` asserts
@@ -231,7 +255,8 @@ Latest release and shipped features: see `git tag --sort=-v:refname` and GitHub 
 
 ## Development
 
-- **Build**: `pnpm -C frontend build` (Rollup -> dist/index.js)
+- **Build**: `pnpm -C frontend build` (Rollup -> `dist/globals.js`, `dist/index.js`, `dist/index-coexistence.js`, and
+  `@decky/ui`'s licence text beside them)
 - **Tests**: backend — `python -m pytest tests/ -q` or `mise run test`; frontend — `mise run test:frontend` (Vitest +
   happy-dom)
 - **Coverage**: backend — `python -m pytest tests/ -q --cov=backend --cov-report=term --cov-branch`; frontend —
@@ -610,6 +635,89 @@ Format: **invariant** — tier — enforced by.
   nothing. Type-only imports are not edges (erased at runtime), which is why the `api/backend.ts` ⇄
   `utils/cachedGameDetailStore.ts` back-reference is not a cycle
 - **No bare `# type: ignore` / blanket suppressions** — check — `scripts/check_no_bare_ignores.sh`
+- **A transport failure and a callable's own failure never arrive in the same shape, on either end** — test +
+  prompt-only — `backend/host/protocol.py` states the vocabulary and `.claude/rules/host.md` holds the backend half; the
+  frontend half is `frontend/src/api/hostSocket.ts`, which THROWS `HostTransportError` for an `error` message and
+  resolves only a `reply`, so a transport reason cannot reach a reader of `{success, reason, message}`.
+  `hostSocket.test.ts` pins both directions. **Nothing joins the two ends**: `connection_lost` is the one reason no
+  backend ever sends — the caller's own register answers with it — and it is spelled once in Python and once in
+  TypeScript with no check that the two agree. A frontend that spelled it differently would go green, and the divergence
+  would surface only to whoever eventually matched on it
+- **The standalone panel bundle carries `@decky/ui` and the coexistence one carries none of it** — check —
+  `frontend/scripts/check-bundle-shape.mjs`, over the built artifact rather than a bundler setting (nine strings that
+  exist only in the package's implementation, plus the `DFL.` read count, in both directions; the licence file the
+  standalone build owes and each bundle's own build stamp are asserted there too). Both failures are silent in CI and
+  land on a device: a standalone bundle that lost the package throws on its first `DFL.` read where no `DFL` exists, and
+  a coexistence bundle that gained it re-executes the modules a rendering Decky is rendering FROM, and takes the Big
+  Picture window down. **The check sees the artefacts and not the decision**: which of the two the injector loads
+  (#1900) is made nowhere in this tree, and nothing here would notice the wrong one being served
+- **Tender's three React globals are spelled exactly the way Decky Loader spells them** — test —
+  `frontend/src/boot/steamGlobals.test.ts`, which reads `steamGlobals.ts` and the pinned `decky-globals-block.txt` as
+  TEXT and compares the four search predicates, which global each answer is assigned to, and the JSX stand-in's keys and
+  aliasing. The cost of a difference lands on DECKY's users, not ours: its loader skips its entire globals block when
+  `SP_REACT` is already set, so when ours runs first, Decky's whole frontend renders through our shape. **The pinned
+  copy is the half nothing can check** — it is upstream's file, held still by hand, so a refresh that is wrong reads as
+  agreement; the provenance header names the commit it was taken at so the question can be re-asked rather than trusted
+- **Every value the panel imports from `@decky/ui` is classified by the start-up check** — test —
+  `frontend/src/boot/steamModules.test.ts`, which sweeps every non-test module under `frontend/src/` and fails on a name
+  that is in none of the three lists (a search it asks, a name it cannot answer for, the package's own code). The swept
+  set is derived rather than listed, because a file missing from such a list carries no lock at all. **What it cannot
+  see is whether a classification is TRUE**: three names sit in the unverifiable list because they are wrappers the
+  package always defines, and moving a real search there to quieten the check would pass green and leave the panel
+  rendering a hole where the check reported everything resolved
+- **Whether every search answered and whether the panel may MOUNT are two questions, and a miss that costs less than the
+  panel never takes the interface off the air** — check + test + prompt-only — the type carries the first half:
+  `SteamLookup.absenceCost` is required, so a new entry does not compile until it states which of the three its absence
+  costs — the `panel`, only its `appearance` (`ControllerGlyph`, whose only consumer `layout/WidePage.tsx` already draws
+  `‹ Back` in its place), or only a `diagnostic` (`playSectionClasses`, read nowhere but `gameDetailPatch.tsx`'s
+  one-shot `dumpTree`, which already prints `UNDEFINED` in its place) — and there is no default to arrive in.
+  `frontend/src/index.test.tsx` pins both factory branches — the panel mounts with everything registered, and the miss
+  reaches the log. **Blocking is the status quo and staying there costs no evidence: nothing here is a claim that every
+  other name was judged**, only that moving one OUT needs its every consumer read, one name at a time. **The join is
+  prompt-only and spans three places**: `checkSteamModules` derives `panelMayMount` from the costs, `index.tsx` gates
+  the fallback page on it and logs `describeSurvivedMiss` on the other side, and that sentence answers whose COPY of
+  `@decky/ui` ran the missed searches rather than naming a repair of its own — it used to say "a newer Tender"
+  unconditionally, which held only while nothing reaching it was a name the package exports, and `playSectionClasses` is
+  one. What `frontend/src/boot/steamModules.test.ts` locks is the property the line's remaining own answer rests on — a
+  non-blocking name `@decky/ui` does NOT export must be one Tender probes for itself (`findModule`, swept from the
+  source) — so the three `SP_*` globals, whose owner on a machine running both programs is #1900's open question, fail
+  there the moment one is made non-blocking, instead of shipping a repair aimed at whichever program did not install
+  them. Both directions fail quietly: call a real dependency cosmetic and the panel mounts and renders a hole, which is
+  the fault the whole check exists to tell apart from a backend that is not running; call a decoration blocking and one
+  missing glyph costs the user their entire interface, which is what this entry removed
+- **The start-up failure page names the copy of `@decky/ui` that actually ran the search that missed, and the repair
+  that follows from it** — check + test + prompt-only — the artefact's stamp is checked
+  (`frontend/scripts/check-bundle-shape.mjs`, per bundle and on `globals.js`, which must carry none), and the sentence
+  behind every verdict in `SEARCH_OWNERS` is pinned in `frontend/src/boot/steamModules.test.ts` and
+  `StartupFailurePanel.test.tsx` with both bundle values exercised — the test iterates that list rather than a count, so
+  a verdict added without a sentence on each surface fails instead of going unworded. **The join is prompt-only and
+  spans four places**: `rollup.config.js` serves the stamp, `boot/searchingCopy.ts` reads it and Decky's namespace,
+  `boot/steamModules.ts` words it, and `index.tsx` resolves it ONCE for the log line and the page — two resolutions
+  could disagree with each other. The predicates belong to `@decky/ui` and the coexistence bundle runs DECKY's copy, so
+  a page that blamed Tender in both would send a user after the wrong program while Decky's own interface and its other
+  plugins broke beside it. **A miss confined to the four names `@decky/ui` does not export names NO copy and offers NO
+  repair** — `SP_REACTDOM` is the only one that reaches that state alone, `ControllerGlyph` only ever beside a global
+  (on its own it is cosmetic and brings no page up at all, per the entry above), and `describeFailure` answers it before
+  it asks whose copy ran anything. Naming a copy would blame Decky for a predicate of ours; the silence about a repair
+  is right for the three globals and a real loss for the glyph, and only the second half of that is easy to forget. For
+  the globals no repair follows: who installed them on a machine running both is #1900's open question, and in the
+  standalone bundle that answer would not settle it anyway — a missing `SP_REACTDOM` there is `globals.js` not having
+  run OR our own ReactDOM predicate in `boot/steamGlobals.ts` having gone stale — two repairs behind one symptom.
+  `ControllerGlyph` is reached by a `findModule` predicate of ours in BOTH bundles, so a newer Tender IS its repair and
+  this branch cannot say so; restoring it here would take a third axis (whose PREDICATE, not whose copy), never a
+  reworded answer. What bounds that cost is only that the glyph's absence costs appearance, so it never brings the page
+  up alone and `describeSurvivedMiss` prints its sentence into the log whenever it is the whole of the miss. **It is NOT
+  bounded to the company of a global**: beside a blocking `@decky/ui` name the verdict is `mixed` and the glyph is that
+  answer's unnamed rest, with no global anywhere in the miss — `steamModules.test.ts`'s "leaves the glyph in the unnamed
+  rest with no global anywhere in the miss" is that case. Four quiet ways back: a runtime probe instead of the stamp
+  (`typeof DFL !== "undefined"` is true of a standalone bundle loaded beside a running Decky), asking `in DFL` about a
+  name `@decky/ui` never exported (`SP_*`, `ControllerGlyph` — a package disagreement reported on every miss, which is
+  what `SteamLookup.deckyUiExport` and its sweep-derived lock exist to prevent), reading an unreadable `DFL` as an
+  absence rather than as nothing established, and letting the reading THROW at all — `definePlugin`'s factory reads it
+  before it returns anything, so an unguarded `window.DFL` or `name in DFL` costs the page AND the log line and leaves
+  the blank panel the check exists to tell apart from a dead backend. The version beside the name is an enrichment only
+  — `_versionInfo.current` is internal, guarded, and every sentence is complete without it; `remote` beside it is the
+  PUBLISHED version and is never consulted
 - **A coverage exclusion names a property of the code, never a place: every frontend-scoped entry stands in BOTH
   `frontend/vitest.config.ts`'s `coverage.exclude` and `sonar-project.properties`' `sonar.coverage.exclusions`, every
   file entry carries its reason as a `// coverage-exempt:` marker in the file's own first lines, and every marked file
