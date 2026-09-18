@@ -13,6 +13,7 @@
  */
 
 import { getInstalledRom, logError } from "../api/backend";
+import { refreshBackendReadiness, getBackendReadinessState } from "./backendReadinessStore";
 
 /**
  * Toast copy both launch paths surface on a `no_launch_target` block. Says what
@@ -35,4 +36,24 @@ export async function romHasLaunchTarget(romId: number, context: string): Promis
     return null;
   });
   return installed == null || installed.launchable;
+}
+
+/** Toast copy both launch paths surface on a `backend_not_ready` block. */
+export const BACKEND_NOT_READY_TOAST_BODY =
+  "The launcher or RetroArch wasn't found on this device — open the plugin for details.";
+
+/**
+ * Is the active launcher backend AND RetroArch actually installed?
+ *
+ * Always re-probes rather than trusting a possibly-stale stored verdict — the
+ * launch gate needs the CURRENT state, not whatever the QAM banner last saw.
+ * {@link refreshBackendReadiness} already fails open (logs and leaves the
+ * prior verdict in the store on error), and a probe that never ran at all
+ * (`null`) also reads as ready — the same "a failed probe must never trap the
+ * user's game" reasoning {@link romHasLaunchTarget} uses.
+ */
+export async function checkBackendReady(): Promise<boolean> {
+  await refreshBackendReadiness();
+  const state = getBackendReadinessState();
+  return state == null || (state.backend_installed && state.retroarch_installed);
 }

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from domain.launcher_backend import RETRODECK_BACKEND_ID, DetectedInstallation
+from domain.launcher_backend import EMUDECK_BACKEND_ID, RETRODECK_BACKEND_ID, DetectedInstallation
 
 if TYPE_CHECKING:
     import logging
@@ -186,6 +186,30 @@ class LauncherBackendService:
 
         return {"success": True, "rebake_items": self._relaunch_items.installed_relaunch_items()}
 
+    def get_backend_readiness(self) -> dict[str, Any]:
+        """Report whether the active launcher backend and RetroArch are genuinely installed.
+
+        The plugin's launch surface used to assume both — RetroDECK was
+        treated as always-present (a plain fallback with fictitious paths when
+        it wasn't), and every libretro core was treated as bakeable on the
+        assumption RetroArch ships with RetroDECK. Neither holds once a user
+        can run without RetroDECK installed, or with RetroDECK installed but
+        RetroArch removed, so this is the one honest answer the frontend polls
+        on QAM open and after a backend switch (mirrors
+        ``ConnectionService.test_connection``'s "ask the seam, don't
+        re-derive" shape). Never raises — both probes are best-effort
+        filesystem checks.
+        """
+        backend_id = self.active_backend_id()
+        backend_installed = self._active.is_installed() if self._active is not None else False
+        retroarch_ok = self._active.retroarch_installed() if self._active is not None else False
+        return {
+            "backend": backend_id,
+            "backend_installed": backend_installed,
+            "retroarch_installed": retroarch_ok,
+            "message": _readiness_message(backend_id, backend_installed, retroarch_ok),
+        }
+
     def _bind(self, backend_id: str, installation_id: str) -> LauncherBackend | None:
         """Bind the persisted (backend_id, installation_id) pair, falling back to RetroDECK.
 
@@ -208,6 +232,19 @@ class LauncherBackendService:
     def _try_bind(self, backend_id: str, installation_id: str) -> LauncherBackend | None:
         factory = self._registry.get(backend_id)
         return factory.bind(installation_id) if factory is not None else None
+
+
+_BACKEND_DISPLAY_NAMES = {RETRODECK_BACKEND_ID: "RetroDECK", EMUDECK_BACKEND_ID: "EmuDeck"}
+
+
+def _readiness_message(backend_id: str, backend_installed: bool, retroarch_installed: bool) -> str:
+    """Human-readable readiness summary for the QAM banner and play-time guard."""
+    display = _BACKEND_DISPLAY_NAMES.get(backend_id, backend_id)
+    if not backend_installed:
+        return f"{display} was not found on this device — games will fail to launch until it is installed."
+    if not retroarch_installed:
+        return "RetroArch was not found — libretro-core games will fail to launch until it is installed."
+    return f"{display} and RetroArch are both installed."
 
 
 def _installation_payload(installation: DetectedInstallation, *, active: bool) -> dict[str, Any]:

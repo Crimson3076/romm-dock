@@ -67,6 +67,8 @@ import { reconcileStaleShortcuts, requestSyncCancel, isCancelRequested, resetSyn
 import { useConnectionProbe } from "../utils/connectionProbe";
 import type { BackendFailed, ConnectionFailure } from "../utils/connectionProbe";
 import { retroDeckBanner, type RetroDeckBanner } from "../utils/retrodeckHealth";
+import { refreshBackendReadiness, useBackendReadiness } from "../utils/backendReadinessStore";
+import { backendReadinessBanner } from "../utils/backendReadinessBanner";
 import { VersionErrorCard, useVersionError } from "./VersionErrorCard";
 import { WarningCard } from "./WarningCard";
 import { DownloadProgressRow } from "./DownloadProgressRow";
@@ -542,6 +544,7 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
   const [skipPreview, setSkipPreview] = useState(false);
   const [retroarchWarning, setRetroarchWarning] = useState<{ warning: boolean; current?: string } | null>(null);
   const [retrodeckBanner, setRetrodeckBanner] = useState<RetroDeckBanner | null>(null);
+  const backendReadiness = useBackendReadiness();
   const migration = useMigrationStatus();
   const settingsReset = useSettingsResetState();
   const playtimeScope = usePlaytimeScopeState();
@@ -598,6 +601,12 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
     getRetroDeckStatus()
       .then((s) => setRetrodeckBanner(retroDeckBanner(s.status, s)))
       .catch((e) => logError(`Failed to query RetroDECK status: ${e}`));
+
+    // Launcher backend / RetroArch readiness — warn when the active backend
+    // or RetroArch itself isn't actually installed (games would otherwise
+    // fail to launch with no explanation). Re-checked here on every QAM open,
+    // and again by LauncherBackendSection after a backend switch.
+    detach(refreshBackendReadiness());
 
     // The backend holds a computed preview for 30 minutes, but this panel's card
     // dies with the render — leaving the main page for a submenu used to strand a
@@ -1509,6 +1518,23 @@ export const MainPage: FC<MainPageProps> = ({ onNavigate }) => {
             </Focusable>
           </PanelSectionRow>
         )}
+        {!retrodeckBanner &&
+          backendReadiness &&
+          (() => {
+            const banner = backendReadinessBanner(backendReadiness);
+            // Suppressed when the RetroDECK banner above is already showing —
+            // that one already explains "RetroDECK not found" more specifically
+            // (config path, resolved home) than this backend-neutral one would.
+            return (
+              banner && (
+                <PanelSectionRow>
+                  <Focusable>
+                    <WarningCard title={banner.title} message={banner.message} compact />
+                  </Focusable>
+                </PanelSectionRow>
+              )
+            );
+          })()}
         <PanelSectionRow>
           <Field
             label="Connection"

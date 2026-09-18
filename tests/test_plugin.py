@@ -859,6 +859,9 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     # Read-only launcher-backend listing (the switch set_launcher_backend IS
     # decorated).
     "get_launcher_backends",
+    # Read-only backend/RetroArch presence probe (for the QAM readiness banner
+    # and the pre-launch guard) — mirrors get_retrodeck_status's reasoning.
+    "get_backend_readiness",
     # Read-only disc-picker state query (the pin-write select_disc IS decorated).
     "get_disc_selection",
     # Read-only exe-picker state query (the pin-write select_executable IS decorated).

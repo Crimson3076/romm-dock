@@ -6,6 +6,7 @@ import * as launchGate from "./launchGate";
 import * as sessionManager from "./sessionManager";
 import * as runningApps from "./runningApps";
 import * as steamShortcuts from "./steamShortcuts";
+import * as backendReadinessStore from "./backendReadinessStore";
 import { registerLaunchInterceptor, unregisterLaunchInterceptor, type LaunchPrompts } from "./launchInterceptor";
 import { mountPruneLeasePlugin, releaseAllPruneLeases } from "./pruneLease";
 import type { GateVerdict, LaunchGateOps } from "./launchGate";
@@ -73,6 +74,16 @@ vi.mock("./migrationStore", () => ({
 
 vi.mock("./saveSortMigrationStore", () => ({
   setSaveSortMigrationStatus: vi.fn(),
+}));
+
+vi.mock("./backendReadinessStore", () => ({
+  refreshBackendReadiness: vi.fn(),
+  getBackendReadinessState: vi.fn(() => ({
+    backend: "retrodeck",
+    backend_installed: true,
+    retroarch_installed: true,
+    message: "RetroDECK and RetroArch are both installed.",
+  })),
 }));
 
 /**
@@ -829,6 +840,24 @@ describe("launchInterceptor — full funnel watcher", () => {
     it("migrationPending reads the migration store", async () => {
       const ops = await captureOps();
       expect(ops.migrationPending()).toBe(false);
+    });
+
+    it("checkBackendReady: re-probes and reflects the current store state", async () => {
+      const ops = await captureOps();
+
+      vi.mocked(backendReadinessStore.getBackendReadinessState).mockReturnValueOnce({
+        backend: "retrodeck",
+        backend_installed: false,
+        retroarch_installed: true,
+        message: "RetroDECK was not found on this device — games will fail to launch until it is installed.",
+      });
+      expect(await ops.checkBackendReady()).toBe(false);
+      expect(backendReadinessStore.refreshBackendReadiness).toHaveBeenCalled();
+
+      // No probe has landed yet (`null`) — reads as ready, the same fail-open
+      // reasoning as a throw.
+      vi.mocked(backendReadinessStore.getBackendReadinessState).mockReturnValueOnce(null);
+      expect(await ops.checkBackendReady()).toBe(true);
     });
 
     it("checkReachability: online passes through; a throw logs and treats as offline", async () => {

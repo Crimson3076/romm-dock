@@ -24,6 +24,7 @@ class FakeRetroDeckPaths:
         home: str = "",
         config_path: str = "/fake/retrodeck.json",
         health: RetroDeckConfigHealth = RetroDeckConfigHealth.OK,
+        installed: bool = True,
     ) -> None:
         self.saves = saves
         self.states = states
@@ -32,6 +33,10 @@ class FakeRetroDeckPaths:
         self.home = home
         self.config = config_path
         self.health = health
+        self.installed = installed
+
+    def is_installed(self) -> bool:
+        return self.installed
 
     def saves_path(self) -> str:
         return self.saves

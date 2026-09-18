@@ -194,20 +194,30 @@ skips it and bakes the next command (the direct `--no-gui` launch): the shortcut
 standalone invocation. The kind is `libretro` when the command matches the strict RetroArch shape
 (`%EMULATOR_RETROARCH% -L %CORE_RETROARCH%/<core>_libretro.so %ROM%`), else `standalone`.
 
-**Existence probe (a bakeable standalone whose emulator is not installed → `needs_setup` `not_installed`).** RetroDECK
+**Existence probe (a bakeable option whose emulator is not installed → `needs_setup` `not_installed`).** RetroDECK
 lists more standalone emulators in `es_systems.xml` than it bundles, so a system's bakeable default could name an
 emulator that is not on disk (Ryubing on `switch`, any un-installed external component) — baking it produces a shortcut
 that dies in ~0.4 s. To prevent that regression the adapter probes existence against the sibling `es_find_rules.xml`: it
 maps a standalone command's `%EMULATOR_<NAME>%` token to the find-rule entry, checks whether any of that entry's
 `staticpath` locations exist on disk (mapping the sandbox `/app` and `/var/{data,config}` prefixes to their host paths,
 glob-aware), and hands the verdict to the pure `downgrade_if_not_installed(option, installed)` rule — which turns a
-bakeable **standalone** whose emulator is absent into `needs_setup` with reason `not_installed`. It then drops out of
+bakeable option whose emulator is absent into `needs_setup` with reason `not_installed`. It then drops out of
 `select_default_option` (the system plain-launches, as it did before #1210) and shows disabled in the picker. The probe
 is **absence-only** — it downgrades only on positive evidence that a RetroDECK component (`retrodeck/components/…` or
 `retrodeck/external_components/…`) is missing; a `systempath`-only emulator (binary on RetroDECK's sandbox `PATH`, not
 visible from outside), an emulator with no find rule, and the whole `es_find_rules.xml`-unreadable case are all assumed
-installed, so it never falsely downgrades. Libretro is always installed (RetroArch ships with RetroDECK), so libretro
-options are never downgraded. See [ADR-0020](../adr/0020-live-es-systems-emulator-resolution.md) §2.
+installed, so it never falsely downgrades. See [ADR-0020](../adr/0020-live-es-systems-emulator-resolution.md) §2.
+
+This applies to **both kinds**, not just standalone. Libretro was originally assumed always-installed ("RetroArch ships
+with RetroDECK"), but RetroArch is itself a RetroDECK component (`retrodeck/components/retroarch`) that can go missing
+the same way any other component can — so a bakeable **libretro** option is downgraded exactly like a standalone one
+when `CoreResolver.retroarch_installed()` (every libretro `<command>` begins with the `%EMULATOR_RETROARCH%` find-rule
+token, so the same staticpath probe answers this too) reports RetroArch absent. See
+[Launcher Backends](launcher-backends.md#readiness-is-the-backend-actually-there) for the backend-level readiness
+signal this feeds (`get_backend_readiness`, the QAM banner, and the pre-launch guard) — that page's probe is a coarser,
+Flatpak-presence-only check used when there is no `es_find_rules.xml` context, and is not guaranteed to agree with this
+one in every edge case; this page's `es_find_rules.xml` probe is what actually drives the picker's `needs_setup`
+verdict.
 
 `get_emulator_options(system)` returns `{"available": bool, "options": [EmulatorOption, ...]}`. **`available` is `False`
 when `es_systems.xml` cannot be found or parsed** — the picker surfaces that as "Emulator list unavailable" rather than

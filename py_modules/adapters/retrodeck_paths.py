@@ -21,6 +21,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from adapters.flatpak_install import flatpak_app_files_dirs
 from lib.retrodeck_health import RetroDeckConfigHealth
 
 if TYPE_CHECKING:
@@ -41,6 +42,17 @@ class RetroDeckPathsAdapter:
         # "file present but unreadable" (UNREADABLE, loud). The getters
         # only need the dict-or-None; ``config_health`` needs the reason.
         self._last_load_health: RetroDeckConfigHealth = RetroDeckConfigHealth.ABSENT
+
+    def is_installed(self) -> bool:
+        """Whether the RetroDECK Flatpak itself is present on this machine.
+
+        Independent of ``retrodeck.json``: a fresh RetroDECK install has no
+        config yet but is still installed, which is what distinguishes
+        ``RetroDeckConfigHealth.ABSENT`` (config not written yet) from
+        ``RetroDeckConfigHealth.NOT_INSTALLED`` (RetroDECK isn't here at all)
+        in :meth:`config_health`.
+        """
+        return bool(flatpak_app_files_dirs(self._user_home))
 
     def config_path(self) -> str:
         """Absolute path to ``retrodeck.json`` that this adapter probes."""
@@ -108,25 +120,26 @@ class RetroDeckPathsAdapter:
         """Classify how trustworthy the resolved RetroDECK roots are.
 
         Reuses the 30-second TTL cache via :meth:`_load_config` — no
-        second independent file read within the TTL. Four outcomes:
+        second independent file read within the TTL. Five outcomes:
 
-        - ``ABSENT``: ``retrodeck.json`` not found — the legitimate
-          fresh-install case. Wins over ``ROOT_MISSING`` even when the
-          ``~/retrodeck`` fallback does not exist on disk, so it stays
-          quiet.
+        - ``NOT_INSTALLED``: ``retrodeck.json`` not found AND the RetroDECK
+          Flatpak itself isn't present — RetroDECK was never installed.
+        - ``ABSENT``: ``retrodeck.json`` not found but the RetroDECK Flatpak
+          IS present — the legitimate fresh-install-not-yet-configured case.
+          Stays quiet.
         - ``UNREADABLE``: the file exists but could not be read/parsed.
         - ``ROOT_MISSING``: the file read OK but the resolved RetroDECK
           home directory does not exist on disk (e.g. SD card ejected).
         - ``OK``: read OK and the resolved home exists.
         """
         self._load_config()
-        # ABSENT wins over the disk probe: ``~/retrodeck`` not existing on
-        # a fresh install is expected, not a failure.
-        if self._last_load_health in (
-            RetroDeckConfigHealth.ABSENT,
-            RetroDeckConfigHealth.UNREADABLE,
-        ):
-            return self._last_load_health
+        if self._last_load_health == RetroDeckConfigHealth.UNREADABLE:
+            return RetroDeckConfigHealth.UNREADABLE
+        if self._last_load_health == RetroDeckConfigHealth.ABSENT:
+            # A missing config is only the quiet fresh-install case when the
+            # Flatpak itself is actually here — otherwise RetroDECK was never
+            # installed at all, which is loud.
+            return RetroDeckConfigHealth.ABSENT if self.is_installed() else RetroDeckConfigHealth.NOT_INSTALLED
         # Config read OK — probe the resolved home directory on disk.
         if not os.path.isdir(self.retrodeck_home()):
             return RetroDeckConfigHealth.ROOT_MISSING

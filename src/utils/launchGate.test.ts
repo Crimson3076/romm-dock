@@ -26,6 +26,7 @@ function makeOps(overrides: Partial<LaunchGateOps> = {}): LaunchGateOps {
   const okSync: PreLaunchSyncOutcome = { success: true, message: "" };
   return {
     migrationPending: vi.fn(() => false),
+    checkBackendReady: vi.fn(async () => true),
     hasLaunchTarget: vi.fn(async () => true),
     ensureTrackingConfigured: vi.fn(async (): Promise<"proceed" | "abort"> => "proceed"),
     checkCoreChange: vi.fn(async () => true),
@@ -47,6 +48,25 @@ describe("runLaunchGate — verdict branches", () => {
     expect(ops.hasLaunchTarget).not.toHaveBeenCalled();
     expect(ops.ensureTrackingConfigured).not.toHaveBeenCalled();
     expect(ops.checkReachability).not.toHaveBeenCalled();
+  });
+
+  it("blocks with backend_not_ready when the backend/RetroArch check fails", async () => {
+    const ops = makeOps({ checkBackendReady: vi.fn(async () => false) });
+    await expect(runLaunchGate(100, 42, ops)).resolves.toEqual({
+      decision: "block",
+      reason: "backend_not_ready",
+    });
+    // Nothing downstream matters if the launcher itself can't run.
+    expect(ops.hasLaunchTarget).not.toHaveBeenCalled();
+    expect(ops.ensureTrackingConfigured).not.toHaveBeenCalled();
+    expect(ops.checkReachability).not.toHaveBeenCalled();
+  });
+
+  it("proceeds past the backend-readiness step when it passes", async () => {
+    const ops = makeOps({ checkBackendReady: vi.fn(async () => true) });
+    await expect(runLaunchGate(100, 42, ops)).resolves.toEqual({ decision: "allow" });
+    expect(ops.checkBackendReady).toHaveBeenCalled();
+    expect(ops.hasLaunchTarget).toHaveBeenCalled();
   });
 
   it("blocks with no_launch_target when the ROM has no launch target", async () => {

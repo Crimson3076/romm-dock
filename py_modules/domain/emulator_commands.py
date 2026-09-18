@@ -132,20 +132,23 @@ def _strip_xemu_inject_prefix(text: str) -> str | None:
 
 
 def downgrade_if_not_installed(option: EmulatorOption, emulator_installed: bool) -> EmulatorOption:
-    """Downgrade a bakeable **standalone** option whose emulator is not installed.
+    """Downgrade a bakeable option whose emulator is not installed.
 
     The pure half of ADR-0020's binary-existence probe: the adapter performs the
-    on-disk / ``es_find_rules.xml`` I/O to decide whether a standalone emulator is
-    installed in RetroDECK and passes the verdict in as *emulator_installed*; this
-    rule turns a bakeable standalone whose emulator is absent into a
-    ``needs_setup`` option with reason ``"not_installed"`` so it drops out of the
-    default selection (:func:`select_default_option`) and shows disabled in the
-    picker — a system whose only bakeable command is a missing standalone then
-    plain-launches, restoring the pre-standalone behavior. Libretro options
-    (RetroArch ships with RetroDECK, so it is always installed) and options that
-    are already non-bakeable are returned unchanged.
+    on-disk / ``es_find_rules.xml`` I/O to decide whether the option's emulator is
+    installed and passes the verdict in as *emulator_installed*; this rule turns
+    a bakeable option whose emulator is absent into a ``needs_setup`` option with
+    reason ``"not_installed"`` so it drops out of the default selection
+    (:func:`select_default_option`) and shows disabled in the picker — a system
+    whose only bakeable command names a missing emulator then plain-launches,
+    restoring the pre-existence-probe behavior. Applies to both kinds: a
+    **standalone** option whose own emulator binary is missing, and a
+    **libretro** option when RetroArch itself is missing (RetroArch is not
+    guaranteed present the way it once was assumed to be — see
+    ``adapters.retroarch_install``). Options that are already non-bakeable are
+    returned unchanged.
     """
-    if emulator_installed or option.status != "bakeable" or option.kind != "standalone":
+    if emulator_installed or option.status != "bakeable":
         return option
     return replace(option, status="needs_setup", reason="not_installed")
 

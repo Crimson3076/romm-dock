@@ -26,7 +26,12 @@ class RetroDeckConfigHealth(StrEnum):
     """``retrodeck.json`` read successfully AND the resolved RetroDECK home exists on disk."""
 
     ABSENT = "absent"
-    """``retrodeck.json`` not found — the legitimate fresh-install fallback to ``~/retrodeck``. Stays quiet."""
+    """RetroDECK's Flatpak IS installed but ``retrodeck.json`` isn't there yet — the legitimate
+    fresh-install fallback to ``~/retrodeck``. Stays quiet."""
+
+    NOT_INSTALLED = "not_installed"
+    """RetroDECK's Flatpak itself was not found on this device at all — distinct from ``ABSENT``,
+    where the Flatpak exists but hasn't been configured yet. Loud: nothing will launch."""
 
     UNREADABLE = "unreadable"
     """``retrodeck.json`` exists but cannot be read or parsed — we know RetroDECK is configured but not where. Loud."""

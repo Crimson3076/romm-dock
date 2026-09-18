@@ -92,6 +92,21 @@ and you'll need an account with token permissions.
 Once connected, you're ready to sync your library. See [Configuration](configuration.md) for additional settings, or
 jump straight to [Syncing Your Library](syncing-your-library.md).
 
+## Launcher / RetroArch not found
+
+The plugin checks that your chosen launcher (RetroDECK or EmuDeck) and RetroArch are actually installed, and shows a
+banner on the main QAM panel if either isn't there — checked every time you open the panel, and again right after you
+switch launchers in **Settings → Launcher**. If you see **Launcher not found** or **RetroArch not found**:
+
+- Make sure RetroDECK (or EmuDeck) is installed and has been launched at least once.
+- If you're using RetroDECK, RetroArch ships as one of its own components — reinstalling or repairing RetroDECK through
+  its own configurator restores it.
+- If you're using EmuDeck, make sure the `org.libretro.RetroArch` Flatpak it installs alongside itself is still
+  present.
+
+Pressing Play on a game while either is missing shows a toast instead of silently failing to launch, so the failure is
+never mysterious — open the plugin's QAM panel for the specific banner.
+
 ---
 
 **Next:** [Configuration](configuration.md)

@@ -39,7 +39,7 @@ export interface PreLaunchSyncOutcome {
  *   - `block`            — a hard precondition failed and the user has not yet
  *                          been shown UI for it. `reason` selects the caller's
  *                          message (`not_installed`, `migration_pending`,
- *                          `no_launch_target`).
+ *                          `no_launch_target`, `backend_not_ready`).
  *   - `abort`            — the user was shown UI (tracking-setup or core-change)
  *                          and chose not to proceed. The caller bails silently,
  *                          with no further message — the user already decided.
@@ -53,7 +53,7 @@ export interface PreLaunchSyncOutcome {
  */
 export type GateVerdict =
   | { decision: "allow" }
-  | { decision: "block"; reason: "not_installed" | "migration_pending" | "no_launch_target" }
+  | { decision: "block"; reason: "not_installed" | "migration_pending" | "no_launch_target" | "backend_not_ready" }
   | { decision: "abort" }
   | { decision: "conflict"; conflicts: SyncConflict[] }
   | { decision: "offline_drift" }
@@ -71,6 +71,16 @@ export interface LaunchGateOps {
    * a pending migration risks silent save-data loss.
    */
   migrationPending: () => boolean;
+
+  /**
+   * Is the active launcher backend (RetroDECK/EmuDeck) AND RetroArch actually
+   * installed? `false` means a launch would either exec nothing (the backend
+   * itself is gone) or fail silently the moment RetroArch resolves a libretro
+   * core (the games-run-through-RetroArch case). Blocks with
+   * `block`/`backend_not_ready` — checked before `hasLaunchTarget`, since
+   * nothing downstream matters if the launcher itself can't run.
+   */
+  checkBackendReady: () => Promise<boolean>;
 
   /**
    * Does this ROM have a launch target at all? `false` for a ROM that is
@@ -120,12 +130,13 @@ export interface LaunchGateOps {
  *
  * Step order (each step's failure short-circuits the rest):
  *   1. migration pending      -> block / migration_pending
- *   2. hasLaunchTarget        -> block / no_launch_target
- *   3. ensureTrackingConfigured -> "abort" => abort
- *   4. checkCoreChange        -> cancel => abort
- *   5. checkReachability      -> online vs offline split
- *   6a. online:  preLaunchSync -> conflict | sync_failed | allow
- *   6b. offline: checkLocalDrift -> offline_drift | allow
+ *   2. checkBackendReady      -> block / backend_not_ready
+ *   3. hasLaunchTarget        -> block / no_launch_target
+ *   4. ensureTrackingConfigured -> "abort" => abort
+ *   5. checkCoreChange        -> cancel => abort
+ *   6. checkReachability      -> online vs offline split
+ *   7a. online:  preLaunchSync -> conflict | sync_failed | allow
+ *   7b. offline: checkLocalDrift -> offline_drift | allow
  *
  * The gate NEVER throws and NEVER blocks the user on an internal error: the
  * whole body is wrapped so any thrown error (from an injected callback or
@@ -143,29 +154,36 @@ export async function runLaunchGate(_appId: number, _romId: number, ops: LaunchG
       return { decision: "block", reason: "migration_pending" };
     }
 
-    // 2. No launch target — the ROM is downloaded but nothing in it is
+    // 2. Backend/RetroArch not installed — block before anything else: the
+    //    launcher itself (or the emulator every libretro core runs through)
+    //    isn't there, so no downstream step's answer matters.
+    if (!(await ops.checkBackendReady())) {
+      return { decision: "block", reason: "backend_not_ready" };
+    }
+
+    // 3. No launch target — the ROM is downloaded but nothing in it is
     //    something this system can boot. Block before the save-sync work: there
     //    is no session coming that a synced save would belong to.
     if (!(await ops.hasLaunchTarget())) {
       return { decision: "block", reason: "no_launch_target" };
     }
 
-    // 3. Save-slot tracking setup. "abort" means the user saw setup UI and
+    // 4. Save-slot tracking setup. "abort" means the user saw setup UI and
     //    declined — bail silently.
     if ((await ops.ensureTrackingConfigured()) === "abort") {
       return { decision: "abort" };
     }
 
-    // 4. Emulator core-change confirm. Cancel => bail silently.
+    // 5. Emulator core-change confirm. Cancel => bail silently.
     if (!(await ops.checkCoreChange())) {
       return { decision: "abort" };
     }
 
-    // 5. Fresh reachability probe decides the sync branch.
+    // 6. Fresh reachability probe decides the sync branch.
     const online = await ops.checkReachability();
 
     if (online) {
-      // 6a. Online — run pre-launch sync and map its outcome.
+      // 7a. Online — run pre-launch sync and map its outcome.
       const sync = await ops.preLaunchSync();
       if (sync.conflicts && sync.conflicts.length > 0) {
         return { decision: "conflict", conflicts: sync.conflicts };
@@ -176,7 +194,7 @@ export async function runLaunchGate(_appId: number, _romId: number, ops: LaunchG
       return { decision: "allow" };
     }
 
-    // 6b. Offline — block only when the local save has drifted; otherwise allow.
+    // 7b. Offline — block only when the local save has drifted; otherwise allow.
     if (await ops.checkLocalDrift()) {
       return { decision: "offline_drift" };
     }

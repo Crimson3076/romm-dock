@@ -79,23 +79,33 @@ class RetroDeckLauncherBackend:
         return self._paths.states_path()
 
     def validate(self) -> BackendValidation:
-        """RetroDECK is switchable unless its config is known-broken.
+        """RetroDECK is switchable unless it's known-broken or not installed.
 
         ``ABSENT`` (no ``retrodeck.json`` yet) still validates — the adapter's
         ``~/retrodeck`` fallback is the plugin's long-standing fresh-install
-        behavior, not a switch-blocking error. ``UNREADABLE`` and
-        ``ROOT_MISSING`` are the loud states RetroDeckPaths already surfaces
-        to the frontend banner; switching onto them would only compound the
-        confusion, so they block here too.
+        behavior, not a switch-blocking error. ``NOT_INSTALLED``,
+        ``UNREADABLE`` and ``ROOT_MISSING`` are the loud states RetroDeckPaths
+        already surfaces to the frontend banner; switching onto them would only
+        compound the confusion, so they block here too.
         """
         health = self._paths.config_health()
-        if health in (RetroDeckConfigHealth.UNREADABLE, RetroDeckConfigHealth.ROOT_MISSING):
+        if health in (
+            RetroDeckConfigHealth.NOT_INSTALLED,
+            RetroDeckConfigHealth.UNREADABLE,
+            RetroDeckConfigHealth.ROOT_MISSING,
+        ):
             return BackendValidation(
                 ok=False,
                 reason=health.value,
                 message=f"RetroDECK configuration is {health.value.replace('_', ' ')} — fix it before switching.",
             )
         return BackendValidation(ok=True)
+
+    def is_installed(self) -> bool:
+        return self._paths.is_installed()
+
+    def retroarch_installed(self) -> bool:
+        return self._core_info.retroarch_installed()
 
 
 class RetroDeckLauncherBackendFactory:

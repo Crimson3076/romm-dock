@@ -17,15 +17,22 @@ export interface RetroDeckBanner {
 /**
  * Map a RetroDECK health status to banner copy, or `null` when nothing should
  * be shown. `ok` and `absent` stay quiet: `ok` is healthy, and `absent` is the
- * legitimate fresh-install case (RetroDECK's own `~/retrodeck` default). Only
- * `unreadable` and `root_missing` are loud — both mean the resolved roots are
- * likely wrong, so syncs and downloads may target the wrong location.
+ * legitimate fresh-install case (RetroDECK's own `~/retrodeck` default).
+ * `not_installed`, `unreadable`, and `root_missing` are loud — each means
+ * either RetroDECK isn't here at all or the resolved roots are likely wrong,
+ * so syncs, downloads, and launches may target the wrong location or nothing
+ * at all.
  */
 export function retroDeckBanner(
   status: RetroDeckHealth,
   paths: { config_path: string; resolved_home: string },
 ): RetroDeckBanner | null {
   switch (status) {
+    case "not_installed":
+      return {
+        title: "RetroDECK not found",
+        message: "RomM-Dock couldn't find RetroDECK on this device — games will fail to launch until it's installed.",
+      };
     case "unreadable":
       return {
         title: "RetroDECK configuration unreadable",

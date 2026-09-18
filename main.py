@@ -350,6 +350,18 @@ class Plugin:
         """List every registered launcher backend with its detected installations."""
         return self._launcher_backend_service.list_backends()
 
+    async def get_backend_readiness(self):
+        """Report whether the active launcher backend and RetroArch are genuinely installed.
+
+        Discriminated-status shape (Callable response shapes carve-out): always
+        succeeds (both probes are best-effort filesystem checks), so there is no
+        ``success``/``reason`` pair — ``backend_installed``/``retroarch_installed``
+        ARE the verdict. The frontend polls this on QAM open and after a backend
+        switch for the readiness banner, and the pre-launch gate checks it before
+        starting a game.
+        """
+        return self._launcher_backend_service.get_backend_readiness()
+
     @migration_blocked
     @prune_active_blocked
     async def set_launcher_backend(self, backend_id, installation_id):

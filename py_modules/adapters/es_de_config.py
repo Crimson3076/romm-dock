@@ -10,9 +10,10 @@ is no offline snapshot — RetroDECK is a hard prerequisite, so when
 adapter reports "unavailable" rather than inventing a fallback. Alongside
 ``es_systems.xml`` the adapter parses the sibling ``es_find_rules.xml`` (the same
 systems dir, same mtime-cache discipline) to probe whether a standalone
-emulator's binary is actually installed in RetroDECK — a bakeable standalone
-whose emulator is missing is downgraded to ``needs_setup`` (reason
-``not_installed``) so it never becomes the baked default (ADR-0020). The retired
+emulator's binary — or, for a libretro command, RetroArch itself — is actually
+installed in RetroDECK; a bakeable option whose emulator is missing is
+downgraded to ``needs_setup`` (reason ``not_installed``) so it never becomes the
+baked default (ADR-0020). The retired
 ES-DE gamelist is never read or written; the plugin-owned deviations
 (per-platform core in ``settings.json``, per-game pin in the ``roms`` store) are
 layered on top by :class:`services.active_core_resolver.ActiveCoreResolver`, not
@@ -182,10 +183,11 @@ class CoreResolver:
         empty list it can't distinguish from a system with no commands.
         ``options`` preserves ES-DE's document order, so the first bakeable entry
         is the system default. A bakeable **standalone** option whose emulator is
-        not installed in RetroDECK is downgraded to ``needs_setup`` (reason
-        ``not_installed``) via the ``es_find_rules.xml`` probe, so it neither
-        becomes the default nor bakes into a shortcut. An unknown system on a
-        readable file yields ``available: True`` with an empty list.
+        not installed in RetroDECK, or a bakeable **libretro** option when
+        RetroArch itself is not installed, is downgraded to ``needs_setup``
+        (reason ``not_installed``) via the ``es_find_rules.xml`` probe, so it
+        neither becomes the default nor bakes into a shortcut. An unknown system
+        on a readable file yields ``available: True`` with an empty list.
         """
         es_systems = self._load_es_systems()
         if not es_systems:
@@ -241,20 +243,40 @@ class CoreResolver:
         return any(marker in path for marker in _RETRODECK_COMPONENT_MARKERS)
 
     def _probe_installed(self, option: EmulatorOption) -> EmulatorOption:
-        """Downgrade a bakeable standalone whose emulator is not installed.
+        """Downgrade a bakeable option whose emulator is not installed.
 
-        Libretro options and already-non-bakeable options pass through untouched
-        (RetroArch ships with RetroDECK; the domain rule guards the kind). For a
-        bakeable standalone, resolve its ``%EMULATOR_*%`` token against
-        ``es_find_rules.xml`` and hand the on-disk verdict to
+        Already-non-bakeable options pass through untouched. A bakeable
+        **libretro** option is downgraded when RetroArch itself is absent
+        (:meth:`retroarch_installed`) — RetroArch is a RetroDECK component like
+        any other, not guaranteed present. A bakeable **standalone** option
+        resolves its ``%EMULATOR_*%`` token against ``es_find_rules.xml`` and
+        hands the on-disk verdict to
         :func:`domain.emulator_commands.downgrade_if_not_installed`.
         """
-        if option.status != "bakeable" or option.kind != "standalone":
+        if option.status != "bakeable":
+            return option
+        if option.kind == "libretro":
+            return downgrade_if_not_installed(option, self.retroarch_installed())
+        if option.kind != "standalone":
             return option
         token = _emulator_token(option.command)
         if token is None:
             return option
         return downgrade_if_not_installed(option, self._emulator_installed(token))
+
+    def retroarch_installed(self) -> bool:
+        """Whether the RetroDECK-bundled RetroArch component is present.
+
+        Every libretro ``<command>`` begins with the ``%EMULATOR_RETROARCH%``
+        find-rule token, so the same ``es_find_rules.xml`` staticpath probe
+        :meth:`_emulator_installed` already runs for standalone emulators
+        answers this honestly too — RetroArch is a RetroDECK component here,
+        not a separate Flatpak, so no separate Flatpak-presence check applies
+        inside a RetroDECK arrangement (contrast
+        ``adapters.retroarch_install.retroarch_installed``, which also covers
+        EmuDeck's standalone ``org.libretro.RetroArch`` Flatpak).
+        """
+        return self._emulator_installed("RETROARCH")
 
     def system_supports_m3u(self, system_name: str) -> bool:
         """True iff ES-DE lists ``.m3u`` as a supported extension for *system_name*.

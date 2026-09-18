@@ -27,6 +27,7 @@ import {
   withPruneLease,
 } from "../../utils/pruneLease";
 import { batchConfirmLaunchOptions } from "../../utils/launchOptionsReconcile";
+import { refreshBackendReadiness } from "../../utils/backendReadinessStore";
 
 // The plugin's documented default (py_modules/domain/launcher_backend.py's
 // RETRODECK_BACKEND_ID) — only used until the first getLauncherBackends()
@@ -86,6 +87,10 @@ export const LauncherBackendSection: FC = () => {
           leaseOwner,
           admission,
         );
+        // The active backend just changed — the previous readiness verdict
+        // (installed/not, RetroArch or not) belongs to the backend that was
+        // just replaced. Re-probe so the QAM banner follows the switch.
+        detach(refreshBackendReadiness());
       } else {
         // set_active_backend leaves the previous backend bound on any failure
         // (validation runs before anything is persisted or re-baked), so

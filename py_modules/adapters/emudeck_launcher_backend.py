@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 from _vendor import atlas
 
 from adapters.emudeck_find_rules import EmuDeckFindRulesAdapter
+from adapters.retroarch_install import retroarch_installed
 from domain.emulator_commands import classify_command, option_to_invocation, select_default_option
 from domain.launcher_backend import EMUDECK_BACKEND_ID, BackendValidation, DetectedInstallation
 from domain.shortcut_data import build_launch_options
@@ -91,12 +92,14 @@ class EmuDeckLauncherBackend:
         installation_id: str,
         find_rules: EmuDeckFindRulesAdapter,
         resolve_system: Callable[[str, str | None], str],
+        user_home: str,
         logger: logging.Logger,
     ) -> None:
         self._installation = installation
         self.installation_id = installation_id
         self._find_rules = find_rules
         self._resolve_system = resolve_system
+        self._user_home = user_home
         self._logger = logger
 
     # -- LauncherBackend: paths ------------------------------------------------
@@ -135,6 +138,20 @@ class EmuDeckLauncherBackend:
                 message=f"EmuDeck installation reports: {reasons}",
             )
         return BackendValidation(ok=True)
+
+    def is_installed(self) -> bool:
+        """Always ``True`` — this instance is bound only when atlas actually detected it.
+
+        Unlike RetroDECK, which always has a bindable fallback that can go
+        stale (``LauncherBackendService._bind`` falls back to it when nothing
+        else can be bound), an ``EmuDeckLauncherBackend`` only exists when
+        :meth:`EmuDeckLauncherBackendFactory.bind` re-ran ``atlas.detect`` and
+        found this arrangement, so its presence needs no separate check here.
+        """
+        return True
+
+    def retroarch_installed(self) -> bool:
+        return retroarch_installed(self._user_home)
 
     # -- LauncherBackend: rendering --------------------------------------------
 
@@ -361,6 +378,7 @@ class EmuDeckLauncherBackendFactory:
             installation_id=installation_id,
             find_rules=find_rules,
             resolve_system=self._resolve_system,
+            user_home=self._user_home,
             logger=self._logger,
         )
 

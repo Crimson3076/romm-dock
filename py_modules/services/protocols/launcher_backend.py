@@ -48,6 +48,11 @@ class LauncherBackend(CoreInfoProvider, Protocol):
     ``get_emulator_options``/``get_default_emulator``/``get_active_core``), not
     always RetroDECK's — the per-game/per-platform picker menu now follows the
     active backend exactly like rendering and file placement already do.
+
+    ``is_installed``/``retroarch_installed`` are the backend-readiness probes
+    ``LauncherBackendService.get_backend_readiness`` surfaces to the QAM: whether
+    THIS bound installation is genuinely present, and whether RetroArch (which
+    every libretro-core launch depends on regardless of backend) is present.
     """
 
     backend_id: str
@@ -66,6 +71,10 @@ class LauncherBackend(CoreInfoProvider, Protocol):
     def states_path(self) -> str: ...
 
     def validate(self) -> BackendValidation: ...
+
+    def is_installed(self) -> bool: ...
+
+    def retroarch_installed(self) -> bool: ...
 
 
 class LaunchCommandRenderer(Protocol):

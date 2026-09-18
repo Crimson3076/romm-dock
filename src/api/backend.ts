@@ -40,6 +40,7 @@ import type {
   MigrationStatus,
   MigrationResult,
   RetroDeckStatus,
+  BackendReadiness,
   SaveSortMigrationStatus,
   RollbackStatus,
   ListFileVersionsResult,
@@ -1142,6 +1143,11 @@ export const reconcilePlaytime = callable<
 // ("ok" | "absent" | "unreadable" | "root_missing") plus the probed paths. The
 // frontend owns the human-readable copy; the backend returns the discriminant.
 export const getRetroDeckStatus = callable<[], RetroDeckStatus>("get_retrodeck_status");
+
+// Whether the ACTIVE launcher backend (RetroDECK or EmuDeck) and RetroArch
+// are genuinely installed on this device — for the QAM readiness banner and
+// the pre-launch guard. Always succeeds (best-effort filesystem checks).
+export const getBackendReadiness = callable<[], BackendReadiness>("get_backend_readiness");
 
 // xemu.toml alignment for the Xbox section of the System page — discriminated
 // status ("ok" | "misaligned" | "not_found" | "unreadable") plus per-key

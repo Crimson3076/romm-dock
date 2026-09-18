@@ -13,9 +13,30 @@ from adapters.retrodeck_paths import RetroDeckPathsAdapter
 from lib.retrodeck_health import RetroDeckConfigHealth
 
 
-def _make_adapter(tmp_path, config: dict[str, Any] | None = None) -> RetroDeckPathsAdapter:
-    """Create adapter with optional retrodeck.json config."""
+def _install_retrodeck_flatpak(tmp_path) -> None:
+    """Drop a marker at the per-user Flatpak install root so ``is_installed()`` reports True.
+
+    Mirrors ``adapters.flatpak_install``'s ``<home>/.local/share/flatpak/app/
+    <app_id>/current/active/files`` layout.
+    """
+    files_dir = (
+        tmp_path / ".local" / "share" / "flatpak" / "app" / "net.retrodeck.retrodeck" / "current" / "active" / "files"
+    )
+    files_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _make_adapter(
+    tmp_path, config: dict[str, Any] | None = None, *, flatpak_installed: bool = True
+) -> RetroDeckPathsAdapter:
+    """Create adapter with optional retrodeck.json config.
+
+    ``flatpak_installed`` defaults to True (the RetroDECK Flatpak is present)
+    so existing ABSENT-case tests keep meaning "configured yet" rather than
+    "not installed at all" — pass False to exercise ``NOT_INSTALLED``.
+    """
     user_home = str(tmp_path)
+    if flatpak_installed:
+        _install_retrodeck_flatpak(tmp_path)
     if config is not None:
         config_dir = tmp_path / ".var" / "app" / "net.retrodeck.retrodeck" / "config" / "retrodeck"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +210,25 @@ class TestConfigPath:
         )
 
 
+class TestIsInstalled:
+    def test_true_when_flatpak_files_dir_present(self, tmp_path):
+        _install_retrodeck_flatpak(tmp_path)
+        adapter = RetroDeckPathsAdapter(user_home=str(tmp_path), logger=logging.getLogger("test"))
+        assert adapter.is_installed() is True
+
+    def test_false_when_flatpak_files_dir_absent(self, tmp_path):
+        adapter = RetroDeckPathsAdapter(user_home=str(tmp_path), logger=logging.getLogger("test"))
+        assert adapter.is_installed() is False
+
+    def test_independent_of_retrodeck_json(self, tmp_path):
+        """A configured retrodeck.json with no Flatpak files dir still reports not-installed."""
+        config_dir = tmp_path / ".var" / "app" / "net.retrodeck.retrodeck" / "config" / "retrodeck"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "retrodeck.json").write_text(json.dumps({"paths": {}}))
+        adapter = RetroDeckPathsAdapter(user_home=str(tmp_path), logger=logging.getLogger("test"))
+        assert adapter.is_installed() is False
+
+
 class TestConfigHealth:
     def test_ok_when_config_present_and_home_exists(self, tmp_path):
         """OK: ``retrodeck.json`` read AND the resolved home exists on disk."""
@@ -253,6 +293,20 @@ class TestConfigHealth:
         # Sanity: the fallback home does not exist on disk.
         assert not os.path.isdir(adapter.retrodeck_home())
         assert adapter.config_health() is RetroDeckConfigHealth.ABSENT
+
+    def test_not_installed_when_flatpak_absent_and_no_config(self, tmp_path):
+        """NOT_INSTALLED: no ``retrodeck.json`` AND the RetroDECK Flatpak itself isn't present."""
+        adapter = _make_adapter(tmp_path, flatpak_installed=False)
+        assert adapter.config_health() is RetroDeckConfigHealth.NOT_INSTALLED
+
+    def test_not_installed_does_not_mask_unreadable(self, tmp_path):
+        """UNREADABLE still wins even when the Flatpak is absent — a broken config is a
+        different, more specific problem than "never installed"."""
+        config_dir = tmp_path / ".var" / "app" / "net.retrodeck.retrodeck" / "config" / "retrodeck"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "retrodeck.json").write_text("not valid json")
+        adapter = RetroDeckPathsAdapter(user_home=str(tmp_path), logger=logging.getLogger("test"))
+        assert adapter.config_health() is RetroDeckConfigHealth.UNREADABLE
 
     def test_health_reuses_ttl_cache_no_second_read(self, tmp_path):
         """Within the TTL, ``config_health`` must not trigger a second file read."""

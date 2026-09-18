@@ -295,3 +295,63 @@ class TestSetActiveBackendSuccess:
         assert items.calls == 1
         assert service.active_backend_id() == "emudeck"
         assert service.active_installation_id() == "emudeck"
+
+
+class TestGetBackendReadiness:
+    def test_backend_and_retroarch_both_installed(self):
+        service, _settings, _persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck", installed=True, retroarch_ok=True)]
+        )
+        result = service.get_backend_readiness()
+        assert result == {
+            "backend": "retrodeck",
+            "backend_installed": True,
+            "retroarch_installed": True,
+            "message": "RetroDECK and RetroArch are both installed.",
+        }
+
+    def test_backend_not_installed(self):
+        service, _settings, _persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck", installed=False, retroarch_ok=True)]
+        )
+        result = service.get_backend_readiness()
+        assert result["backend_installed"] is False
+        assert result["retroarch_installed"] is True
+        assert "RetroDECK was not found" in result["message"]
+
+    def test_retroarch_not_installed(self):
+        service, _settings, _persister, _items = _service(
+            factories=[FakeLauncherBackendFactory("retrodeck", installed=True, retroarch_ok=False)]
+        )
+        result = service.get_backend_readiness()
+        assert result["backend_installed"] is True
+        assert result["retroarch_installed"] is False
+        assert "RetroArch was not found" in result["message"]
+
+    def test_emudeck_backend_name_in_message(self):
+        service, _settings, _persister, _items = _service(
+            factories=[
+                FakeLauncherBackendFactory("retrodeck"),
+                FakeLauncherBackendFactory("emudeck", installed=False),
+            ],
+            settings={"launcher_backend": "emudeck", "launcher_backend_installation": "emudeck"},
+        )
+        result = service.get_backend_readiness()
+        assert result["backend"] == "emudeck"
+        assert "EmuDeck was not found" in result["message"]
+
+    def test_no_active_backend_reports_not_installed(self):
+        """No factory registered at all — the (never-observed-in-practice) fully-unbound case."""
+        registry = LauncherBackendRegistry([])
+        service = LauncherBackendService(
+            config=LauncherBackendServiceConfig(
+                registry=registry,
+                settings={},
+                settings_persister=FakeSettingsPersister(),
+                relaunch_items=FakeRelaunchOptionsResolver(),
+                logger=_LOGGER,
+            )
+        )
+        result = service.get_backend_readiness()
+        assert result["backend_installed"] is False
+        assert result["retroarch_installed"] is False

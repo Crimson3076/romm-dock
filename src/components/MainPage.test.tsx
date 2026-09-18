@@ -426,6 +426,12 @@ describe("MainPage", () => {
       config_path: "/cfg/retrodeck.json",
       resolved_home: "/home/deck/retrodeck",
     });
+    vi.mocked(backend.getBackendReadiness).mockResolvedValue({
+      backend: "retrodeck",
+      backend_installed: true,
+      retroarch_installed: true,
+      message: "RetroDECK and RetroArch are both installed.",
+    });
     vi.mocked(backend.cancelSync).mockResolvedValue({
       success: true,
       message: "Cancelled",
@@ -5453,6 +5459,61 @@ describe("MainPage", () => {
       expect(queryByText("RetroDECK configuration unreadable")).toBeNull();
       expect(queryByText("RetroDECK library not found")).toBeNull();
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to query RetroDECK status"));
+    });
+  });
+
+  // ===========================================================================
+  // Q. Launcher backend / RetroArch readiness banner
+  // ===========================================================================
+  describe("backend readiness banner", () => {
+    it("renders no banner when the backend and RetroArch are both installed", async () => {
+      const { queryByText } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      expect(queryByText("Launcher not found")).toBeNull();
+      expect(queryByText("RetroArch not found")).toBeNull();
+    });
+
+    it("shows the launcher-not-found banner when the active backend isn't installed", async () => {
+      vi.mocked(backend.getBackendReadiness).mockResolvedValue({
+        backend: "retrodeck",
+        backend_installed: false,
+        retroarch_installed: true,
+        message: "RetroDECK was not found on this device — games will fail to launch until it is installed.",
+      });
+      const { findByText } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      expect(await findByText("Launcher not found")).toBeInTheDocument();
+      expect(await findByText(/RetroDECK was not found on this device/)).toBeInTheDocument();
+    });
+
+    it("shows the RetroArch-not-found banner when only RetroArch is missing", async () => {
+      vi.mocked(backend.getBackendReadiness).mockResolvedValue({
+        backend: "retrodeck",
+        backend_installed: true,
+        retroarch_installed: false,
+        message: "RetroArch was not found — libretro-core games will fail to launch until it is installed.",
+      });
+      const { findByText } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      expect(await findByText("RetroArch not found")).toBeInTheDocument();
+    });
+
+    it("suppresses the readiness banner when the RetroDECK config-health banner is already showing", async () => {
+      vi.mocked(backend.getRetroDeckStatus).mockResolvedValue({
+        status: "root_missing",
+        config_path: "/cfg/retrodeck.json",
+        resolved_home: "/run/media/sdcard/retrodeck",
+      });
+      vi.mocked(backend.getBackendReadiness).mockResolvedValue({
+        backend: "retrodeck",
+        backend_installed: false,
+        retroarch_installed: true,
+        message: "RetroDECK was not found on this device — games will fail to launch until it is installed.",
+      });
+      const { findByText, queryByText } = render(<MainPage onNavigate={vi.fn()} />);
+      await flushAsync();
+      expect(await findByText("RetroDECK library not found")).toBeInTheDocument();
+      expect(queryByText("Launcher not found")).toBeNull();
     });
   });
 

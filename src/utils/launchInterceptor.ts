@@ -37,7 +37,12 @@ import { setSaveSortMigrationStatus } from "./saveSortMigrationStore";
 import { getAppIdRomIdMapSnapshot, isSessionActive } from "./sessionManager";
 import { isAppRunning } from "./runningApps";
 import { runLaunchGate, markLaunchSkipped, consumeLaunchSkip } from "./launchGate";
-import { NO_LAUNCH_TARGET_TOAST_BODY, romHasLaunchTarget } from "./launchTarget";
+import {
+  NO_LAUNCH_TARGET_TOAST_BODY,
+  romHasLaunchTarget,
+  BACKEND_NOT_READY_TOAST_BODY,
+  checkBackendReady,
+} from "./launchTarget";
 import type { GateVerdict, LaunchGateOps, PreLaunchSyncOutcome } from "./launchGate";
 import { reconfirmLaunchOptions } from "./launchOptionsReconcile";
 import { capturePruneLeaseAdmission, isPruneLeaseAdmissionCurrent, type PruneLeaseAdmission } from "./pruneLease";
@@ -167,6 +172,7 @@ async function preLaunchSyncWatcher(romId: number): Promise<PreLaunchSyncOutcome
 function makeWatcherOps(romId: number, prompts: LaunchPrompts): LaunchGateOps {
   return {
     migrationPending: () => getMigrationState().pending,
+    checkBackendReady: () => checkBackendReady(),
     hasLaunchTarget: () => romHasLaunchTarget(romId, "Watcher"),
     ensureTrackingConfigured: async (): Promise<"proceed"> => {
       await ensureTrackingConfiguredWatcher(romId);
@@ -254,6 +260,8 @@ async function handleWatcherVerdict(
         showToast(MIGRATION_TOAST_BODY);
       } else if (verdict.reason === "no_launch_target") {
         showToast(NO_LAUNCH_TARGET_TOAST_BODY);
+      } else if (verdict.reason === "backend_not_ready") {
+        showToast(BACKEND_NOT_READY_TOAST_BODY);
       }
       return "done";
     case "conflict": {

@@ -9,7 +9,7 @@
 
 /** How trustworthy the resolved RetroDECK roots are. Mirrors the backend
  *  `RetroDeckConfigHealth` StrEnum (`py_modules/lib/retrodeck_health.py`). */
-export type RetroDeckHealth = "ok" | "absent" | "unreadable" | "root_missing";
+export type RetroDeckHealth = "ok" | "absent" | "not_installed" | "unreadable" | "root_missing";
 
 /** Discriminated-status response from `get_retrodeck_status`. `config_path` is
  *  the probed `retrodeck.json`; `resolved_home` is the best-effort RetroDECK

@@ -12,6 +12,13 @@ describe("retroDeckBanner", () => {
     expect(retroDeckBanner("absent", PATHS)).toBeNull();
   });
 
+  it("returns the not-installed banner", () => {
+    const banner = retroDeckBanner("not_installed", PATHS);
+    expect(banner).not.toBeNull();
+    expect(banner!.title).toBe("RetroDECK not found");
+    expect(banner!.message).toContain("couldn't find RetroDECK");
+  });
+
   it("returns the unreadable banner with the probed config path", () => {
     const banner = retroDeckBanner("unreadable", PATHS);
     expect(banner).not.toBeNull();

@@ -33,6 +33,8 @@ class FakeLauncherBackend:
         states: str = "",
         validation: BackendValidation | None = None,
         emulator_options: dict[str, dict[str, Any]] | None = None,
+        installed: bool = True,
+        retroarch_ok: bool = True,
     ) -> None:
         self.backend_id = backend_id
         self.installation_id = installation_id
@@ -42,6 +44,8 @@ class FakeLauncherBackend:
         self.states = states
         self.validation = validation if validation is not None else BackendValidation(ok=True)
         self.emulator_options: dict[str, dict[str, Any]] = emulator_options or {}
+        self.installed = installed
+        self.retroarch_ok = retroarch_ok
 
     def resolve_invocation(self, rom: dict[str, Any], emulator: Any) -> str:
         return resolve_emulator_invocation(rom, emulator)
@@ -63,6 +67,12 @@ class FakeLauncherBackend:
 
     def validate(self) -> BackendValidation:
         return self.validation
+
+    def is_installed(self) -> bool:
+        return self.installed
+
+    def retroarch_installed(self) -> bool:
+        return self.retroarch_ok
 
     # -- CoreInfoProvider -----------------------------------------------------
 
@@ -105,10 +115,14 @@ class FakeLauncherBackendFactory:
         display_name: str | None = None,
         installations: list[DetectedInstallation] | None = None,
         emulator_options: dict[str, dict[str, Any]] | None = None,
+        installed: bool = True,
+        retroarch_ok: bool = True,
     ) -> None:
         self.backend_id = backend_id
         self.display_name = display_name or backend_id
         self.emulator_options = emulator_options or {}
+        self.installed = installed
+        self.retroarch_ok = retroarch_ok
         self._installations = (
             installations
             if installations is not None
@@ -132,5 +146,9 @@ class FakeLauncherBackendFactory:
         if installation_id not in {i.installation_id for i in self._installations}:
             return None
         return FakeLauncherBackend(
-            backend_id=self.backend_id, installation_id=installation_id, emulator_options=self.emulator_options
+            backend_id=self.backend_id,
+            installation_id=installation_id,
+            emulator_options=self.emulator_options,
+            installed=self.installed,
+            retroarch_ok=self.retroarch_ok,
         )

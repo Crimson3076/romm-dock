@@ -61,7 +61,12 @@ import { showFallbackLaunchModal } from "./FallbackLaunchModal";
 import { showStopGameModal } from "./StopGameModal";
 import { getMigrationState } from "../utils/migrationStore";
 import { runLaunchGate, markLaunchSkipped } from "../utils/launchGate";
-import { NO_LAUNCH_TARGET_TOAST_BODY, romHasLaunchTarget } from "../utils/launchTarget";
+import {
+  NO_LAUNCH_TARGET_TOAST_BODY,
+  romHasLaunchTarget,
+  BACKEND_NOT_READY_TOAST_BODY,
+  checkBackendReady,
+} from "../utils/launchTarget";
 import type { GateVerdict, LaunchGateOps, PreLaunchSyncOutcome } from "../utils/launchGate";
 import { isSessionActive } from "../utils/sessionManager";
 import { isAppRunning } from "../utils/runningApps";
@@ -683,6 +688,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // page-open-stale `getRommConnectionState()` flag no longer gates the launch.
   const makePlayButtonOps = (rid: number): LaunchGateOps => ({
     migrationPending: () => getMigrationState().pending,
+    checkBackendReady: () => checkBackendReady(),
     hasLaunchTarget: () => romHasLaunchTarget(rid, "CustomPlayButton"),
     ensureTrackingConfigured: () => ensureTrackingConfigured(rid),
     checkCoreChange: () => confirmCoreChangeIfNeeded(rid),
@@ -785,6 +791,8 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         // press — the page states it, but the press must not read as a dead button.
         if (verdict.decision === "block" && verdict.reason === "no_launch_target") {
           showToast(NO_LAUNCH_TARGET_TOAST_BODY);
+        } else if (verdict.decision === "block" && verdict.reason === "backend_not_ready") {
+          showToast(BACKEND_NOT_READY_TOAST_BODY);
         }
         setState("play");
         return "done";

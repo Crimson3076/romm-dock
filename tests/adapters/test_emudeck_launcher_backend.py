@@ -155,6 +155,7 @@ def _backend(
         installation_id=f"{EMUDECK_BACKEND_ID}:{tmp_path}",
         find_rules=find_rules,
         resolve_system=_FakeSystemResolver(system),
+        user_home=str(tmp_path),
         logger=_LOGGER,
     )
 
@@ -808,3 +809,32 @@ class TestVendoredZstdCatalogueReading:
         assert backend is not None
         invocation = backend.resolve_invocation({"platform_slug": "gbc", "platform_fs_slug": None}, None)
         assert invocation == f"{retroarch_sh} -L {cores_dir}/gambatte_libretro.so"
+
+
+class TestReadiness:
+    """``is_installed``/``retroarch_installed`` — the backend-readiness probes."""
+
+    def test_is_installed_always_true(self, tmp_path):
+        """A bound EmuDeckLauncherBackend only exists when atlas already detected it."""
+        backend = _backend(tmp_path, _FakeInstallation())
+        assert backend.is_installed() is True
+
+    def test_retroarch_installed_true_when_flatpak_present(self, tmp_path):
+        files_dir = (
+            tmp_path
+            / ".local"
+            / "share"
+            / "flatpak"
+            / "app"
+            / "org.libretro.RetroArch"
+            / "current"
+            / "active"
+            / "files"
+        )
+        files_dir.mkdir(parents=True)
+        backend = _backend(tmp_path, _FakeInstallation())
+        assert backend.retroarch_installed() is True
+
+    def test_retroarch_installed_false_when_neither_flatpak_present(self, tmp_path):
+        backend = _backend(tmp_path, _FakeInstallation())
+        assert backend.retroarch_installed() is False

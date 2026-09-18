@@ -72,6 +72,7 @@ class FakeCoreInfoProvider:
         available: bool = True,
         standalone: dict[str, EmulatorInvocation] | None = None,
         sandbox_launchers: dict[str, str] | None = None,
+        retroarch_installed: bool = True,
     ) -> None:
         self.active_core = active_core
         self._available_cores: list[dict[str, Any]] = []
@@ -90,6 +91,7 @@ class FakeCoreInfoProvider:
         self.active_core_calls: list[str] = []
         self.emulator_options_calls: list[str] = []
         self.sandbox_launcher_calls: list[str] = []
+        self._retroarch_installed = retroarch_installed
 
     @property
     def available_cores(self) -> list[dict[str, Any]]:
@@ -124,3 +126,6 @@ class FakeCoreInfoProvider:
 
     def reset_cache(self) -> None:
         self.reset_cache_count += 1
+
+    def retroarch_installed(self) -> bool:
+        return self._retroarch_installed

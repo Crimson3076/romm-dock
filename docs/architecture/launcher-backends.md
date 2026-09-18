@@ -90,9 +90,10 @@ cycle in that function.
 `build_launch_options` and the `RetroDeckPaths` Protocol verbatim. Zero behavior change: every ROM that resolved to a
 plain `flatpak run net.retrodeck.retrodeck` (or its `-e` override) before this seam existed resolves to the exact same
 string through it. RetroDECK has exactly one installation (the plugin's original, hard-required target), so its factory
-always reports at most one `DetectedInstallation`, keyed `"retrodeck"`; `validate()` blocks only on
-`RetroDeckConfigHealth.UNREADABLE` / `ROOT_MISSING` (an `ABSENT` config is the long-standing fresh-install fallback, not
-a switch-blocking error).
+always reports at most one `DetectedInstallation`, keyed `"retrodeck"`; `validate()` blocks on
+`RetroDeckConfigHealth.NOT_INSTALLED` / `UNREADABLE` / `ROOT_MISSING` (an `ABSENT` config — the Flatpak IS installed but
+hasn't been configured yet — is the long-standing fresh-install fallback, not a switch-blocking error; see
+[Readiness](#readiness-is-the-backend-actually-there) below for what distinguishes the two).
 
 ## EmuDeck — sourced from vendored emu-atlas
 
@@ -187,6 +188,47 @@ unchanged, because it is the same write, just triggered by a different setting. 
 shortcut-migration path**: the fan-out re-bake IS the migration, re-baking every existing shortcut's `launch_options`
 (however it got there) to the newly-selected backend's command.
 
+## Readiness: is the backend actually there?
+
+Both concrete backends used to assume their own presence rather than checking it. RetroDECK's paths adapter fell back
+silently to a guessed `<home>/retrodeck/*` root whenever `retrodeck.json` was missing or unreadable, and
+`LauncherBackendService._bind` falls back to binding RetroDECK whenever nothing else can be bound — so a machine with
+neither RetroDECK nor EmuDeck installed still got a bound RetroDECK backend with fictitious paths, and every libretro
+core was treated as bakeable on the unchecked assumption that "RetroArch ships with RetroDECK". Neither holds once a
+user can run the plugin without RetroDECK installed at all, or with RetroDECK installed but its bundled RetroArch
+component removed.
+
+Every `LauncherBackend` now answers two readiness questions honestly, alongside `validate()`:
+
+- **`is_installed() -> bool`** — is THIS bound installation genuinely present?
+  - RetroDECK (`RetroDeckLauncherBackend.is_installed`) delegates to `RetroDeckPathsAdapter.is_installed()`, which
+    checks the RetroDECK Flatpak's own `app/net.retrodeck.retrodeck/current/active/files` presence
+    (`adapters.flatpak_install.flatpak_app_files_dirs`) — independent of `retrodeck.json`. This is also what splits
+    `RetroDeckConfigHealth.ABSENT` (config not written yet, quiet — the Flatpak IS there) from the new
+    `RetroDeckConfigHealth.NOT_INSTALLED` (the Flatpak itself isn't there at all, loud) in `config_health()`.
+  - EmuDeck (`EmuDeckLauncherBackend.is_installed`) always returns `True` — an `EmuDeckLauncherBackend` instance only
+    exists when `EmuDeckLauncherBackendFactory.bind` re-ran `atlas.detect` and found the arrangement, so (unlike
+    RetroDECK) there is no bindable fallback that can go stale.
+- **`retroarch_installed() -> bool`** — is RetroArch itself present? Every libretro-core launch depends on it
+  regardless of which backend is active, but the two arrangements differ: EmuDeck's RetroArch is the standalone
+  `org.libretro.RetroArch` Flatpak; RetroDECK's is bundled as one of RetroDECK's own components
+  (`retrodeck/components/retroarch`) under the RetroDECK Flatpak's files tree, not a separate Flatpak install.
+  `adapters/retroarch_install.py`'s `retroarch_installed(user_home)` checks both shapes and is the one function both
+  backends call — RetroDECK's `es_de_config.CoreResolver.retroarch_installed()` additionally reuses the existing
+  `es_find_rules.xml` staticpath probe (the same one [Core & Emulator Selection](core-emulator-selection.md)'s
+  standalone-existence probe already runs) for its own `%EMULATOR_RETROARCH%` find-rule entry, which is the more
+  precise of the two checks inside a RetroDECK arrangement and is what actually downgrades a libretro option to
+  `needs_setup` in the picker — see that page's existence-probe section for how a bakeable libretro option is now
+  downgraded the same way a bakeable standalone option always was.
+
+`LauncherBackendService.get_backend_readiness()` reports the ACTIVE backend's answer to both questions as
+`{backend, backend_installed, retroarch_installed, message}` — the `get_backend_readiness` callable below. The QAM
+readiness banner (`src/utils/backendReadinessStore.ts` + `backendReadinessBanner.ts`) polls it on every panel open and
+again after a backend switch (`LauncherBackendSection.tsx`), and the shared pre-launch gate (`launchGate.ts`'s
+`checkBackendReady` step, backed by `checkBackendReady()` in `launchTarget.ts`) blocks a launch with
+`backend_not_ready` instead of letting it fail silently the moment RetroArch (or the launcher itself) turns out not to
+be there.
+
 ## Callables
 
 - **`get_launcher_backends()`** — every registered backend (`backend_id`, `display_name`) with its detected
@@ -196,6 +238,9 @@ shortcut-migration path**: the fan-out re-bake IS the migration, re-baking every
 - **`set_launcher_backend(backend_id, installation_id)`** — `@migration_blocked` + `@prune_active_blocked`, same as
   `set_system_core`. Returns `{success, rebake_items}` on success, `{success: False, reason, message}` on failure
   (`"unknown_backend"`, `"not_detected"`, or the backend's own `BackendValidation.reason`).
+- **`get_backend_readiness()`** — `{backend, backend_installed, retroarch_installed, message}` for the ACTIVE backend.
+  Always succeeds (both probes are best-effort filesystem checks); see
+  [Readiness](#readiness-is-the-backend-actually-there) above.
 
 ## Related pages
 
