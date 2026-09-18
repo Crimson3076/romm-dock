@@ -1,6 +1,6 @@
 # Third-party notices
 
-Tender's own code is GPL-3.0 (see [LICENSE](LICENSE)). The panel bundle it ships also contains code from the project
+RomM-Dock's own code is GPL-3.0 (see [LICENSE](LICENSE)). The panel bundle it ships also contains code from the project
 below, under that project's own licence.
 
 ## What this file covers, and where the rest is
@@ -10,7 +10,7 @@ whoever receives the artefact never sees `node_modules`, so there is nowhere for
 this one. Python and native code ship differently here, and each already carries its licence where a reader of that code
 will find it — so listing them again would be a second copy to keep in step, not a second protection.
 
-Tender also ships, and this file does not describe:
+RomM-Dock also ships, and this file does not describe:
 
 | What                                      | Licence | Where its text is                                                    |
 | ----------------------------------------- | ------- | -------------------------------------------------------------------- |
@@ -40,14 +40,14 @@ and how to re-copy it on a bump, is at [`backend/native/README.md`](backend/nati
 - **Source:** <https://github.com/SteamDeckHomebrew/decky-frontend-lib>
 - **Where the text is:** `LICENSE-@decky-ui.txt`, emitted next to the bundle by the build
 
-The package is how Tender reaches Steam's own interface components. It is not a component library of its own: almost
-every member is a search predicate that finds one of Steam's minified modules and hands it back, which is why Tender
+The package is how RomM-Dock reaches Steam's own interface components. It is not a component library of its own: almost
+every member is a search predicate that finds one of Steam's minified modules and hands it back, which is why RomM-Dock
 uses it rather than keeping such predicates itself.
 
 `dist/index.js` — the bundle for a machine with no Decky Loader — contains a copy of the package. `dist/globals.js`
 contains its module-cache half. `dist/index-coexistence.js` contains none of it: that bundle takes the package from the
 copy Decky Loader has already loaded, so it distributes nothing.
 
-As LGPL-2.1 requires, you may replace the bundled copy with your own. Tender is open source and the version is pinned,
+As LGPL-2.1 requires, you may replace the bundled copy with your own. RomM-Dock is open source and the version is pinned,
 so doing so needs nothing from us: change the pin in `frontend/package.json` (or point it at your own build), run
 `pnpm -C frontend install && pnpm -C frontend build`, and the bundle that comes out carries your copy instead.

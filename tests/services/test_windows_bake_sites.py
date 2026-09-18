@@ -21,6 +21,7 @@ import logging
 
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_launch_command_renderer import FakeLaunchCommandRenderer
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.system_time import FakeClock
@@ -168,6 +169,7 @@ class TestInstallRecorderBakeSite:
                 active_core=active_core if active_core is not None else FakeActiveCoreResolver(default=(None, None)),
                 disc_resolver=FakeDiscResolver(),
                 windows_resolver=windows_resolver,
+                launch_renderer=FakeLaunchCommandRenderer(),
             )
         )
 

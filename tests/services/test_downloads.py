@@ -2321,11 +2321,11 @@ class TestDoDownloadWindowsArchive:
         from services.windows_launch_resolver import WindowsLaunchResolver, WindowsLaunchResolverConfig
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2406,11 +2406,11 @@ class TestDoDownloadWindowsArchive:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2464,11 +2464,11 @@ class TestDoDownloadWindowsArchive:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2528,11 +2528,11 @@ class TestDoDownloadWindowsArchive:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()
@@ -2595,11 +2595,11 @@ class TestDoDownloadWindowsArchive:
         import decky
 
         decky.DECKY_USER_HOME = str(tmp_path)
-        plugin._download_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._download_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
             bios=str(tmp_path / "retrodeck" / "bios"),
         )
-        plugin._rom_removal_service._retrodeck_paths = FakeRetroDeckPaths(
+        plugin._rom_removal_service._launcher_paths = FakeRetroDeckPaths(
             roms=str(tmp_path / "retrodeck" / "roms"),
         )
         decky.emit.reset_mock()

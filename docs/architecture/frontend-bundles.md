@@ -92,8 +92,8 @@ on the path that actually does the installing.
 
 ### The one thing that must not drift
 
-Decky's loader skips its **entire** globals block when `window.SP_REACT` is already set. So when Tender installs the
-three first, **Decky's whole frontend renders through Tender's shape** — and a search predicate of ours that differs
+Decky's loader skips its **entire** globals block when `window.SP_REACT` is already set. So when RomM-Dock installs the
+three first, **Decky's whole frontend renders through RomM-Dock's shape** — and a search predicate of ours that differs
 from Decky's breaks _Decky's_ interface, on a machine whose owner installed Decky for other plugins.
 
 `frontend/src/boot/decky-globals-block.txt` holds upstream's block verbatim with its provenance (repo, the commit that
@@ -126,14 +126,14 @@ decoration whose absence a reader can see is not a name whose absence nothing re
 When nothing that missed was needed to render the panel it mounts normally, and **the log line is then the only thing
 that reports it at all**: `describeSurvivedMiss` says how many searches missed, that none of them is needed to render
 the panel, and then answers the same question the fallback page answers — whose copy of `@decky/ui` ran them. It used to
-name "a newer Tender" unconditionally, which was sound only while nothing that could reach it was a name the package
+name "a newer RomM-Dock" unconditionally, which was sound only while nothing that could reach it was a name the package
 exports; `playSectionClasses` is one, and in the coexistence bundle the search behind it is Decky's.
 
 Both surfaces answer every verdict below; where they come apart is the **repair**. On `none` the log line names one and
-the page names none at all: nothing that missed is a `@decky/ui` export, so every one of them is a search Tender runs
-with a module probe of its own, and a newer Tender is the repair. The page has to stay silent there because the three
+the page names none at all: nothing that missed is a `@decky/ui` export, so every one of them is a search RomM-Dock runs
+with a module probe of its own, and a newer RomM-Dock is the repair. The page has to stay silent there because the three
 `SP_*` globals reach its `none` (below); they cannot reach the log line, because their absence costs the panel. **That
-is the property `steamModules.test.ts` locks** — a non-blocking name `@decky/ui` does not export must be one Tender
+is the property `steamModules.test.ts` locks** — a non-blocking name `@decky/ui` does not export must be one RomM-Dock
 probes for itself — rather than the short set of names it produces today, which would go stale the moment a second name
 moved. `mixed` is the other place they differ: the log line names a repair covering both programs, where the page names
 Decky's and stays silent about the rest, for the same reason.
@@ -152,7 +152,7 @@ log line:
 | Verdict        | Bundle      | What was read                                                                         | What the page says                                                                                                                          |
 | -------------- | ----------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `none`         | either      | no missed name is a package export                                                    | Neither copy of `@decky/ui` ran these searches. **No repair is named** — see below.                                                         |
-| `tender`       | standalone  | —                                                                                     | Tender's own copy searched and missed. **Update Tender.**                                                                                   |
+| `tender`       | standalone  | —                                                                                     | RomM-Dock's own copy searched and missed. **Update RomM-Dock.**                                                                                   |
 | `disagreement` | coexistence | a missed name is **not in** `DFL`                                                     | Decky's copy does not carry the export: two separately installed programs disagreeing about the package. **Bring both to current.**         |
 | `mixed`        | coexistence | some missed names are not package exports, and Decky's copy carries every one that is | Decky's copy ran **some** of them and missed — update Decky Loader for those; the rest are not `@decky/ui` names, so neither copy ran them. |
 | `decky`        | coexistence | every missed name is **in** `DFL`                                                     | Decky's copy searched and missed — its own interface and its other plugins are affected the same way. **Update Decky Loader.**              |
@@ -172,8 +172,8 @@ on each surface, so a case one of them loses is reported rather than absorbed by
 `mixed` settles both halves rather than neither, and its sentences say so. Decky's copy carries every name asked of it
 and its searches for them still came back empty, so that copy is demonstrated stale in every `mixed` reading on either
 surface. What the REST demonstrates is where the two surfaces part, and the locked property above is what decides it: a
-non-blocking name the package does not export must be one Tender probes for itself, so on the log line the rest is
-always Tender's own probe and that line names both programs. On the page it may be an `SP_*` global instead, which
+non-blocking name the package does not export must be one RomM-Dock probes for itself, so on the log line the rest is
+always RomM-Dock's own probe and that line names both programs. On the page it may be an `SP_*` global instead, which
 belongs to no copy and has no repair to name, so the page names Decky's and stops there.
 
 The `none` row is asked first and is about neither copy. Four of the names checked are not `@decky/ui` lookups at all —
@@ -189,8 +189,8 @@ injector loads `globals.js` only where Decky Loader is not serving, so beside a 
 does not read it**: the branch keys on whose copy ran the search, not on which program installed a global, so it still
 names no repair. In the standalone bundle having the answer would not settle it anyway: a missing `SP_REACTDOM` there is
 either `dist/globals.js` never having run (a load-order fault) or the ReactDOM predicate in `boot/steamGlobals.ts`
-having gone stale (a version fault, whose repair is a newer Tender), one symptom over two repairs. `ControllerGlyph` is
-the opposite case. Its predicate is **ours in both bundles**, so "update Tender" is its correct repair, and this row
+having gone stale (a version fault, whose repair is a newer RomM-Dock), one symptom over two repairs. `ControllerGlyph` is
+the opposite case. Its predicate is **ours in both bundles**, so "update RomM-Dock" is its correct repair, and this row
 cannot say so — the price of keying the branch on whose COPY ran the search, which buying back takes a third axis, whose
 PREDICATE, rather than a reworded row. What that costs is bounded, because the glyph reaches this row only **alongside**
 a global, whose silence is right anyway: on its own it costs appearance alone and brings no page up, and beside a
@@ -256,11 +256,11 @@ Three properties are worth knowing before changing anything there:
 
 **Two of the six are not the wire at all.** `toaster` and `routerHook` were Decky Loader's own, and `@decky/api` only
 forwarded them. Their replacements are [#1901](https://github.com/danielcopper/romm-tender/issues/1901) — a toaster
-through Steam's own notification store, and the game-page patch installed by Tender's own installer — so until then both
-are **declared placeholders that do nothing**: no toast appears, and Steam's game page carries no Tender section.
+through Steam's own notification store, and the game-page patch installed by RomM-Dock's own installer — so until then both
+are **declared placeholders that do nothing**: no toast appears, and Steam's game page carries no RomM-Dock section.
 
 Neither reaches Decky's loader API when one happens to be present, and what decides that is not purity: both are the
-loader's own, [#1901](https://github.com/danielcopper/romm-tender/issues/1901) replaces them with Tender's, and a
+loader's own, [#1901](https://github.com/danielcopper/romm-tender/issues/1901) replaces them with RomM-Dock's, and a
 placeholder that borrowed one wherever it found one would behave differently on a machine running Decky from one without
 — the difference this program exists not to depend on.
 

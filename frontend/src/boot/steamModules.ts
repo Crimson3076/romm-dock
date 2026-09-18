@@ -238,7 +238,7 @@ export const STEAM_LOOKUPS: readonly SteamLookup[] = [
   // | Map | Read at | Falls back to | What its absence costs |
   // | --- | --- | --- | --- |
   // | `appActionButtonClasses` | every button branch of `CustomPlayButton` (`bigpicture/CustomPlayButton.tsx:1426-1860`), for `PlayButtonContainer` / `PlayButton` / `Green` / `Throbber` | the class is simply absent — dropped from the list (`.filter(Boolean)`), replaced by `""`, or left undefined where it is the whole of the prop | our own play and download buttons keep their shape and lose Steam's, so a box of ours no longer matches the ones beside it |
-  // | `appDetailsClasses` | `InnerContainer` in `findInsertionPoint` (`bigpicture/patches/gameDetailPatch.tsx:88`); `AppDetailsOverviewPanel` in the patch handler `registerGameDetailPatch` installs (`:231`, and its debug line `:242`) | `findInsertionPoint` returns `undefined`; the wrapper takes `""` | `InnerContainer` is a mark on a node of STEAM's, so without it the handler finds no insertion point and returns the tree untouched — no Tender section on the game page at all. Without `AppDetailsOverviewPanel` the wrapper is still inserted, outside `InnerContainer`'s flex and scroll layout |
+  // | `appDetailsClasses` | `InnerContainer` in `findInsertionPoint` (`bigpicture/patches/gameDetailPatch.tsx:88`); `AppDetailsOverviewPanel` in the patch handler `registerGameDetailPatch` installs (`:231`, and its debug line `:242`) | `findInsertionPoint` returns `undefined`; the wrapper takes `""` | `InnerContainer` is a mark on a node of STEAM's, so without it the handler finds no insertion point and returns the tree untouched — no RomM-Dock section on the game page at all. Without `AppDetailsOverviewPanel` the wrapper is still inserted, outside `InnerContainer`'s flex and scroll layout |
   // | `basicAppDetailsSectionStylerClasses` | `PlaySection` in an unnamed `useEffect` of `CustomPlayButton` (`CustomPlayButton.tsx:220`) and on our own row in `RomMPlaySection` (`bigpicture/RomMPlaySection.tsx:1048`); also `dumpTree` (`gameDetailPatch.tsx:145-154`) | the effect does not call `hideNativePlaySection`; the row takes `""`; the dump prints `UNDEFINED` | the same member is both kinds at once: it names a node of Steam's for the hide, so Steam's own play section stays on screen beside ours, and a node of ours for the row's styling |
   // | `playSectionClasses` | `Container` in `dumpTree` alone (`gameDetailPatch.tsx:133-141`) | the dump prints `UNDEFINED` and skips the tree search it guards | one line of a debug dump that runs at most once per load names no class. Nothing a user can see |
   // | `quickAccessMenuClasses` | `TabGroupPanel` at module scope (`utils/qamExpansion.ts:38-40`), read into the selectors of the injected sheet (`:92-93`); `ActiveTab` in `useWideQamPanel`'s effect (`:175`) | `TAB_PANEL_SELECTOR` becomes `PANEL_ID_SELECTOR`, the panel's id; `deckyTabActive` defaults to true (`:182`, the default argued at `:178-181`) and the `MutationObserver` guarded at `:191` is never constructed | the sheet matches the panel by id instead of by class, and the expansion is taken whether or not Decky's tab is the active one and is not re-synced on a tab switch — a leaked expansion the QAM-close, unmount and dismount paths still clear |
@@ -253,7 +253,7 @@ export const STEAM_LOOKUPS: readonly SteamLookup[] = [
   // has its reads and what they cost. What is not in the table: it is a
   // `@decky/ui` export, which is what separates it from the glyph below. In the
   // coexistence bundle the search behind it is DECKY's, so its repair is not
-  // Tender's to name.
+  // RomM-Dock's to name.
   truthy("playSectionClasses", "diagnostic", () => playSectionClasses),
   truthy("quickAccessMenuClasses", "panel", () => quickAccessMenuClasses),
   // `@decky/ui` does not export the controller glyph at all —
@@ -364,7 +364,7 @@ export function checkSteamModules(lookups: readonly SteamLookup[] = STEAM_LOOKUP
  * - `none` — nothing that missed is a name the package exports, so neither
  *   copy ran any of them.
  * - `tender` — our own bundled copy ran them.
- * - `disagreement` — Decky's copy does not carry a name Tender asks it for:
+ * - `disagreement` — Decky's copy does not carry a name RomM-Dock asks it for:
  *   two separately installed programs disagreeing about the package.
  * - `mixed` — some of what missed is the package's and some is not. Decky's
  *   copy carries every name asked of it and its searches for them still came
@@ -466,7 +466,7 @@ const deckyName = (copy: SearchingCopy): string =>
  *
  * `ControllerGlyph` can appear in that silence too, and there it is a real loss
  * — `utils/deckyUiInternals.ts` reaches it with a `findModule` predicate of OURS
- * in both bundles, so a newer Tender is its repair, and keying the branch on
+ * in both bundles, so a newer RomM-Dock is its repair, and keying the branch on
  * whose COPY ran the search cannot say so. What bounds that is only that the
  * glyph never brings this page up by itself: its absence costs appearance, so
  * it arrives beside a name that does cost the panel. Which verdict it lands in
@@ -481,8 +481,8 @@ export function describeFailure(report: StartupReport, copy: SearchingCopy): str
   if (report.missing.length === report.checked) {
     return (
       "None of the searches into Steam's interface found anything. That is not a run of " +
-      "broken lookups — it means Steam's module registry was not readable when Tender " +
-      "read it, or Tender's React bootstrap never ran."
+      "broken lookups — it means Steam's module registry was not readable when RomM-Dock " +
+      "read it, or RomM-Dock's React bootstrap never ran."
     );
   }
   const scale = `${report.missing.length} of ${report.checked} searches into Steam's interface found nothing. `;
@@ -493,21 +493,21 @@ export function describeFailure(report: StartupReport, copy: SearchingCopy): str
     case "tender":
       return (
         scale +
-        "Tender's own copy of @decky/ui ran them, so a Steam client update has moved what " +
-        "this version of Tender looks for. A newer Tender is the repair."
+        "RomM-Dock's own copy of @decky/ui ran them, so a Steam client update has moved what " +
+        "this version of RomM-Dock looks for. A newer RomM-Dock is the repair."
       );
     case "disagreement":
       return (
         scale +
-        `Tender reads them from ${decky}'s copy of @decky/ui, and that copy does not carry ` +
-        "some of the names Tender asks it for — two separately installed programs disagreeing " +
-        "about the package, whatever else went stale beside it. Bringing both Tender and Decky " +
+        `RomM-Dock reads them from ${decky}'s copy of @decky/ui, and that copy does not carry ` +
+        "some of the names RomM-Dock asks it for — two separately installed programs disagreeing " +
+        "about the package, whatever else went stale beside it. Bringing both RomM-Dock and Decky " +
         "Loader to their current versions is the repair."
       );
     case "mixed":
       return (
         scale +
-        `${decky}'s copy of @decky/ui ran some of them, not Tender's own, so a Steam client ` +
+        `${decky}'s copy of @decky/ui ran some of them, not RomM-Dock's own, so a Steam client ` +
         "update has moved what Decky looks for — Decky's own interface and its other plugins " +
         "are affected the same way, and a newer Decky Loader is the repair for those. The rest " +
         "are not names @decky/ui exports, so neither copy of the package ran them."
@@ -515,7 +515,7 @@ export function describeFailure(report: StartupReport, copy: SearchingCopy): str
     case "decky":
       return (
         scale +
-        `${decky}'s copy of @decky/ui ran them, not Tender's own, so a Steam client update has ` +
+        `${decky}'s copy of @decky/ui ran them, not RomM-Dock's own, so a Steam client update has ` +
         "moved what Decky looks for — Decky's own interface and its other plugins are affected " +
         "the same way. A newer Decky Loader is the repair."
       );
@@ -532,7 +532,7 @@ export function describeFailure(report: StartupReport, copy: SearchingCopy): str
  *
  * It answers the same question the page answers — {@link searchOwner}'s, read
  * from the same verdict — rather than naming a repair of its own. It used to
- * name one unconditionally ("a newer Tender"), which was sound only while
+ * name one unconditionally ("a newer RomM-Dock"), which was sound only while
  * nothing that could arrive here was a name the package exports.
  * `playSectionClasses` can now, and in the coexistence bundle the search behind
  * it is DECKY's, so that sentence would have sent the user after the wrong
@@ -540,8 +540,8 @@ export function describeFailure(report: StartupReport, copy: SearchingCopy): str
  *
  * Both surfaces answer every verdict; where they come apart is the REPAIR. On
  * `none` this line names one and the page names none at all: nothing that
- * missed is a name `@decky/ui` exports, so every one of them is a search Tender
- * runs with a module probe of its own and a newer Tender is the repair. The
+ * missed is a name `@decky/ui` exports, so every one of them is a search RomM-Dock
+ * runs with a module probe of its own and a newer RomM-Dock is the repair. The
  * page has to stay silent there because the three React globals reach ITS
  * `none`, and which program installed those on a machine running both is
  * #1900's question. They cannot reach HERE — their absence costs the panel —
@@ -554,7 +554,7 @@ export function describeSurvivedMiss(report: StartupReport, copy: SearchingCopy)
   if (report.everySearchAnswered || !report.panelMayMount) return "";
   return (
     `${report.missing.length} of ${report.checked} searches into Steam's interface found nothing. ` +
-    "Nothing that missed is needed to render the panel, so Tender has started. " +
+    "Nothing that missed is needed to render the panel, so RomM-Dock has started. " +
     describeSurvivedSearches(report, copy)
   );
 }
@@ -564,24 +564,24 @@ function describeSurvivedSearches(report: StartupReport, copy: SearchingCopy): s
   const decky = deckyName(copy);
   switch (searchOwner(report, copy)) {
     case "none":
-      return "None of them is a name @decky/ui exports — Tender runs these searches itself, so a newer Tender is the repair.";
+      return "None of them is a name @decky/ui exports — RomM-Dock runs these searches itself, so a newer RomM-Dock is the repair.";
     case "tender":
-      return "Tender ran these searches, so a newer Tender is the repair.";
+      return "RomM-Dock ran these searches, so a newer RomM-Dock is the repair.";
     case "disagreement":
       return (
-        `${decky}'s copy of @decky/ui does not carry some of the names Tender asks it for — two ` +
+        `${decky}'s copy of @decky/ui does not carry some of the names RomM-Dock asks it for — two ` +
         "separately installed programs disagreeing about the package, whatever else went stale " +
-        "beside it. Bringing both Tender and Decky Loader to their current versions is the repair."
+        "beside it. Bringing both RomM-Dock and Decky Loader to their current versions is the repair."
       );
     case "mixed":
       return (
-        `Tender ran some of them itself and ${decky}'s copy of @decky/ui the rest, so both went ` +
-        "stale: a probe of Tender's own missed, and so did a search Decky's copy ran. Bringing " +
-        "both Tender and Decky Loader to their current versions is the repair."
+        `RomM-Dock ran some of them itself and ${decky}'s copy of @decky/ui the rest, so both went ` +
+        "stale: a probe of RomM-Dock's own missed, and so did a search Decky's copy ran. Bringing " +
+        "both RomM-Dock and Decky Loader to their current versions is the repair."
       );
     case "decky":
       return (
-        `${decky}'s copy of @decky/ui ran them, not Tender's own, so a newer Decky Loader is the ` +
+        `${decky}'s copy of @decky/ui ran them, not RomM-Dock's own, so a newer Decky Loader is the ` +
         "repair — Decky's own interface and its other plugins are affected the same way."
       );
   }

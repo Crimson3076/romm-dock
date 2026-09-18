@@ -23,7 +23,7 @@
  * `window.DFL` and `window.DeckyPluginLoader` freely. The BUILD is: the answer
  * turns on `virtual:tender-bundle-kind` (`searchingCopy.ts`), which resolves
  * under Vitest through one alias to one value for the whole suite, so a page
- * that read it while rendering could be shown Tender's answer and never
+ * that read it while rendering could be shown RomM-Dock's answer and never
  * Decky's.
  */
 
@@ -61,12 +61,12 @@ const MissingNames: FC<{ names: readonly string[] }> = ({ names }) => <div style
 
 export const StartupFailurePanel: FC<{ report: StartupReport; copy: SearchingCopy }> = ({ report, copy }) => (
   <div style={page}>
-    <div style={heading}>Tender could not read Steam&apos;s interface</div>
+    <div style={heading}>RomM-Dock could not read Steam&apos;s interface</div>
     <p style={paragraph}>{describeFailure(report, copy)}</p>
     <p style={paragraph}>These are what it looked for and did not find:</p>
     <MissingNames names={report.missing} />
     <p style={paragraph}>
-      Nothing is wrong with your library and nothing has been changed. Tender has not started, so that a half-working
+      Nothing is wrong with your library and nothing has been changed. RomM-Dock has not started, so that a half-working
       panel cannot act on what it cannot see.
     </p>
     <p style={footnote}>Please report this at {ISSUES_URL}, with the names above.</p>

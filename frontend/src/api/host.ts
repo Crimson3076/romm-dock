@@ -1,5 +1,5 @@
 /**
- * What the panel used to get from `@decky/api`, from Tender's own host instead.
+ * What the panel used to get from `@decky/api`, from RomM-Dock's own host instead.
  *
  * Six names, the same six, so no call site changes meaning: `callable`,
  * `addEventListener`, `removeEventListener`, `toaster`, `routerHook` and
@@ -173,15 +173,15 @@ export const definePlugin = (fn: () => Plugin): (() => Plugin) => fn;
  */
 export const toaster: Toaster = {
   toast(toast: ToastData): ToastNotification {
-    console.warn(`[Tender] toast (not shown until #1901): ${String(toast.title)} — ${String(toast.body)}`);
+    console.warn(`[RomM-Dock] toast (not shown until #1901): ${String(toast.title)} — ${String(toast.body)}`);
     return { data: toast, dismiss: () => {} };
   },
 };
 
 /**
- * PLACEHOLDER until #1901, which installs the game-page patch through Tender's
+ * PLACEHOLDER until #1901, which installs the game-page patch through RomM-Dock's
  * own installer instead of Decky's router hook. Until then `addPatch` answers
- * with the patch **unapplied**: Steam's game page carries no Tender section.
+ * with the patch **unapplied**: Steam's game page carries no RomM-Dock section.
  *
  * The patch is handed back rather than refused so that the registration and the
  * teardown in `gameDetailPatch.tsx` stay symmetrical — a `null` here would make
@@ -192,7 +192,7 @@ export const toaster: Toaster = {
  */
 export const routerHook: RouterHook = {
   addPatch(path: string, patch: RoutePatch): RoutePatch {
-    console.warn(`[Tender] route patch for ${path} is not installed until #1901`);
+    console.warn(`[RomM-Dock] route patch for ${path} is not installed until #1901`);
     return patch;
   },
   removePatch(_path: string, _patch: RoutePatch): void {},

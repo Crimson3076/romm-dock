@@ -203,7 +203,7 @@ export class HostSocket {
       this.closed = true;
       this.unreachable = error instanceof Error ? error : new Error(String(error));
       this.failEveryCall(this.unreachable);
-      console.warn("[Tender] the panel cannot reach its backend", this.unreachable);
+      console.warn("[RomM-Dock] the panel cannot reach its backend", this.unreachable);
       return;
     }
 
@@ -335,7 +335,7 @@ export class HostSocket {
       } catch (error) {
         // One listener's throw must not cost the others their event, and the
         // socket must keep reading either way.
-        console.warn(`[Tender] a listener for "${name}" threw`, error);
+        console.warn(`[RomM-Dock] a listener for "${name}" threw`, error);
       }
     }
   }

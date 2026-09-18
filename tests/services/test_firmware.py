@@ -30,6 +30,7 @@ from fakes.fake_settings_persister import FakeSettingsPersister
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.fake_windows_resolver import FakeWindowsResolver
 from fakes.fake_xemu_config import FakeXemuConfigReader
+from fakes.late_binding import bound
 from fakes.library_peers import FakeArtworkManager
 from fakes.running_loop import running_loop
 from fakes.system_time import FakeClock, FakeSleeper, FakeUuidGen
@@ -468,6 +469,7 @@ class TestTheFacadeOnlyDelegates:
             "delete_platform_bios",
             "delete_bios_file",
             "delete_bios_folder",
+            "check_xemu_alignment",
         }
 
     def test_the_facade_holds_only_its_sub_services(self, fw):
@@ -2825,7 +2827,9 @@ def _psx_platform_service(
             active_core=(_PSX_CORE, _PSX_DEFAULT_LABEL),
             options=options if options is not None else _psx_emulators(),
         ),
-        platform_core_reader=FakePlatformCoreReader({"psx": platform_core} if platform_core is not None else None),
+        platform_core_reader=FakePlatformCoreReader(
+            retrodeck={"psx": platform_core} if platform_core is not None else None
+        ),
     )
     _inline_executor(fw)
     return fw
@@ -2882,7 +2886,7 @@ class TestAStandaloneEmulatorIsAskedLikeAnyOther:
                     libretro_option(self._CORE, "Beetle PSX"),
                 ]
             ),
-            platform_core_reader=FakePlatformCoreReader({"psx": pick_label}),
+            platform_core_reader=FakePlatformCoreReader(retrodeck={"psx": pick_label}),
             uow_factory=FakeUnitOfWorkFactory(uow) if uow is not None else None,
         )
         _inline_executor(fw)
@@ -3209,7 +3213,7 @@ def _rom_scoped_surfaces(
             fs_name=f"rom-{_PSX_ROM_ID}.chd",
             shortcut_app_id=1,
             last_synced_at="2026-01-01T00:00:00+00:00",
-            emulator_override=game_pick,
+            emulator_overrides={"retrodeck": game_pick} if game_pick is not None else {},
         )
     )
     uow_factory = FakeUnitOfWorkFactory(uow)
@@ -3217,8 +3221,8 @@ def _rom_scoped_surfaces(
     active_core = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=uow_factory,
-            core_info=core_info,
-            sandbox_launcher=FakeSandboxLauncher(),
+            core_info=bound(core_info),
+            active_backend_id=bound("retrodeck"),
             platform_core_reader=_platform_core_reader(fw),
             resolve_system=resolve_system,
             logger=decky.logger,
@@ -3229,6 +3233,7 @@ def _rom_scoped_surfaces(
             loop=asyncio.get_running_loop(),
             logger=decky.logger,
             core_info=core_info,
+            active_backend_id=lambda: "retrodeck",
             resolve_system=resolve_system,
             settings={},
             settings_persister=FakeSettingsPersister(),
@@ -3236,6 +3241,7 @@ def _rom_scoped_surfaces(
             uow_factory=uow_factory,
             active_core=active_core,
             disc_resolver=FakeDiscResolver(),
+            launch_renderer=FakeLaunchCommandRenderer(),
         )
     )
     detail = GameDetailService(
@@ -4908,7 +4914,9 @@ class TestDownloadRequiredFirmware:
             core_info=FakeCoreInfoProvider(
                 options=[libretro_option("gpsp_libretro", "gpSP"), libretro_option("mgba_libretro", "mGBA")],
             ),
-            platform_core_reader=FakePlatformCoreReader({"gba": platform_core} if platform_core is not None else None),
+            platform_core_reader=FakePlatformCoreReader(
+                retrodeck={"gba": platform_core} if platform_core is not None else None
+            ),
         )
         _inline_executor(fw)
 

@@ -54,15 +54,15 @@ describe("the fallback page", () => {
     expect(screen.getByText(/Focusable, Tabs/)).toBeInTheDocument();
   });
 
-  it("blames Tender's own copy when the bundle carries one", () => {
+  it("blames RomM-Dock's own copy when the bundle carries one", () => {
     render(<StartupFailurePanel report={report(["Tabs"])} copy={OURS} />);
-    expect(screen.getByText(/Tender's own copy of @decky\/ui ran them/)).toBeInTheDocument();
-    expect(screen.getByText(/A newer Tender is the repair/)).toBeInTheDocument();
+    expect(screen.getByText(/RomM-Dock's own copy of @decky\/ui ran them/)).toBeInTheDocument();
+    expect(screen.getByText(/A newer RomM-Dock is the repair/)).toBeInTheDocument();
   });
 
   it("blames Decky's copy when the bundle takes the package from it", () => {
     // The same empty search, and a different program to update: in this bundle
-    // the predicates are Decky's, so sending the user after Tender would send
+    // the predicates are Decky's, so sending the user after RomM-Dock would send
     // them after the wrong one — while Decky's own interface is breaking too.
     render(<StartupFailurePanel report={report(["Tabs"])} copy={DECKYS} />);
     expect(screen.getByText(/Decky Loader v3\.2\.8's copy of @decky\/ui ran them/)).toBeInTheDocument();
@@ -71,8 +71,8 @@ describe("the fallback page", () => {
 
   it("calls it a disagreement about the package when Decky's copy lacks the name", () => {
     render(<StartupFailurePanel report={report(["Tabs"])} copy={DECKYS_WITHOUT_THE_NAME} />);
-    expect(screen.getByText(/does not carry some of the names Tender asks it for/)).toBeInTheDocument();
-    expect(screen.getByText(/Bringing both Tender and Decky Loader/)).toBeInTheDocument();
+    expect(screen.getByText(/does not carry some of the names RomM-Dock asks it for/)).toBeInTheDocument();
+    expect(screen.getByText(/Bringing both RomM-Dock and Decky Loader/)).toBeInTheDocument();
   });
 
   it("blames neither copy when what missed is not a @decky/ui lookup", () => {

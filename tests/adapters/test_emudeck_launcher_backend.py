@@ -322,6 +322,7 @@ class TestRenderOptionDefensiveGuard:
             command="%EMULATOR_AZAHAR% %BASENAME%",
             status="bakeable",
             reason=None,
+            emulator="AZAHAR",
         )
         assert backend._render_option(option) is None
 

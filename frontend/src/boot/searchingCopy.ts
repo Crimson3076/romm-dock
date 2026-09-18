@@ -7,8 +7,8 @@
  * `@decky/ui`, and which installed copy of that package ran them is not the same
  * in the two panel bundles: the standalone one carries its own, and the
  * coexistence one takes the package from Decky Loader through the `DFL` global.
- * So the same empty search is "update Tender" in one and "update Decky" in the
- * other, and a page that said the first in both would send a user after Tender
+ * So the same empty search is "update RomM-Dock" in one and "update Decky" in the
+ * other, and a page that said the first in both would send a user after RomM-Dock
  * for a fault in someone else's program — one that is breaking Decky's own
  * interface and its other plugins at the same moment.
  *

@@ -1,5 +1,5 @@
 /**
- * Steam's React, ReactDOM and JSX runtime, installed by Tender instead of by
+ * Steam's React, ReactDOM and JSX runtime, installed by RomM-Dock instead of by
  * Decky Loader.
  *
  * ## `boot/` is about STEAM, not about starting up
@@ -56,7 +56,7 @@
  * exactly as they are, because Decky skips its own globals block once
  * `SP_REACT` is set and would then render through ours. That is a question about
  * the machine at the moment this runs, and **whoever loads this cannot answer it
- * in advance**: Decky may be started after Tender, or restarted mid-session, so
+ * in advance**: Decky may be started after RomM-Dock, or restarted mid-session, so
  * a caller that picked a "with-Decky" artifact would be picking on a fact that
  * can change between the pick and the run. So the branch is a read of live state
  * — the first thing `installGlobals` does — and the function is idempotent by
@@ -64,9 +64,9 @@
  * restarts its JS context.
  *
  * **The predicates below are not ours to choose.** Decky's loader skips its
- * entire globals block when `window.SP_REACT` is already set, so if Tender
+ * entire globals block when `window.SP_REACT` is already set, so if RomM-Dock
  * installs these first, Decky's own frontend renders through them. A predicate
- * that differs from Decky's therefore breaks DECKY's interface, not Tender's,
+ * that differs from Decky's therefore breaks DECKY's interface, not RomM-Dock's,
  * on a machine that has both. `decky-globals-block.txt` beside this file holds
  * Decky's block verbatim with its provenance, and `steamGlobals.test.ts` reads
  * BOTH files as text and holds the predicates against each other — which is why
@@ -115,8 +115,8 @@ const steamReady = (): boolean => w.App?.BFinishedInitBeforeLogin?.() ?? w.App?.
 /**
  * How long to wait for Steam's init before installing the globals anyway.
  *
- * Decky waits without a deadline. Tender cannot: Decky's boot IS Steam's boot,
- * while Tender's is a fetch from a loopback port that may arrive at any point in
+ * Decky waits without a deadline. RomM-Dock cannot: Decky's boot IS Steam's boot,
+ * while RomM-Dock's is a fetch from a loopback port that may arrive at any point in
  * a session — including one where `window.App` is a shape this predicate has
  * never seen, in which case an unbounded wait is an unbounded hang with nothing
  * on screen to say so. Running past the deadline is the worse of two answers and

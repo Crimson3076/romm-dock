@@ -421,7 +421,7 @@ class TestDeleteRomFiles:
                 clock=FakeClock(),
                 emit=RecordingEmitter(),
                 rom_file_store=RomFileAdapter(),
-                retrodeck_paths=FakeRetroDeckPaths(roms=linked_roms),
+                launcher_paths=FakeRetroDeckPaths(roms=linked_roms),
                 download_queue_cleanup=None,
                 uow_factory=FakeUnitOfWorkFactory(uow),
             )

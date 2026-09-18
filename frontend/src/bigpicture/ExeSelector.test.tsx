@@ -243,7 +243,7 @@ describe("ExeSelector — selecting an executable", () => {
 
     // Non-vacuous: the exact backend message is toasted, and no shortcut write.
     expect(toaster.toast).toHaveBeenCalledWith({
-      title: "Tender",
+      title: "RomM-Dock",
       body: "Executable not found in the install directory",
     });
     expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
@@ -262,7 +262,7 @@ describe("ExeSelector — selecting an executable", () => {
     });
 
     // Observable catch effect: a fallback toast, and no confirm-set.
-    expect(toaster.toast).toHaveBeenCalledWith({ title: "Tender", body: "Failed to select executable" });
+    expect(toaster.toast).toHaveBeenCalledWith({ title: "RomM-Dock", body: "Failed to select executable" });
     expect(setLaunchOptionsConfirmed).not.toHaveBeenCalled();
   });
 });

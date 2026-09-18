@@ -55,7 +55,7 @@ function withDeckyWindow(parts: DeckyWindow, body: () => void): void {
 }
 
 describe("which copy of @decky/ui ran the searches", () => {
-  it("is Tender's own in the standalone bundle, and asks the machine nothing", () => {
+  it("is RomM-Dock's own in the standalone bundle, and asks the machine nothing", () => {
     const readCopy = vi.fn<() => DeckyCopy>(() => deckyCopy());
     expect(readSearchingCopy(report(["Tabs"]), "standalone", readCopy)).toEqual({ owner: "tender" });
     expect(readCopy).not.toHaveBeenCalled();

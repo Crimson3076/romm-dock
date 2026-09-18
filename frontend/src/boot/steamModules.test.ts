@@ -73,17 +73,17 @@ function importedValueNames(): string[] {
 
 /**
  * Every `export const X = findModule…(` in shipped source — the shape a probe
- * of Tender's OWN is written in today.
+ * of RomM-Dock's OWN is written in today.
  *
  * `findModule` and its siblings are `@decky/ui`'s readers of Steam's module
  * cache, but the predicate handed to one is ours and runs in both bundles —
- * which is the whole of what "Tender runs this search itself" means, and the
- * only thing that makes a repair Tender's to name.
+ * which is the whole of what "RomM-Dock runs this search itself" means, and the
+ * only thing that makes a repair RomM-Dock's to name.
  *
  * **What the regex sees is narrower than that sentence**: a probe behind a
  * wrapper, one assigned to a non-exported const, and one re-exported from
  * another module are all invisible to it. That costs nothing here, because the
- * only reader below treats an unseen name as NOT Tender's own and fails — so a
+ * only reader below treats an unseen name as NOT RomM-Dock's own and fails — so a
  * probe written in a shape this misses is reported, never waved through.
  *
  * Swept rather than listed, for the reason {@link importedValueNames} gives.
@@ -140,7 +140,7 @@ describe("the start-up check's coverage of what the panel imports", () => {
 
   it("keeps a search neither copy of @decky/ui owns off the mount-anyway path", () => {
     // What `describeSurvivedMiss` says when nothing that missed is a @decky/ui
-    // export: Tender runs these searches itself, so a newer Tender is the
+    // export: RomM-Dock runs these searches itself, so a newer RomM-Dock is the
     // repair. True of `ControllerGlyph`, which `utils/deckyUiInternals.ts`
     // reaches with a `findModule` predicate of ours in both bundles — and false
     // of the three `SP_*` globals, which a React bootstrap installs and whose
@@ -274,7 +274,7 @@ describe("what a miss costs the panel", () => {
     const sentence = describeSurvivedMiss(report, ours);
     expect(sentence).toContain("1 of 2 searches into Steam's interface found nothing");
     expect(sentence).toContain("Nothing that missed is needed to render the panel");
-    expect(sentence).toContain("Tender runs these searches itself, so a newer Tender is the repair.");
+    expect(sentence).toContain("RomM-Dock runs these searches itself, so a newer RomM-Dock is the repair.");
     expect(describeFailure(report, ours)).toBe("");
   });
 
@@ -320,14 +320,16 @@ describe("what a miss costs the panel", () => {
   it("sends a diagnostic-only miss after the copy that ran its search, which is Decky's in coexistence", () => {
     // The whole reason the third cost could not simply reuse the cosmetic
     // wording: this name IS a `@decky/ui` export, so in the coexistence bundle
-    // the predicate behind it belongs to Decky Loader and "a newer Tender"
+    // the predicate behind it belongs to Decky Loader and "a newer RomM-Dock"
     // would name a program that ran nothing.
     const report = checkSteamModules([blocking("Focusable", true), diagnosticOnly("playSectionClasses", false)]);
-    expect(describeSurvivedMiss(report, ours)).toContain("Tender ran these searches, so a newer Tender is the repair.");
+    expect(describeSurvivedMiss(report, ours)).toContain(
+      "RomM-Dock ran these searches, so a newer RomM-Dock is the repair.",
+    );
     const coexistence = describeSurvivedMiss(report, theirs(report));
-    expect(coexistence).toContain("Decky Loader v3.2.8's copy of @decky/ui ran them, not Tender's own");
+    expect(coexistence).toContain("Decky Loader v3.2.8's copy of @decky/ui ran them, not RomM-Dock's own");
     expect(coexistence).toContain("a newer Decky Loader is the repair");
-    expect(coexistence).not.toContain("newer Tender");
+    expect(coexistence).not.toContain("newer RomM-Dock");
   });
 
   it("names neither program alone when the miss spans one search of each", () => {
@@ -343,32 +345,34 @@ describe("what a miss costs the panel", () => {
     expect(report.panelMayMount).toBe(true);
     const sentence = describeSurvivedMiss(report, theirs(report));
     expect(sentence).toContain("2 of 3 searches into Steam's interface found nothing");
-    expect(sentence).toContain("Tender ran some of them itself and Decky Loader v3.2.8's copy of @decky/ui the rest");
+    expect(sentence).toContain(
+      "RomM-Dock ran some of them itself and Decky Loader v3.2.8's copy of @decky/ui the rest",
+    );
     // What missed settles BOTH halves rather than neither: Decky's copy carries
     // every name asked of it and its search still came back empty, and a probe
-    // Tender runs itself missed beside it. The line used to call that unsettled.
+    // RomM-Dock runs itself missed beside it. The line used to call that unsettled.
     expect(sentence).toContain(
-      "so both went stale: a probe of Tender's own missed, and so did a search Decky's copy ran",
+      "so both went stale: a probe of RomM-Dock's own missed, and so did a search Decky's copy ran",
     );
-    expect(sentence).toContain("Bringing both Tender and Decky Loader to their current versions is the repair.");
-    expect(sentence).not.toContain("ran them, not Tender's own");
-    expect(sentence).not.toContain("a newer Tender is the repair");
+    expect(sentence).toContain("Bringing both RomM-Dock and Decky Loader to their current versions is the repair.");
+    expect(sentence).not.toContain("ran them, not RomM-Dock's own");
+    expect(sentence).not.toContain("a newer RomM-Dock is the repair");
   });
 
-  it("names Tender alone for that same pair in the standalone bundle, where both searches are its own", () => {
+  it("names RomM-Dock alone for that same pair in the standalone bundle, where both searches are its own", () => {
     const report = checkSteamModules([
       blocking("Focusable", true),
       cosmetic("ControllerGlyph", false),
       diagnosticOnly("playSectionClasses", false),
     ]);
     const sentence = describeSurvivedMiss(report, readSearchingCopy(report, "standalone"));
-    expect(sentence).toContain("Tender ran these searches, so a newer Tender is the repair.");
+    expect(sentence).toContain("RomM-Dock ran these searches, so a newer RomM-Dock is the repair.");
     expect(sentence).not.toContain("Decky Loader");
   });
 
   it("calls a mixed miss a package disagreement when Decky's copy lacks one of the names", () => {
     // The precedence between the two answers, which nothing else pins: this
-    // miss is both — one search of Tender's own and one of the package's — AND
+    // miss is both — one search of RomM-Dock's own and one of the package's — AND
     // Decky's copy cannot account for the package's. A name Decky's copy does
     // not export is a fact about the two installs, where a name it exports with
     // an empty value is a search result whose cause is inferred, so the
@@ -383,8 +387,8 @@ describe("what a miss costs the panel", () => {
     const copy = readSearchingCopy(report, "coexistence", () => ({ carries: () => false, version: "v3.2.8" }));
     expect(searchOwner(report, copy)).toBe("disagreement");
     const sentence = describeSurvivedMiss(report, copy);
-    expect(sentence).toContain("does not carry some of the names Tender asks it for");
-    expect(sentence).not.toContain("Tender ran some of them itself");
+    expect(sentence).toContain("does not carry some of the names RomM-Dock asks it for");
+    expect(sentence).not.toContain("RomM-Dock ran some of them itself");
   });
 
   it("calls a miss Decky's copy cannot account for a disagreement about the package", () => {
@@ -395,8 +399,8 @@ describe("what a miss costs the panel", () => {
     const copy = readSearchingCopy(report, "coexistence", () => ({ carries: () => false, version: "v3.2.8" }));
     const sentence = describeSurvivedMiss(report, copy);
     expect(sentence).toContain("Decky Loader v3.2.8's copy of @decky/ui does not carry some of the names");
-    expect(sentence).toContain("Bringing both Tender and Decky Loader to their current versions is the repair.");
-    expect(sentence).not.toContain("ran them, not Tender's own");
+    expect(sentence).toContain("Bringing both RomM-Dock and Decky Loader to their current versions is the repair.");
+    expect(sentence).not.toContain("ran them, not RomM-Dock's own");
   });
 
   it("still reaches the bootstrap answer when everything missed, cosmetic names included", () => {
@@ -416,16 +420,16 @@ describe("whose copy the page blames for a stale search", () => {
     { name: "Tabs", found: () => false, deckyUiExport: true, absenceCost: "panel" },
   ]);
 
-  it("sends the user after Tender when Tender's own copy searched", () => {
+  it("sends the user after RomM-Dock when RomM-Dock's own copy searched", () => {
     const sentence = describeFailure(stale, readSearchingCopy(stale, "standalone"));
-    expect(sentence).toContain("Tender's own copy of @decky/ui ran them");
-    expect(sentence).toContain("A newer Tender is the repair.");
+    expect(sentence).toContain("RomM-Dock's own copy of @decky/ui ran them");
+    expect(sentence).toContain("A newer RomM-Dock is the repair.");
   });
 
   it("sends the user after Decky when Decky's copy searched, and says who else it breaks", () => {
     const copy = readSearchingCopy(stale, "coexistence", () => ({ carries: () => true, version: "v3.2.8" }));
     const sentence = describeFailure(stale, copy);
-    expect(sentence).toContain("Decky Loader v3.2.8's copy of @decky/ui ran them, not Tender's own");
+    expect(sentence).toContain("Decky Loader v3.2.8's copy of @decky/ui ran them, not RomM-Dock's own");
     expect(sentence).toContain("its other plugins are affected");
     expect(sentence).toContain("A newer Decky Loader is the repair.");
   });
@@ -448,7 +452,7 @@ describe("whose copy the page blames for a stale search", () => {
   //
   // `ControllerGlyph` reaches it only in company, since on its own it no longer
   // brings this page up at all — and there it is a real loss, because its
-  // predicate is ours in BOTH bundles and "update Tender" would be correct for
+  // predicate is ours in BOTH bundles and "update RomM-Dock" would be correct for
   // it. The company it keeps here is a global whose own silence is right, so
   // what the branch gives up is bounded; `describeSurvivedMiss` prints the
   // sentence for the case where the glyph is the whole of the miss.
@@ -473,8 +477,8 @@ describe("whose copy the page blames for a stale search", () => {
     );
     expect(sentence).toContain(`${names.length} of ${names.length + 1}`);
     expect(sentence).toContain("None of them is a name @decky/ui exports");
-    expect(sentence).not.toContain("ran them, not Tender's own");
-    expect(sentence).not.toContain("Tender's own copy of @decky/ui ran them");
+    expect(sentence).not.toContain("ran them, not RomM-Dock's own");
+    expect(sentence).not.toContain("RomM-Dock's own copy of @decky/ui ran them");
     expect(sentence).not.toContain("is the repair");
   });
 
@@ -496,21 +500,21 @@ describe("whose copy the page blames for a stale search", () => {
     expect(searchOwner(missed, copy)).toBe("mixed");
     const sentence = describeFailure(missed, copy);
     expect(sentence).toContain("The rest are not names @decky/ui exports, so neither copy of the package ran them.");
-    expect(sentence).not.toContain("newer Tender");
+    expect(sentence).not.toContain("newer RomM-Dock");
   });
 
   it("calls it a disagreement about the package when Decky's copy lacks the name", () => {
     const copy = readSearchingCopy(stale, "coexistence", () => ({ carries: () => false, version: "v3.2.8" }));
     const sentence = describeFailure(stale, copy);
-    expect(sentence).toContain("does not carry some of the names Tender asks it for");
-    expect(sentence).toContain("Bringing both Tender and Decky Loader to their current versions is the repair.");
+    expect(sentence).toContain("does not carry some of the names RomM-Dock asks it for");
+    expect(sentence).toContain("Bringing both RomM-Dock and Decky Loader to their current versions is the repair.");
     expect(sentence).not.toContain("A Steam client update");
   });
 
   it("no longer credits Decky with the search for a global its copy never ran", () => {
     // The defect the shared verdict removed: a missed global beside any
     // `@decky/ui` name used to fall past every earlier branch and say "ran
-    // them, not Tender's own" about a set the package's copy ran only part of.
+    // them, not RomM-Dock's own" about a set the package's copy ran only part of.
     // `SP_REACTDOM` is not a `@decky/ui` export at all — no copy of the package
     // searched for it.
     const missed = checkSteamModules([
@@ -521,9 +525,9 @@ describe("whose copy the page blames for a stale search", () => {
     const copy = readSearchingCopy(missed, "coexistence", () => ({ carries: () => true, version: "v3.2.8" }));
     expect(searchOwner(missed, copy)).toBe("mixed");
     const sentence = describeFailure(missed, copy);
-    expect(sentence).toContain("Decky Loader v3.2.8's copy of @decky/ui ran some of them, not Tender's own");
+    expect(sentence).toContain("Decky Loader v3.2.8's copy of @decky/ui ran some of them, not RomM-Dock's own");
     expect(sentence).toContain("The rest are not names @decky/ui exports, so neither copy of the package ran them.");
-    expect(sentence).not.toContain("ran them, not Tender's own");
+    expect(sentence).not.toContain("ran them, not RomM-Dock's own");
   });
 });
 
@@ -634,7 +638,7 @@ describe("the verdict the page and the log line share", () => {
   };
   const scaleOf = (report: StartupReport): string =>
     `${report.missing.length} of ${report.checked} searches into Steam's interface found nothing. `;
-  const MOUNTED = "Nothing that missed is needed to render the panel, so Tender has started. ";
+  const MOUNTED = "Nothing that missed is needed to render the panel, so RomM-Dock has started. ";
 
   it.each(SEARCH_OWNERS)("reaches the %s verdict from both surfaces' fixtures", (owner) => {
     const page = read(pageFixtures[owner]);
@@ -677,7 +681,7 @@ describe("the verdict the page and the log line share", () => {
       const pageSentence = describeFailure(page.report, page.copy);
       const logSentence = describeSurvivedMiss(log.report, log.copy);
       expect(pageSentence.includes("Decky Loader")).toBe(logSentence.includes("Decky Loader"));
-      expect(pageSentence.includes("newer Tender")).toBe(logSentence.includes("newer Tender"));
+      expect(pageSentence.includes("newer RomM-Dock")).toBe(logSentence.includes("newer RomM-Dock"));
     }
   });
 });

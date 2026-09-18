@@ -156,12 +156,14 @@ class CoreService:
         backend_id = self._active_backend_id()
         system = self._resolve_system(rom.platform_slug)
         options = self._core_info.get_emulator_options(system)
-        active_so, active_label = self._active_core.active_core_for_rom(rom_id)
+        active_emulator = self._active_core.active_emulator_for_rom(rom_id)
+        active_identity = active_emulator.emulator if active_emulator is not None else None
+        active_label = active_emulator.label if active_emulator is not None else None
         backend_platform_cores = self._settings.get("platform_cores", {}).get(backend_id, {})
         return {
             "emulators": options_to_payload(options["options"]),
             "emulator_data_available": options["available"],
-            "active_core": active_so,
+            "active_core": active_identity,
             "active_core_label": active_label,
             "platform_core_label": backend_platform_cores.get(rom.platform_slug),
             "has_game_override": rom.emulator_override_for(backend_id) is not None,
@@ -189,11 +191,13 @@ class CoreService:
     def _system_core_info_io(self, platform_slug: str) -> dict[str, Any]:
         system = self._resolve_system(platform_slug)
         options = self._core_info.get_emulator_options(system)
+        backend_id = self._active_backend_id()
+        backend_platform_cores = self._settings.get("platform_cores", {}).get(backend_id, {})
         return {
             "emulators": options_to_payload(options["options"]),
             "emulator_data_available": options["available"],
             "active_core_label": resolve_platform_label(
-                options["options"], self._settings.get("platform_cores", {}).get(platform_slug)
+                options["options"], backend_platform_cores.get(platform_slug)
             ),
         }
 

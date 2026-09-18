@@ -180,7 +180,7 @@ const report = [];
   if (kind !== "standalone") {
     findings.push(
       `index.js ${stampSays(kind)}. It carries its own @decky/ui, so its start-up failure page must send the user ` +
-        "after Tender; stamped the other way it names Decky Loader, whose copy ran none of these searches, and " +
+        "after RomM-Dock; stamped the other way it names Decky Loader, whose copy ran none of these searches, and " +
         "unstamped it carries a bare import of a module no browser can resolve and never loads at all.",
     );
   }
@@ -211,7 +211,7 @@ const report = [];
   if (kind !== "coexistence") {
     findings.push(
       `index-coexistence.js ${stampSays(kind)}. Its searches are run by Decky Loader's copy of @decky/ui, so ` +
-        "stamped the other way its start-up failure page sends the user after Tender for a fault in Decky — which " +
+        "stamped the other way its start-up failure page sends the user after RomM-Dock for a fault in Decky — which " +
         "is breaking Decky's own interface and its other plugins at the same moment.",
     );
   }

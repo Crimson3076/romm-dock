@@ -16,7 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from domain.xemu_config import compute_xemu_alignment
 from services.firmware.deletion import PlatformBiosDeleter, PlatformBiosDeleterConfig
 from services.firmware.demand import FirmwareDemand, FirmwareDemandConfig
 from services.firmware.downloads import FirmwareDownloader, FirmwareDownloaderConfig
@@ -121,6 +120,8 @@ class FirmwareService:
                 resolve_system=config.resolve_system,
                 platform_core_reader=config.platform_core_reader,
                 firmware_file_store=config.firmware_file_store,
+                launcher_paths=config.launcher_paths,
+                xemu_config=config.xemu_config,
                 uow_factory=config.uow_factory,
                 loop=config.loop,
                 logger=config.logger,
@@ -201,32 +202,5 @@ class FirmwareService:
         return await self._deletion.delete_bios_folder(platform_slug, folder_path)
 
     async def check_xemu_alignment(self) -> dict[str, Any]:
-        """Check whether xemu's own configuration points at this plugin's BIOS directory.
-
-        Discriminated-status union (Callable response shapes carve-out):
-        ``status`` is ``"ok"`` when xemu.toml's ``bootrom_path`` and
-        ``flashrom_path`` both resolve to this plugin's BIOS directory,
-        ``"misaligned"`` when xemu.toml was read but either does not,
-        ``"not_found"`` when no xemu.toml exists at any known location (xemu
-        likely hasn't been launched yet), or ``"unreadable"`` when one was
-        found but could not be read or parsed. ``hdd_path`` is reported in
-        ``files`` for information only and never drives ``status`` — where
-        EmuDeck places the Xbox disk image is not confirmed the way the BIOS
-        directory is, so a mismatch there is not treated as an error (see
-        docs/user-guide/bios-management.md#xbox-xemu).
-        """
-        sys_files, config_path = await self._config.loop.run_in_executor(
-            None, self._config.xemu_config.get_sys_files
-        )
-        if config_path is None:
-            return {"status": "not_found", "config_path": None, "files": {}}
-        if sys_files is None:
-            return {"status": "unreadable", "config_path": config_path, "files": {}}
-
-        files = compute_xemu_alignment(sys_files, self._config.launcher_paths.bios_path())
-        aligned = files["bootrom_path"]["in_plugin_bios_dir"] and files["flashrom_path"]["in_plugin_bios_dir"]
-        return {
-            "status": "ok" if aligned else "misaligned",
-            "config_path": config_path,
-            "files": files,
-        }
+        """Check whether xemu's own configuration points at this plugin's BIOS directory."""
+        return await self._status.check_xemu_alignment()

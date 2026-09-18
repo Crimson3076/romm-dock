@@ -384,19 +384,19 @@ class TestGetSystemCoreInfo:
         assert result["emulators"] == options_to_payload(core_info.options)
 
     def test_per_platform_override_wins_over_the_default(self, event_loop, service, settings):
-        settings["platform_cores"]["snes"] = "bsnes"
+        settings["platform_cores"]["retrodeck"]["snes"] = "bsnes"
         result = event_loop.run_until_complete(service.get_system_core_info("snes"))
         assert result["active_core_label"] == "bsnes"
 
     def test_unresolvable_override_degrades_to_the_default(self, event_loop, service, settings):
         # A core the user picked and then uninstalled: the label degrades rather
         # than naming an emulator that would not launch.
-        settings["platform_cores"]["snes"] = "Gone-o-Tron"
+        settings["platform_cores"]["retrodeck"]["snes"] = "Gone-o-Tron"
         result = event_loop.run_until_complete(service.get_system_core_info("snes"))
         assert result["active_core_label"] == "Snes9x"
 
     def test_another_platforms_override_is_not_read(self, event_loop, service, settings):
-        settings["platform_cores"]["gba"] = "mGBA"
+        settings["platform_cores"]["retrodeck"]["gba"] = "mGBA"
         result = event_loop.run_until_complete(service.get_system_core_info("snes"))
         assert result["active_core_label"] == "Snes9x"
 
@@ -522,7 +522,7 @@ class TestSetGameCore:
         result = event_loop.run_until_complete(service.set_game_core(42, "bsnes"))
         assert result["success"] is False
         assert result["reason"] == "unsupported"
-        assert uow.roms.get(42).emulator_override is None
+        assert uow.roms.get(42).emulator_override_for("retrodeck") is None
         assert core_info.emulator_options_calls == []
 
     def test_resolves_system_before_label_lookup(self, event_loop, service, uow, core_info, resolve_system):
@@ -991,4 +991,4 @@ class TestSetGameCoreTransactionBoundary:
         assert "not verified" in result["message"]
         assert "not available" not in result["message"]
         with uow as u:
-            assert u.roms.get(42).emulator_override is None
+            assert u.roms.get(42).emulator_override_for("retrodeck") is None

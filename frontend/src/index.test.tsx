@@ -304,7 +304,7 @@ describe("index.tsx — what the factory does when only a decoration was not fou
   it("reports it in the log, which is the only place it is reported at all", () => {
     const plugin = pluginFactory();
     expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("Missing: ControllerGlyph"));
-    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("a newer Tender is the repair"));
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("a newer RomM-Dock is the repair"));
     plugin.onDismount();
   });
 });

@@ -45,6 +45,7 @@ from domain.bios_status import (
 )
 from domain.emulator_commands import options_to_payload, resolve_platform_option
 from domain.firmware_wants import DECLARED_DIRECTORY
+from domain.xemu_config import compute_xemu_alignment
 
 if TYPE_CHECKING:
     import asyncio
@@ -59,9 +60,11 @@ if TYPE_CHECKING:
     from services.protocols import (
         CoreInfoProvider,
         FirmwareFileStore,
+        LauncherPaths,
         PlatformCoreReader,
         SystemResolver,
         UnitOfWorkFactory,
+        XemuConfigReader,
     )
 
 
@@ -85,6 +88,8 @@ class FirmwareStatusReaderConfig:
     resolve_system: SystemResolver
     platform_core_reader: PlatformCoreReader
     firmware_file_store: FirmwareFileStore
+    launcher_paths: LauncherPaths
+    xemu_config: XemuConfigReader
     uow_factory: UnitOfWorkFactory
     loop: asyncio.AbstractEventLoop
     logger: logging.Logger
@@ -101,6 +106,8 @@ class FirmwareStatusReader:
         self._resolve_system = config.resolve_system
         self._platform_core_reader = config.platform_core_reader
         self._firmware_file_store = config.firmware_file_store
+        self._launcher_paths = config.launcher_paths
+        self._xemu_config = config.xemu_config
         self._uow_factory = config.uow_factory
         self._loop = config.loop
         self._logger = config.logger
@@ -685,6 +692,35 @@ class FirmwareStatusReader:
             return {"needs_bios": False} if settled else {"needs_bios": False, "bios_status_unknown": True}
 
         return self._bios_payload(files, platform_slug, complete, system_image, pick)
+
+    async def check_xemu_alignment(self) -> dict[str, Any]:
+        """Check whether xemu's own configuration points at this plugin's BIOS directory.
+
+        Discriminated-status union (Callable response shapes carve-out):
+        ``status`` is ``"ok"`` when xemu.toml's ``bootrom_path`` and
+        ``flashrom_path`` both resolve to this plugin's BIOS directory,
+        ``"misaligned"`` when xemu.toml was read but either does not,
+        ``"not_found"`` when no xemu.toml exists at any known location (xemu
+        likely hasn't been launched yet), or ``"unreadable"`` when one was
+        found but could not be read or parsed. ``hdd_path`` is reported in
+        ``files`` for information only and never drives ``status`` — where
+        EmuDeck places the Xbox disk image is not confirmed the way the BIOS
+        directory is, so a mismatch there is not treated as an error (see
+        docs/user-guide/bios-management.md#xbox-xemu).
+        """
+        sys_files, config_path = await self._loop.run_in_executor(None, self._xemu_config.get_sys_files)
+        if config_path is None:
+            return {"status": "not_found", "config_path": None, "files": {}}
+        if sys_files is None:
+            return {"status": "unreadable", "config_path": config_path, "files": {}}
+
+        files = compute_xemu_alignment(sys_files, self._launcher_paths.bios_path())
+        aligned = files["bootrom_path"]["in_plugin_bios_dir"] and files["flashrom_path"]["in_plugin_bios_dir"]
+        return {
+            "status": "ok" if aligned else "misaligned",
+            "config_path": config_path,
+            "files": files,
+        }
 
 
 def _has_something_to_say(plat: dict[str, Any]) -> bool:

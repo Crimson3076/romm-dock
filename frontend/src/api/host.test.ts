@@ -31,7 +31,7 @@ describe("definePlugin", () => {
   it("answers with the factory it was given", () => {
     // Whoever mounts the panel calls it — which today is nobody in this tree,
     // since the Quick Access entry that will is #1901.
-    const factory = (): Plugin => ({ name: "Tender", icon: null });
+    const factory = (): Plugin => ({ name: "RomM-Dock", icon: null });
     expect(definePlugin(factory)).toBe(factory);
   });
 });
@@ -39,7 +39,7 @@ describe("definePlugin", () => {
 describe("the toaster placeholder", () => {
   it("hands back a dismissable handle carrying the toast, and shows nothing", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const data = { title: "Tender", body: "Downloaded Chrono Trigger" };
+    const data = { title: "RomM-Dock", body: "Downloaded Chrono Trigger" };
 
     const raised = toaster.toast(data);
 
@@ -54,7 +54,7 @@ describe("the toaster placeholder", () => {
 
   it("reaches no loader API even where one exists", () => {
     // The disqualifier is not purity: both placeholders stand in for the
-    // loader's own API, #1901 replaces them with Tender's, and one that
+    // loader's own API, #1901 replaces them with RomM-Dock's, and one that
     // borrowed wherever it found one would behave differently on a machine
     // running Decky from one without. The reference machine DOES run the loader
     // (plugin_loader active, 127.0.0.1:1337 listening, measured 2026-09-17), so
@@ -63,7 +63,7 @@ describe("the toaster placeholder", () => {
     vi.stubGlobal("__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit", loader);
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    toaster.toast({ title: "Tender", body: "anything" });
+    toaster.toast({ title: "RomM-Dock", body: "anything" });
 
     expect(loader.connect).not.toHaveBeenCalled();
     vi.unstubAllGlobals();

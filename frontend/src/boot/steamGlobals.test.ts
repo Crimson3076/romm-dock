@@ -1,5 +1,5 @@
 /**
- * The drift lock between Tender's React globals and Decky Loader's.
+ * The drift lock between RomM-Dock's React globals and Decky Loader's.
  *
  * Decky skips its whole globals block when `SP_REACT` is already set, so on a
  * machine carrying both, whichever runs first decides the shape BOTH render
@@ -109,7 +109,7 @@ function searchPredicates(source: string): string[] {
  */
 const canonical = (text: string): string => text.replace(/\s+/g, " ").trim();
 
-describe("the React globals Tender installs", () => {
+describe("the React globals RomM-Dock installs", () => {
   it("searches for the same four things as Decky Loader, in the same order", () => {
     // Asserted as whole arrays rather than entry by entry, because the ORDER is
     // part of the claim: Decky's second ReactDOM search is a fallback behind the

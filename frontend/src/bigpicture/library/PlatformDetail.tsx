@@ -23,6 +23,7 @@ import { isFetchable } from "../../utils/biosFetchable";
 import { biosFileDescription, biosFileNote } from "../../utils/biosFileNote";
 import { biosHeldRatio } from "../../utils/biosHeldRatio";
 import { biosSummary } from "../../utils/biosSummary";
+import { detach } from "../../utils/detach";
 import { buildEmulatorMenu } from "../../utils/emulatorMenu";
 import { getEventTarget } from "../../utils/events";
 import { pluralize } from "../../utils/pluralize";
@@ -993,9 +994,11 @@ const XemuAlignmentNotice: FC = () => {
 
   useEffect(() => {
     let alive = true;
-    checkXemuConfigAlignment().then((r) => {
-      if (alive) setResult(r);
-    });
+    detach(
+      checkXemuConfigAlignment().then((r) => {
+        if (alive) setResult(r);
+      }),
+    );
     return () => {
       alive = false;
     };

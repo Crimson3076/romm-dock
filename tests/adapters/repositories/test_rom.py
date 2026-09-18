@@ -669,7 +669,7 @@ class TestResyncPreservesSelectedExe:
         """All three per-game deviations survive a re-sync independently."""
         rom_id = 1
         uow.roms.save(_rom(rom_id, app_id=100))
-        uow.roms.set_emulator_override(rom_id, "Beetle PSX HW")
+        uow.roms.set_emulator_override(rom_id, "retrodeck", "Beetle PSX HW")
         uow.roms.set_selected_disc(rom_id, "FF7 (Disc 3).cue")
         uow.roms.set_selected_exe(rom_id, "Game.exe")
 
@@ -677,7 +677,7 @@ class TestResyncPreservesSelectedExe:
 
         loaded = uow.roms.get(rom_id)
         assert loaded is not None
-        assert loaded.emulator_override == "Beetle PSX HW"
+        assert loaded.emulator_override_for("retrodeck") == "Beetle PSX HW"
         assert loaded.selected_disc == "FF7 (Disc 3).cue"
         assert loaded.selected_exe == "Game.exe"
 
