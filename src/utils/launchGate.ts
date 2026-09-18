@@ -73,14 +73,18 @@ export interface LaunchGateOps {
   migrationPending: () => boolean;
 
   /**
-   * Is the active launcher backend (RetroDECK/EmuDeck) AND RetroArch actually
-   * installed? `false` means a launch would either exec nothing (the backend
-   * itself is gone) or fail silently the moment RetroArch resolves a libretro
-   * core (the games-run-through-RetroArch case). Blocks with
+   * Can THIS ROM actually launch right now — is the active launcher backend
+   * (RetroDECK/EmuDeck) installed, and (only when this ROM's resolved active
+   * emulator is a libretro core) is RetroArch installed too? `false` means a
+   * launch would either exec nothing (the backend itself is gone) or fail
+   * silently the moment RetroArch resolves the core (the libretro-only case —
+   * a standalone emulator like Dolphin/PCSX2 never routes through RetroArch,
+   * so its absence must not block that ROM). Blocks with
    * `block`/`backend_not_ready` — checked before `hasLaunchTarget`, since
-   * nothing downstream matters if the launcher itself can't run.
+   * nothing downstream matters if the launcher itself can't run. Takes the
+   * ROM id the gate is running for — the kind-aware check is per-ROM.
    */
-  checkBackendReady: () => Promise<boolean>;
+  checkBackendReady: (romId: number) => Promise<boolean>;
 
   /**
    * Does this ROM have a launch target at all? `false` for a ROM that is
@@ -143,11 +147,13 @@ export interface LaunchGateOps {
  * otherwise) resolves to `{ decision: "allow" }`. A bug in the gate must never
  * trap the user's game behind it.
  *
- * `_appId` / `_romId` are accepted so callers pass the identifiers the injected
- * ops were bound for (and to keep the signature stable as ops grow); the gate
- * itself routes purely through the callbacks, so they are intentionally unused.
+ * `_appId` is accepted so callers pass the identifier the injected ops were
+ * bound for (and to keep the signature stable as ops grow); the gate itself
+ * routes every appId-scoped side effect through the callbacks, so it is
+ * intentionally unused. `romId` IS used directly — it's threaded into
+ * `ops.checkBackendReady`, whose kind-aware answer is per-ROM.
  */
-export async function runLaunchGate(_appId: number, _romId: number, ops: LaunchGateOps): Promise<GateVerdict> {
+export async function runLaunchGate(_appId: number, romId: number, ops: LaunchGateOps): Promise<GateVerdict> {
   try {
     // 1. Pending RetroDECK migration — hard block before any other work.
     if (ops.migrationPending()) {
@@ -157,7 +163,7 @@ export async function runLaunchGate(_appId: number, _romId: number, ops: LaunchG
     // 2. Backend/RetroArch not installed — block before anything else: the
     //    launcher itself (or the emulator every libretro core runs through)
     //    isn't there, so no downstream step's answer matters.
-    if (!(await ops.checkBackendReady())) {
+    if (!(await ops.checkBackendReady(romId))) {
       return { decision: "block", reason: "backend_not_ready" };
     }
 

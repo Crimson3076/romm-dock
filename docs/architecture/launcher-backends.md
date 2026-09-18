@@ -224,10 +224,25 @@ Every `LauncherBackend` now answers two readiness questions honestly, alongside 
 `LauncherBackendService.get_backend_readiness()` reports the ACTIVE backend's answer to both questions as
 `{backend, backend_installed, retroarch_installed, message}` — the `get_backend_readiness` callable below. The QAM
 readiness banner (`src/utils/backendReadinessStore.ts` + `backendReadinessBanner.ts`) polls it on every panel open and
-again after a backend switch (`LauncherBackendSection.tsx`), and the shared pre-launch gate (`launchGate.ts`'s
-`checkBackendReady` step, backed by `checkBackendReady()` in `launchTarget.ts`) blocks a launch with
-`backend_not_ready` instead of letting it fail silently the moment RetroArch (or the launcher itself) turns out not to
-be there.
+again after a backend switch (`LauncherBackendSection.tsx`) — this stays a **blanket** "is the launcher/RetroArch there
+at all" read, unscoped to any one ROM, because that is exactly the "overall setup health" question the banner answers.
+
+The pre-launch gate needs a narrower, PER-ROM answer instead: `retroarch_installed` only matters for a ROM whose
+resolved active emulator (`ActiveCoreResolver.active_emulator_for_rom`) is actually a **libretro** core. A ROM whose
+active emulator is `standalone` (Dolphin, PCSX2, Ryubing, …) never routes through RetroArch, so RetroArch's absence must
+not block that ROM's launch — `backend_installed` still blocks every ROM regardless of kind, since nothing launches
+through either launcher if the launcher itself is gone. `CoreService.get_launch_readiness(rom_id)` (the
+`get_launch_readiness` callable) folds `LauncherBackendService.get_backend_readiness()` with the ROM's resolved kind —
+reusing `ActiveCoreResolver` rather than re-deriving kind resolution — and returns
+`{backend, backend_installed, retroarch_installed, retroarch_relevant, ready, message}`. It lives on `CoreService`
+(not `LauncherBackendService`) because `CoreService` already holds the no-cycle `ActiveCoreReader` seam
+`LauncherBackendService` cannot depend on without a producer/consumer cycle (`ActiveCoreResolver` itself depends on
+`LauncherBackendService` via `core_info`/`active_backend_id`). The shared pre-launch gate (`launchGate.ts`'s
+`checkBackendReady` step, backed by `checkBackendReady(romId)` in `launchTarget.ts`, which calls
+`get_launch_readiness`) blocks a launch with `backend_not_ready` on the `ready` verdict instead of letting it fail
+silently the moment RetroArch (or the launcher itself) turns out not to be there. `CustomPlayButton.tsx` also probes
+`get_launch_readiness` proactively (on mount and on a version switch) to paint the Play button in a blocked/error tint
+BEFORE the press — a visual hint only, never a substitute for the click-time gate.
 
 ## Callables
 
@@ -240,7 +255,10 @@ be there.
   (`"unknown_backend"`, `"not_detected"`, or the backend's own `BackendValidation.reason`).
 - **`get_backend_readiness()`** — `{backend, backend_installed, retroarch_installed, message}` for the ACTIVE backend.
   Always succeeds (both probes are best-effort filesystem checks); see
-  [Readiness](#readiness-is-the-backend-actually-there) above.
+  [Readiness](#readiness-is-the-backend-actually-there) above. Blanket — the QAM banner's read.
+- **`get_launch_readiness(rom_id)`** — `{backend, backend_installed, retroarch_installed, retroarch_relevant, ready,
+  message}` for `rom_id`. The PER-ROM, kind-aware sibling the pre-launch gate (and the Play button's proactive visual
+  hint) use instead; see [Readiness](#readiness-is-the-backend-actually-there) above.
 
 ## Related pages
 

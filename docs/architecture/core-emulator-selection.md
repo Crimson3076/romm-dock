@@ -214,10 +214,11 @@ the same way any other component can — so a bakeable **libretro** option is do
 when `CoreResolver.retroarch_installed()` (every libretro `<command>` begins with the `%EMULATOR_RETROARCH%` find-rule
 token, so the same staticpath probe answers this too) reports RetroArch absent. See
 [Launcher Backends](launcher-backends.md#readiness-is-the-backend-actually-there) for the backend-level readiness
-signal this feeds (`get_backend_readiness`, the QAM banner, and the pre-launch guard) — that page's probe is a coarser,
-Flatpak-presence-only check used when there is no `es_find_rules.xml` context, and is not guaranteed to agree with this
-one in every edge case; this page's `es_find_rules.xml` probe is what actually drives the picker's `needs_setup`
-verdict.
+signal this feeds: `get_backend_readiness` (the QAM banner's blanket read) and `get_launch_readiness` (the PER-ROM,
+kind-aware pre-launch guard — it factors `retroarch_installed` in only for a ROM whose resolved active emulator is
+libretro, never for a `standalone` one). Both are a coarser, Flatpak-presence-only check used when there is no
+`es_find_rules.xml` context, and are not guaranteed to agree with this one in every edge case; this page's
+`es_find_rules.xml` probe is what actually drives the picker's `needs_setup` verdict.
 
 `get_emulator_options(system)` returns `{"available": bool, "options": [EmulatorOption, ...]}`. **`available` is `False`
 when `es_systems.xml` cannot be found or parsed** — the picker surfaces that as "Emulator list unavailable" rather than

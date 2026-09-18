@@ -862,6 +862,9 @@ _MIGRATION_BLOCKED_WHITELIST: set[str] = {
     # Read-only backend/RetroArch presence probe (for the QAM readiness banner
     # and the pre-launch guard) — mirrors get_retrodeck_status's reasoning.
     "get_backend_readiness",
+    # Read-only PER-ROM backend/RetroArch readiness probe (the kind-aware
+    # pre-launch gate check) — same reasoning as get_backend_readiness above.
+    "get_launch_readiness",
     # Read-only disc-picker state query (the pin-write select_disc IS decorated).
     "get_disc_selection",
     # Read-only exe-picker state query (the pin-write select_executable IS decorated).

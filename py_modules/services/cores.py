@@ -67,6 +67,16 @@ class CoreServiceConfig:
     are plain values here, not ``LateBinding`` — ``CoreService`` is
     constructed after ``LauncherBackendService`` exists in
     ``bootstrap/services.py``, so there is no producer/consumer cycle to break.
+
+    ``backend_readiness`` is ``LauncherBackendService.get_backend_readiness``
+    bound at wiring time (same no-cycle reasoning as ``core_info`` — plain
+    ``Callable``, not a Protocol dependency, because ``get_backend_readiness``
+    isn't part of ``CoreInfoProvider``). ``get_launch_readiness`` folds it with
+    ``active_core.active_emulator_for_rom``'s resolved ``kind`` so a per-ROM
+    readiness answer only factors in ``retroarch_installed`` for a ROM whose
+    active emulator actually routes through RetroArch — the blanket
+    ``get_backend_readiness`` answer stays the QAM banner's "overall setup
+    health" read and is unaffected by this.
     """
 
     loop: asyncio.AbstractEventLoop
@@ -81,6 +91,7 @@ class CoreServiceConfig:
     active_core: ActiveCoreReader
     disc_resolver: DiscResolver
     launch_renderer: LaunchCommandRenderer
+    backend_readiness: Callable[[], dict[str, Any]]
 
 
 class CoreService:
@@ -99,6 +110,47 @@ class CoreService:
         self._active_core = config.active_core
         self._disc_resolver = config.disc_resolver
         self._launch_renderer = config.launch_renderer
+        self._backend_readiness = config.backend_readiness
+
+    async def get_launch_readiness(self, rom_id: int) -> dict[str, Any]:
+        """Report whether ``rom_id`` can actually launch right now.
+
+        The per-ROM sibling of ``LauncherBackendService.get_backend_readiness``
+        (the QAM banner's blanket answer), consumed by the pre-launch gate
+        instead of that blanket check. ``backend_installed`` still blocks every
+        ROM regardless of kind — nothing launches through either launcher if
+        the launcher itself is gone. ``retroarch_installed`` only matters for a
+        ROM whose resolved active emulator (:meth:`ActiveCoreReader.
+        active_emulator_for_rom`) is a libretro core; a standalone emulator
+        (Dolphin, PCSX2, Ryubing, …) never routes through RetroArch, so its
+        absence must not block that ROM's launch. ``retroarch_relevant`` says
+        which case applied, and ``ready`` is the gate's actual verdict. A ROM
+        with no resolved active emulator (unbound platform, unreadable
+        catalogue) is treated as ``retroarch_relevant`` — the conservative
+        default matching the pre-fix blanket behavior, since which launcher the
+        backend would pick at launch time is unknown here.
+        """
+        return await self._loop.run_in_executor(None, self._launch_readiness_io, rom_id)
+
+    def _launch_readiness_io(self, rom_id: int) -> dict[str, Any]:
+        readiness = self._backend_readiness()
+        backend_installed = bool(readiness.get("backend_installed"))
+        retroarch_installed = bool(readiness.get("retroarch_installed"))
+        if not backend_installed:
+            return {**readiness, "retroarch_relevant": True, "ready": False}
+
+        emulator = self._active_core.active_emulator_for_rom(rom_id)
+        retroarch_relevant = emulator is None or emulator.kind == "libretro"
+        ready = retroarch_installed or not retroarch_relevant
+        message = readiness.get("message", "") if not ready else "Ready to launch."
+        return {
+            "backend": readiness.get("backend"),
+            "backend_installed": backend_installed,
+            "retroarch_installed": retroarch_installed,
+            "retroarch_relevant": retroarch_relevant,
+            "ready": ready,
+            "message": message,
+        }
 
     async def get_platform_core_info(self, rom_id: int) -> dict[str, Any]:
         """Return the emulators available for ``rom_id``'s platform + the active one.

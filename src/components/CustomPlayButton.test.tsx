@@ -171,6 +171,17 @@ async function openUninstallMenu(container: HTMLElement, flushes: number): Promi
 beforeEach(() => {
   setRommConnectionState("connected");
   resetBoundVanished();
+  // Default: ready, so the pre-existing Play-state tests keep rendering the
+  // normal green button. Tests exercising the blocked/red visual override
+  // this per-test.
+  vi.mocked(backend.getLaunchReadiness).mockResolvedValue({
+    backend: "retrodeck",
+    backend_installed: true,
+    retroarch_installed: true,
+    retroarch_relevant: true,
+    ready: true,
+    message: "Ready to launch.",
+  });
 });
 
 describe("CustomPlayButton — vanished bound ROM (#1570 F20)", () => {
@@ -4391,5 +4402,51 @@ describe("CustomPlayButton — the backstop (#260)", () => {
 
     expect(vi.mocked(backend.startDownload)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(toaster.toast)).not.toHaveBeenCalled();
+  });
+});
+
+describe("CustomPlayButton — proactive launch-readiness visual state", () => {
+  it("renders the blocked/red Play button when the per-ROM readiness probe says not ready", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true });
+    vi.mocked(backend.getLaunchReadiness).mockResolvedValue({
+      backend: "retrodeck",
+      backend_installed: true,
+      retroarch_installed: false,
+      retroarch_relevant: true,
+      ready: false,
+      message: "RetroArch was not found — libretro-core games will fail to launch until it is installed.",
+    });
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    const label = await findByText("Play");
+    const btn = label.closest("button")!;
+
+    await waitFor(() => expect(btn).toHaveClass("romm-launch-blocked"));
+    // Still fully pressable — the visual state is a hint, not a second gate.
+    expect(btn).not.toBeDisabled();
+    expect(vi.mocked(backend.getLaunchReadiness)).toHaveBeenCalledWith(42);
+  });
+
+  it("renders the normal green Play button when the readiness probe says ready", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true });
+    // beforeEach already stubs a ready=true response; assert the render explicitly.
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    const label = await findByText("Play");
+    const btn = label.closest("button")!;
+
+    await waitFor(() => expect(vi.mocked(backend.getLaunchReadiness)).toHaveBeenCalledWith(42));
+    expect(btn).not.toHaveClass("romm-launch-blocked");
+  });
+
+  it("fails open to the normal button when the readiness probe throws", async () => {
+    mockCachedDetail({ rom_id: 42, installed: true });
+    vi.mocked(backend.getLaunchReadiness).mockRejectedValue(new Error("bridge down"));
+    const logSpy = vi.spyOn(backend, "logError").mockImplementation(() => {});
+    const { findByText } = render(<CustomPlayButton appId={100} />);
+    const label = await findByText("Play");
+    const btn = label.closest("button")!;
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("launch-readiness probe failed")));
+    expect(btn).not.toHaveClass("romm-launch-blocked");
+    logSpy.mockRestore();
   });
 });

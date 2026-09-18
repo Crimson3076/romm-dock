@@ -362,6 +362,18 @@ class Plugin:
         """
         return self._launcher_backend_service.get_backend_readiness()
 
+    async def get_launch_readiness(self, rom_id):
+        """Report whether `rom_id` can actually launch right now (per-ROM, kind-aware).
+
+        The pre-launch gate's readiness check. Unlike `get_backend_readiness`
+        (the QAM banner's blanket "is the launcher/RetroArch there at all"
+        read, left unchanged), this factors `retroarch_installed` in only when
+        `rom_id`'s resolved active emulator is a libretro core — a standalone
+        emulator never routes through RetroArch, so its absence must not block
+        that ROM's launch. See `CoreService.get_launch_readiness`.
+        """
+        return await self._core_service.get_launch_readiness(rom_id)
+
     @migration_blocked
     @prune_active_blocked
     async def set_launcher_backend(self, backend_id, installation_id):

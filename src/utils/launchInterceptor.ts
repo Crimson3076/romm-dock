@@ -172,7 +172,7 @@ async function preLaunchSyncWatcher(romId: number): Promise<PreLaunchSyncOutcome
 function makeWatcherOps(romId: number, prompts: LaunchPrompts): LaunchGateOps {
   return {
     migrationPending: () => getMigrationState().pending,
-    checkBackendReady: () => checkBackendReady(),
+    checkBackendReady,
     hasLaunchTarget: () => romHasLaunchTarget(romId, "Watcher"),
     ensureTrackingConfigured: async (): Promise<"proceed"> => {
       await ensureTrackingConfiguredWatcher(romId);

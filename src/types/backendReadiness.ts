@@ -15,3 +15,21 @@ export interface BackendReadiness {
   retroarch_installed: boolean;
   message: string;
 }
+
+/**
+ * Response shape of `get_launch_readiness` — the PER-ROM, kind-aware sibling
+ * of {@link BackendReadiness} the pre-launch gate uses instead of the blanket
+ * banner check (`services/cores.py`'s `CoreService.get_launch_readiness`).
+ * `retroarch_relevant` says whether this ROM's resolved active emulator is a
+ * libretro core (routes through RetroArch) — `retroarch_installed` only
+ * factors into `ready` when it is. `backend_installed` still blocks every
+ * ROM regardless of kind.
+ */
+export interface LaunchReadiness {
+  backend: string;
+  backend_installed: boolean;
+  retroarch_installed: boolean;
+  retroarch_relevant: boolean;
+  ready: boolean;
+  message: string;
+}

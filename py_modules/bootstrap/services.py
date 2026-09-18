@@ -504,6 +504,7 @@ def wire_services(cfg: WiringConfig) -> dict[str, Any]:
             active_core=active_core_resolver,
             disc_resolver=disc_launch_resolver,
             launch_renderer=launcher_backend_service,
+            backend_readiness=launcher_backend_service.get_backend_readiness,
         ),
     )
 

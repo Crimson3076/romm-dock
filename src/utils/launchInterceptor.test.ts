@@ -30,6 +30,7 @@ vi.mock("../api/backend", () => ({
   probeReachability: vi.fn(),
   preLaunchSync: vi.fn(),
   checkLocalDrift: vi.fn(),
+  getLaunchReadiness: vi.fn(),
   // The shared reconcile helper (real module) pulls the single-ROM command here
   // before each watcher relaunch (#1152).
   getRomRelaunchOptions: vi.fn(),
@@ -842,22 +843,27 @@ describe("launchInterceptor — full funnel watcher", () => {
       expect(ops.migrationPending()).toBe(false);
     });
 
-    it("checkBackendReady: re-probes and reflects the current store state", async () => {
+    it("checkBackendReady: re-probes this ROM's kind-aware readiness and refreshes the banner store", async () => {
       const ops = await captureOps();
 
-      vi.mocked(backendReadinessStore.getBackendReadinessState).mockReturnValueOnce({
+      vi.mocked(backend.getLaunchReadiness).mockResolvedValueOnce({
         backend: "retrodeck",
         backend_installed: false,
         retroarch_installed: true,
+        retroarch_relevant: true,
+        ready: false,
         message: "RetroDECK was not found on this device — games will fail to launch until it is installed.",
       });
-      expect(await ops.checkBackendReady()).toBe(false);
+      expect(await ops.checkBackendReady(42)).toBe(false);
+      expect(backend.getLaunchReadiness).toHaveBeenCalledWith(42);
+      // Best-effort side effect: the QAM banner's blanket store still gets a
+      // fresh probe out of this check, even though the verdict itself no
+      // longer reads from it.
       expect(backendReadinessStore.refreshBackendReadiness).toHaveBeenCalled();
 
-      // No probe has landed yet (`null`) — reads as ready, the same fail-open
-      // reasoning as a throw.
-      vi.mocked(backendReadinessStore.getBackendReadinessState).mockReturnValueOnce(null);
-      expect(await ops.checkBackendReady()).toBe(true);
+      // A throw on the per-ROM probe fails open — never trap the user's game.
+      vi.mocked(backend.getLaunchReadiness).mockRejectedValueOnce(new Error("bridge down"));
+      expect(await ops.checkBackendReady(42)).toBe(true);
     });
 
     it("checkReachability: online passes through; a throw logs and treats as offline", async () => {

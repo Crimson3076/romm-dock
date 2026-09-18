@@ -69,6 +69,12 @@ describe("runLaunchGate — verdict branches", () => {
     expect(ops.hasLaunchTarget).toHaveBeenCalled();
   });
 
+  it("threads romId into checkBackendReady — the kind-aware check is per-ROM", async () => {
+    const ops = makeOps();
+    await runLaunchGate(100, 42, ops);
+    expect(ops.checkBackendReady).toHaveBeenCalledWith(42);
+  });
+
   it("blocks with no_launch_target when the ROM has no launch target", async () => {
     const ops = makeOps({ hasLaunchTarget: vi.fn(async () => false) });
     await expect(runLaunchGate(100, 42, ops)).resolves.toEqual({

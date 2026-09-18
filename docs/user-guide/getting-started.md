@@ -105,7 +105,10 @@ switch launchers in **Settings → Launcher**. If you see **Launcher not found**
   present.
 
 Pressing Play on a game while either is missing shows a toast instead of silently failing to launch, so the failure is
-never mysterious — open the plugin's QAM panel for the specific banner.
+never mysterious — open the plugin's QAM panel for the specific banner. RetroArch's absence only blocks a game whose
+emulator actually routes through it — a standalone emulator (Dolphin, PCSX2, Ryubing, …) is unaffected. The Play button
+also shows this proactively: a game that would be blocked renders with a red/error tint before you even press it,
+instead of looking like a normal Play button that only fails after the click.
 
 ---
 

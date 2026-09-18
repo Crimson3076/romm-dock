@@ -172,6 +172,12 @@ def launch_renderer() -> FakeLaunchCommandRenderer:
 
 
 @pytest.fixture
+def backend_readiness() -> dict[str, Any]:
+    """Mutable readiness payload; tests flip its fields in place before a call."""
+    return {"backend": "retrodeck", "backend_installed": True, "retroarch_installed": True, "message": "ok"}
+
+
+@pytest.fixture
 def service(
     event_loop,
     logger,
@@ -184,6 +190,7 @@ def service(
     active_core,
     disc_resolver,
     launch_renderer,
+    backend_readiness,
 ) -> CoreService:
     return CoreService(
         config=CoreServiceConfig(
@@ -199,8 +206,63 @@ def service(
             active_core=active_core,
             disc_resolver=disc_resolver,
             launch_renderer=launch_renderer,
+            backend_readiness=lambda: backend_readiness,
         ),
     )
+
+
+# ── get_launch_readiness (per-ROM, kind-aware pre-launch gate check) ───
+
+
+class TestGetLaunchReadiness:
+    def test_libretro_rom_blocked_when_retroarch_missing(self, event_loop, service, active_core, backend_readiness):
+        backend_readiness["retroarch_installed"] = False
+        active_core.default_emulator = EmulatorInvocation.libretro("snes9x_libretro", "Snes9x")
+        result = event_loop.run_until_complete(service.get_launch_readiness(42))
+        assert result["ready"] is False
+        assert result["retroarch_relevant"] is True
+        assert result["backend_installed"] is True
+        assert result["retroarch_installed"] is False
+
+    def test_standalone_rom_not_blocked_when_retroarch_missing(
+        self, event_loop, service, active_core, backend_readiness
+    ):
+        # The regression this exists to fix: a standalone-emulator ROM never
+        # routes through RetroArch, so its absence must not block the launch.
+        backend_readiness["retroarch_installed"] = False
+        active_core.default_emulator = EmulatorInvocation.standalone("%EMULATOR_DOLPHIN% %ROM%", "Dolphin")
+        result = event_loop.run_until_complete(service.get_launch_readiness(42))
+        assert result["ready"] is True
+        assert result["retroarch_relevant"] is False
+        assert result["backend_installed"] is True
+        assert result["retroarch_installed"] is False
+
+    def test_backend_missing_blocks_both_kinds(self, event_loop, service, active_core, backend_readiness):
+        backend_readiness["backend_installed"] = False
+        backend_readiness["retroarch_installed"] = False
+        active_core.default_emulator = EmulatorInvocation.standalone("%EMULATOR_DOLPHIN% %ROM%", "Dolphin")
+        result = event_loop.run_until_complete(service.get_launch_readiness(42))
+        assert result["ready"] is False
+        assert result["backend_installed"] is False
+
+    def test_libretro_rom_ready_when_retroarch_installed(self, event_loop, service, active_core, backend_readiness):
+        active_core.default_emulator = EmulatorInvocation.libretro("snes9x_libretro", "Snes9x")
+        result = event_loop.run_until_complete(service.get_launch_readiness(42))
+        assert result["ready"] is True
+        assert result["retroarch_relevant"] is True
+
+    def test_unresolved_emulator_treated_as_retroarch_relevant(
+        self, event_loop, service, active_core, backend_readiness
+    ):
+        # No resolved active emulator at all (unbound platform, unreadable
+        # catalogue) — the conservative default matches the pre-fix blanket
+        # behavior rather than guessing the kind.
+        backend_readiness["retroarch_installed"] = False
+        active_core.default_emulator = None
+        active_core.default = (None, None)
+        result = event_loop.run_until_complete(service.get_launch_readiness(42))
+        assert result["ready"] is False
+        assert result["retroarch_relevant"] is True
 
 
 # ── get_platform_core_info (rom_id-keyed emulator menu) ────────────────

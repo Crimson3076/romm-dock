@@ -12,8 +12,9 @@
  * both the Play button and the global watcher inject.
  */
 
-import { getInstalledRom, logError } from "../api/backend";
-import { refreshBackendReadiness, getBackendReadinessState } from "./backendReadinessStore";
+import { getInstalledRom, getLaunchReadiness, logError } from "../api/backend";
+import { refreshBackendReadiness } from "./backendReadinessStore";
+import { detach } from "./detach";
 
 /**
  * Toast copy both launch paths surface on a `no_launch_target` block. Says what
@@ -43,17 +44,32 @@ export const BACKEND_NOT_READY_TOAST_BODY =
   "The launcher or RetroArch wasn't found on this device — open the plugin for details.";
 
 /**
- * Is the active launcher backend AND RetroArch actually installed?
+ * Can `romId` actually launch right now — is the active launcher backend
+ * installed, and (only when this ROM's resolved active emulator is a
+ * libretro core) is RetroArch installed too?
  *
- * Always re-probes rather than trusting a possibly-stale stored verdict — the
- * launch gate needs the CURRENT state, not whatever the QAM banner last saw.
- * {@link refreshBackendReadiness} already fails open (logs and leaves the
- * prior verdict in the store on error), and a probe that never ran at all
- * (`null`) also reads as ready — the same "a failed probe must never trap the
- * user's game" reasoning {@link romHasLaunchTarget} uses.
+ * Kind-aware per {@link getLaunchReadiness} (`get_launch_readiness`): a
+ * standalone-emulator ROM (Dolphin, PCSX2, Ryubing, …) never routes through
+ * RetroArch, so RetroArch's absence must not block it. `backend_installed`
+ * still blocks every ROM — nothing launches through either launcher if the
+ * launcher itself is gone.
+ *
+ * Also refreshes the module-level readiness store (best-effort, swallowed on
+ * failure) so the QAM banner — which stays a blanket, ROM-independent "overall
+ * setup health" read via {@link getBackendReadinessState} — reflects the same
+ * fresh probe this gate check just took, without a second round trip.
+ *
+ * Fails **open**: a transport hiccup on the per-ROM probe resolves to `true` —
+ * the same "a failed probe must never trap the user's game" reasoning
+ * {@link romHasLaunchTarget} uses.
  */
-export async function checkBackendReady(): Promise<boolean> {
-  await refreshBackendReadiness();
-  const state = getBackendReadinessState();
-  return state == null || (state.backend_installed && state.retroarch_installed);
+export async function checkBackendReady(romId: number): Promise<boolean> {
+  detach(refreshBackendReadiness());
+  try {
+    const readiness = await getLaunchReadiness(romId);
+    return readiness.ready;
+  } catch (e) {
+    logError(`checkBackendReady launch-readiness check threw (allowing launch): ${e}`);
+    return true;
+  }
 }

@@ -42,6 +42,7 @@ import {
   probeReachability,
   checkLocalDrift,
   stopRunningGame,
+  getLaunchReadiness,
 } from "../api/backend";
 import { getRommConnectionState, onRommConnectionChange, reportServerReachable } from "../utils/connectionState";
 import { isBoundVanished, onBoundVanishedChange } from "../utils/vanishedBinding";
@@ -175,6 +176,14 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // reads "Stopping..." and is disabled while the ladder runs, which can be
   // several seconds of no visible change.
   const [stopPending, setStopPending] = useState(false);
+  // Proactive visual hint (not a gate): a mount-time / version-switch probe of
+  // this ROM's kind-aware launch readiness (`getLaunchReadiness`). `true`
+  // paints the Play button in the blocked/error tint BEFORE the user presses
+  // it, instead of a normal green button that only fails after the click. The
+  // click-time `runLaunchGate` stays the authoritative backstop — this flag
+  // never skips or replaces it, and a failed/stale probe fails open to `false`
+  // (never render blocked for a ROM that can actually launch).
+  const [launchBlocked, setLaunchBlocked] = useState(false);
   // Something already sits where this ROM would be downloaded (#260). Read from
   // the cached detail's single `stat`, so the button says so instead of offering
   // an undifferentiated Download; the comparison itself arrives at click time.
@@ -235,6 +244,22 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
     };
   }, []);
+
+  // Proactive per-ROM launch-readiness probe — the visual-hint sibling of the
+  // click-time `checkBackendReady` gate step. React 18 no-ops a setState on an
+  // unmounted component (same reasoning as `rehydrateInflightDownload` below),
+  // so no `cancelled` guard is needed here either. A throw fails OPEN to
+  // `false` (not blocked) — the same "a failed probe must never trap/mislead
+  // the user" reasoning the gate itself uses; this is the visual side of it.
+  const refreshLaunchReadiness = async (rid: number): Promise<void> => {
+    try {
+      const readiness = await getLaunchReadiness(rid);
+      setLaunchBlocked(!readiness.ready);
+    } catch (e) {
+      logError(`CustomPlayButton: launch-readiness probe failed (rendering normal): ${e}`);
+      setLaunchBlocked(false);
+    }
+  };
 
   // Rehydrate an in-flight or paused download on remount. The cached detail
   // only knows installed-or-not, so without this a paused (or still-running)
@@ -311,6 +336,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
             // happens (#1758).
             setState("play");
           }
+          detach(refreshLaunchReadiness(rid));
         } else {
           detach(debugLog(`CustomPlayButton: -> download`));
           enterDownloadState(cached.target_path_occupied === true, cached.adoption_candidate_present === true);
@@ -446,6 +472,11 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
       if (cached.rom_name) setRomName(cached.rom_name);
       if (cached.installed) {
         setState(hasAnySaveConflict(cached.save_status) ? "conflict" : "play");
+        // A version switch can rebind to a different active emulator (a
+        // different disc/region build resolving a different core, or a
+        // platform change) — re-probe rather than carrying the outgoing
+        // version's verdict.
+        detach(refreshLaunchReadiness(rid));
       } else {
         // Switched to a not-installed version — clear any download progress and
         // drop to the Download button. The occupancy answer comes from the ROM
@@ -453,6 +484,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
         // outgoing version's answer says nothing about this one's location.
         setDlProgress(null);
         setActionPending(false);
+        setLaunchBlocked(false);
         enterDownloadState(cached.target_path_occupied === true, cached.adoption_candidate_present === true);
       }
     };
@@ -688,7 +720,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   // page-open-stale `getRommConnectionState()` flag no longer gates the launch.
   const makePlayButtonOps = (rid: number): LaunchGateOps => ({
     migrationPending: () => getMigrationState().pending,
-    checkBackendReady: () => checkBackendReady(),
+    checkBackendReady,
     hasLaunchTarget: () => romHasLaunchTarget(rid, "CustomPlayButton"),
     ensureTrackingConfigured: () => ensureTrackingConfigured(rid),
     checkCoreChange: () => confirmCoreChangeIfNeeded(rid),
@@ -1848,22 +1880,37 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
   }
 
   // state === "play"
+  // `launchBlocked` is a proactive VISUAL hint only (the mount-time/version-
+  // switch readiness probe) — it never skips `handlePlay`/`runLaunchGate`,
+  // which stays the authoritative backstop and still shows the block toast on
+  // a press. Offline takes visual precedence: a server-reachability problem is
+  // the more actionable thing to show when both are true.
+  const blocked = launchBlocked && !isOffline;
   const playBg = isOffline
     ? "linear-gradient(to right, #6b7b6b 0%, #5a6a5a 60%)"
-    : "linear-gradient(to right, #70d61d 0%, #01a75b 60%)";
+    : blocked
+      ? "linear-gradient(to right, #d94126 0%, #b3301a 60%)"
+      : "linear-gradient(to right, #70d61d 0%, #01a75b 60%)";
   const dropdownBg = isOffline
     ? "linear-gradient(to right, #5a6a5a, #4d5d4d)"
-    : "linear-gradient(to right, #4da636, #3f8a2b)";
+    : blocked
+      ? "linear-gradient(to right, #b3301a, #8f2614)"
+      : "linear-gradient(to right, #4da636, #3f8a2b)";
   return (
     <Focusable
       ref={containerRef}
-      className={[appActionButtonClasses?.PlayButtonContainer, !isOffline && appActionButtonClasses?.Green]
+      className={[appActionButtonClasses?.PlayButtonContainer, !isOffline && !blocked && appActionButtonClasses?.Green]
         .filter(Boolean)
         .join(" ")}
       style={btnContainerStyle}
     >
       <DialogButton
-        className={[appActionButtonClasses?.PlayButton, "romm-btn-play", isOffline && "romm-offline"]
+        className={[
+          appActionButtonClasses?.PlayButton,
+          "romm-btn-play",
+          isOffline && "romm-offline",
+          blocked && "romm-launch-blocked",
+        ]
           .filter(Boolean)
           .join(" ")}
         style={{
@@ -1873,6 +1920,7 @@ export const CustomPlayButton: FC<CustomPlayButtonProps> = ({ appId }) => { // N
           backgroundPosition: "25%",
           backgroundSize: "330% 100%",
         }}
+        {...(blocked ? { title: BACKEND_NOT_READY_TOAST_BODY } : {})}
         onClick={() => {
           detach(handlePlay());
         }}

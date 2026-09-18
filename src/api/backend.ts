@@ -41,6 +41,7 @@ import type {
   MigrationResult,
   RetroDeckStatus,
   BackendReadiness,
+  LaunchReadiness,
   SaveSortMigrationStatus,
   RollbackStatus,
   ListFileVersionsResult,
@@ -1148,6 +1149,13 @@ export const getRetroDeckStatus = callable<[], RetroDeckStatus>("get_retrodeck_s
 // are genuinely installed on this device — for the QAM readiness banner and
 // the pre-launch guard. Always succeeds (best-effort filesystem checks).
 export const getBackendReadiness = callable<[], BackendReadiness>("get_backend_readiness");
+
+// PER-ROM, kind-aware sibling of `getBackendReadiness` — the pre-launch gate's
+// check. `retroarch_installed` only factors into `ready` when the ROM's
+// resolved active emulator is a libretro core; a standalone emulator (Dolphin,
+// PCSX2, …) is unaffected by RetroArch's absence. The QAM banner keeps using
+// the blanket `getBackendReadiness` above.
+export const getLaunchReadiness = callable<[rom_id: number], LaunchReadiness>("get_launch_readiness");
 
 // xemu.toml alignment for the Xbox section of the System page — discriminated
 // status ("ok" | "misaligned" | "not_found" | "unreadable") plus per-key
